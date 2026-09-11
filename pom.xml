@@ -77,7 +77,7 @@
     <jackson2.version>2.22.2</jackson2.version>
     <testcontainers.version>1.21.4</testcontainers.version>
 
-    <compiler.plugin.version>3.15.0</compiler.plugin.version>
+    <compiler.plugin.version>3.16.0</compiler.plugin.version>
     <surefire.plugin.version>3.5.6</surefire.plugin.version>
     <failsafe.plugin.version>3.5.6</failsafe.plugin.version>
     <jacoco.plugin.version>0.8.15</jacoco.plugin.version>
