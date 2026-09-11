@@ -1,0 +1,82 @@
+# Defaults for a laptop. Everything here can be overridden with --till.x=y, TILL_X environment
+# variables, or a file passed with --spring.config.additional-location.
+#
+# The one setting with no safe default is the token: there is none, and the service refuses to
+# listen on anything but loopback without one. docs/operations.md covers a real deployment.
+
+spring:
+  application:
+    name: till
+  datasource:
+    url: ${TILL_DB_URL:jdbc:postgresql://localhost:5432/till}
+    username: ${TILL_DB_USER:till}
+    password: ${TILL_DB_PASSWORD:till}
+    hikari:
+      # Bounded well below what PostgreSQL will accept, because the useful shape of overload here is
+      # a queue in front of the pool rather than a thousand sessions fighting over the same rows.
+      maximum-pool-size: ${TILL_DB_POOL:16}
+      pool-name: till
+  flyway:
+    enabled: true
+    # Ships inside till-jdbc, so the schema and the code that expects it are versioned together.
+    locations: classpath:db/migration
+  jackson:
+    # No write-dates-as-timestamps here: Jackson 3 writes java.time values as ISO-8601 by default,
+    # and the Boot 3 property that used to force it does not exist any more. ReservationApiTest
+    # asserts the wire format rather than trusting that.
+    default-property-inclusion: non_null
+
+server:
+  port: ${TILL_PORT:8080}
+  # Unset by default, which means every interface, which is why ExposureCheck refuses to start
+  # without a token unless till.insecure is set.
+  address: ${TILL_ADDRESS:}
+  shutdown: graceful
+
+management:
+  # A separate port, so that metrics and probes are not reachable from wherever the API is, and so
+  # that the API's authentication does not have to carve out exceptions for them.
+  server:
+    port: ${TILL_MANAGEMENT_PORT:9101}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  health:
+    # Liveness answers "is this process wedged"; readiness answers "can it serve a request", which
+    # for a service whose entire job is a database is not the same question.
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+till:
+  max-attempts: 8
+  reclaim-limit: 32
+  default-ttl: 15m
+  max-ttl: 24h
+  insecure: false
+  auth:
+    client-token: ${TILL_CLIENT_TOKEN:}
+    admin-token: ${TILL_ADMIN_TOKEN:}
+  sweeper:
+    enabled: true
+    interval: 5s
+    batch: 200
+  outbox:
+    enabled: true
+    interval: 1s
+    batch: 200
+
+springdoc:
+  swagger-ui:
+    path: /docs
+
+logging:
+  level:
+    io.till: INFO
