@@ -181,7 +181,7 @@ class JdbcLedgerTest {
                 List.of("adjusted:d1", "reserved:r1", "committed:r1"),
                 pending.stream().map(OutboxEntry::dedupeKey).toList());
 
-        ledger.markPublished(pending.stream().map(OutboxEntry::sequence).limit(2).toList());
+        ledger.markPublished(pending.stream().map(OutboxEntry::sequence).limit(2).toList(), Instant.now());
         assertEquals(List.of("committed:r1"), ledger.unpublished(10).stream().map(OutboxEntry::dedupeKey).toList());
     }
 

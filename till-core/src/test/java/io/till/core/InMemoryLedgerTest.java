@@ -8,11 +8,13 @@ import static io.till.core.Fixtures.rid;
 import static io.till.core.Fixtures.sku;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.till.core.mem.InMemoryLedger;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
@@ -112,7 +114,7 @@ class InMemoryLedgerTest {
                 List.of("adjusted:d1", "reserved:r1", "committed:r1"),
                 pending.stream().map(OutboxEntry::dedupeKey).toList());
 
-        ledger.markPublished(List.of(1L, 2L));
+        ledger.markPublished(List.of(1L, 2L), T0);
         assertEquals(List.of(3L), ledger.unpublished(100).stream().map(OutboxEntry::sequence).toList());
     }
 
@@ -186,5 +188,62 @@ class InMemoryLedgerTest {
                         0);
 
         assertTrue(snapshot.reclaimable().isEmpty());
+    }
+
+    @Test
+    @DisplayName("retention keeps what it must and deletes what it may")
+    void retention() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.reserve(key("k1"), rid("r1"), List.of(line("widget", 1)), TTL);
+        till.release(key("k2"), rid("r1"));
+        Instant later = T0.plus(Duration.ofDays(400));
+
+        // An unpublished event is a change nothing downstream has heard about. No window makes
+        // deleting one acceptable, so the cutoff is ignored rather than applied.
+        assertEquals(0, ledger.pruneOutbox(later, 100));
+        assertEquals(3, ledger.allEvents().size());
+
+        ledger.markPublished(List.of(1L, 2L), T0);
+        assertEquals(2, ledger.pruneOutbox(later, 100));
+        assertEquals(1, ledger.allEvents().size(), "the third was never published");
+    }
+
+    @Test
+    @DisplayName("an idempotency key is kept while the event named after it is still queued")
+    void retentionKeepsAKeyItsEventNeeds() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        Instant later = T0.plus(Duration.ofDays(400));
+
+        // An adjustment's event is "adjusted:d1", so that name is unique only while the record
+        // exists. Forgetting the key here would let a re-execution of the same command collide with
+        // its own leftover event, and the caller would be told 503 for good. This is the in-memory
+        // half of a rule the JDBC ledger enforces in SQL; a caller embedding till with no database
+        // gets the same guarantee or none.
+        assertEquals(0, ledger.forgetIdempotency(later, 100));
+
+        ledger.markPublished(List.of(1L), T0);
+        ledger.pruneOutbox(later, 100);
+
+        assertEquals(1, ledger.forgetIdempotency(later, 100), "now the event has gone, the key may");
+    }
+
+    @Test
+    @DisplayName("retention never deletes a held reservation, whatever it is asked")
+    void retentionNeverDeletesAHeldReservation() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.reserve(key("k1"), rid("r1"), List.of(line("widget", 4)), TTL);
+
+        // Its four units are counted in reserved. Deleting the row without lowering that counter
+        // leaks the stock permanently, so nothing here can be asked to do it.
+        assertEquals(0, ledger.pruneReservations(T0.plus(Duration.ofDays(400)), 100));
+        assertEquals(4, ledger.stock(sku("widget")).orElseThrow().reserved());
+    }
+
+    @Test
+    @DisplayName("a batch size below one is refused rather than treated as no limit")
+    void retentionValidatesItsBatchSize() {
+        assertThrows(IllegalArgumentException.class, () -> ledger.pruneOutbox(T0, 0));
+        assertThrows(IllegalArgumentException.class, () -> ledger.forgetIdempotency(T0, -1));
+        assertThrows(IllegalArgumentException.class, () -> ledger.pruneReservations(T0, 0));
     }
 }
