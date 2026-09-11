@@ -135,9 +135,28 @@ public sealed interface Event {
             IdempotencyKey key, Sku sku, long delta, long onHand, long reserved, Instant occurredAt)
             implements Event {
 
+        /** The prefix every adjustment's deduplication key starts with. */
+        public static final String DEDUPE_PREFIX = "adjusted:";
+
         @Override
         public String dedupeKey() {
-            return "adjusted:" + key;
+            return dedupeKeyFor(key);
+        }
+
+        /**
+         * The deduplication key an adjustment under this idempotency key would have.
+         *
+         * <p>Exposed because retention has to ask. An adjustment has no identity of its own — no
+         * reservation, no row of its own — so its key is borrowed from the command's, and that key
+         * is unique only for as long as the ledger remembers it. Forgetting the idempotency record
+         * while this event is still in the outbox would let a later, genuinely different adjustment
+         * produce the same key.
+         *
+         * @param key the adjustment's idempotency key
+         * @return the deduplication key
+         */
+        public static String dedupeKeyFor(IdempotencyKey key) {
+            return DEDUPE_PREFIX + key;
         }
     }
 }

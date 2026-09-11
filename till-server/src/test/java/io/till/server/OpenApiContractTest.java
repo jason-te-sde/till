@@ -3,6 +3,9 @@ package io.till.server;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.till.core.IdempotencyKey;
+import io.till.core.Sku;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -11,6 +14,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -84,7 +88,7 @@ class OpenApiContractTest extends ApiTestBase {
         // Named individually rather than counted, so that removing one is a failure here instead of
         // a blank panel in the console.
         for (String path :
-                java.util.List.of(
+                List.of(
                         "/v1/stock",
                         "/v1/stock/{sku}",
                         "/v1/stock/{sku}/adjust",
@@ -95,6 +99,56 @@ class OpenApiContractTest extends ApiTestBase {
                         "/v1/outbox")) {
             assertTrue(paths.containsKey(path), path + " is not in the OpenAPI document");
         }
+    }
+
+    @Test
+    @DisplayName("the declared Problem is the problem this service actually sends")
+    @SuppressWarnings("unchecked")
+    void theProblemSchemaMatchesARealFailure() throws IOException, InterruptedException {
+        Map<String, Object> components = (Map<String, Object>) parse(fetchSpec()).get("components");
+        Map<String, Object> schemas = (Map<String, Object>) components.get("schemas");
+        Map<String, Object> problem = (Map<String, Object>) schemas.get("Problem");
+        assertTrue(problem != null, "the contract declares no Problem schema");
+
+        // A real refusal, read off the wire rather than through the client. Api.Problem is a second
+        // declaration of a shape whose first declaration is the ProblemDetail that Problems
+        // assembles, and two declarations of one shape drift. This is the thing that notices.
+        admin().adjust(IdempotencyKey.of("d1"), Sku.of("widget"), 2);
+        HttpResponse<String> refused =
+                HttpClient.newHttpClient()
+                        .send(
+                                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/v1/reservations"))
+                                        .header("Authorization", "Bearer " + CLIENT_TOKEN)
+                                        .header("Idempotency-Key", "c1")
+                                        .header("Content-Type", "application/json")
+                                        .POST(
+                                                HttpRequest.BodyPublishers.ofString(
+                                                        "{\"lines\":[{\"sku\":\"widget\",\"quantity\":5}]}"))
+                                        .build(),
+                                HttpResponse.BodyHandlers.ofString());
+        assertEquals(409, refused.statusCode(), refused.body());
+
+        Map<String, Object> declared = (Map<String, Object>) problem.get("properties");
+        // Every field on the wire is declared. A body carrying something the contract does not
+        // mention is how a client ends up parsing by hand, which is what the contract exists to stop.
+        Map<String, Object> sent = parse(refused.body());
+        for (String field : sent.keySet()) {
+            assertTrue(declared.containsKey(field), "the service sends " + field + ", which the contract omits");
+        }
+        // And the other direction, which is the one that catches an over-promise: every field the
+        // contract marks required is really on the wire. `type` is how this earns its keep — RFC 9457
+        // makes `about:blank` the default and Spring omits the field rather than repeating it, so
+        // declaring it required would have typed a generated client's `problem.type` as a string that
+        // is in fact undefined.
+        List<?> required = (List<?>) problem.get("required");
+        for (Object field : required) {
+            assertTrue(sent.containsKey(field), "the contract requires " + field + ", which is not in the body");
+        }
+        // And the fields a client branches on are really there.
+        for (String field : List.of("status", "detail", "code", "shortfalls")) {
+            assertTrue(sent.containsKey(field), "a refusal for stock did not carry " + field);
+        }
+        assertEquals("INSUFFICIENT_STOCK", sent.get("code"));
     }
 
     private String fetchSpec() throws IOException, InterruptedException {

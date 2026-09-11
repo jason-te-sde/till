@@ -4,6 +4,8 @@ import io.till.core.Outcome;
 import io.till.core.RejectionCode;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * Turns a rejection into an HTTP answer.
@@ -23,9 +25,15 @@ import org.springframework.http.ProblemDetail;
  *       likely succeed in a moment. A 500 there would page somebody about contention.
  * </ul>
  *
- * <p>Bodies are RFC 9457 problem details with two extensions: {@code code}, the {@link RejectionCode}
- * so a client can branch on something stable rather than on prose, and {@code shortfalls}, so a
- * client refused for stock can offer a smaller basket without another round trip.
+ * <p>Bodies are RFC 9457 problem details with three extensions:
+ *
+ * <ul>
+ *   <li>{@code code} — the {@link RejectionCode}, so a client can branch on something stable rather
+ *       than on prose.
+ *   <li>{@code shortfalls} — so a client refused for stock can offer a smaller basket without
+ *       another round trip.
+ *   <li>{@code requestId} — so a screenshot of an error is enough to find the log lines.
+ * </ul>
  */
 final class Problems {
 
@@ -44,7 +52,7 @@ final class Problems {
             problem.setProperty(
                     "shortfalls",
                     rejected.shortfalls().stream()
-                            .map(s -> new Shortfall(s.sku().value(), s.requested(), s.available()))
+                            .map(s -> new Api.Shortfall(s.sku().value(), s.requested(), s.available()))
                             .toList());
         }
         return problem;
@@ -61,7 +69,25 @@ final class Problems {
     static ProblemDetail of(HttpStatus status, String title, String detail) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
         problem.setTitle(title);
+        withRequestId(problem);
         return problem;
+    }
+
+    /**
+     * Attaches the request's identifier, if there is one.
+     *
+     * <p>So that a screenshot of an error is enough to find the log lines. Read from the request
+     * attribute rather than the MDC because an exception handler may run on a different thread from
+     * the one that set it.
+     */
+    private static void withRequestId(ProblemDetail problem) {
+        if (RequestContextHolder.getRequestAttributes()
+                instanceof ServletRequestAttributes attributes) {
+            String id = RequestId.of(attributes.getRequest());
+            if (id != null) {
+                problem.setProperty("requestId", id);
+            }
+        }
     }
 
     /**
@@ -91,13 +117,4 @@ final class Problems {
             case IDEMPOTENCY_KEY_REUSED -> "Idempotency key reused";
         };
     }
-
-    /**
-     * How far short one SKU fell, in the problem body.
-     *
-     * @param sku which SKU
-     * @param requested units asked for
-     * @param available units that could have been taken
-     */
-    record Shortfall(String sku, long requested, long available) {}
 }

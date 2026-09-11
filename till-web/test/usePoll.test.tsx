@@ -1,5 +1,5 @@
-import { renderHook, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { usePoll } from '../src/components/usePoll'
 
 /**
@@ -180,6 +180,65 @@ describe('polling', () => {
 
     result.current.refresh()
 
+    await waitFor(() => {
+      expect(read).toHaveBeenCalledTimes(2)
+    })
+    unmount()
+  })
+})
+
+/**
+ * jsdom reports `visible` and has no way to change it, so the property is redefined and the event
+ * dispatched by hand — which is exactly what the browser does, in the same order.
+ */
+function setVisibility(state: DocumentVisibilityState) {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => state,
+  })
+  document.dispatchEvent(new Event('visibilitychange'))
+}
+
+describe('polling a tab nobody is looking at', () => {
+  afterEach(() => {
+    setVisibility('visible')
+  })
+
+  it('stops while the tab is hidden', async () => {
+    const read = vi.fn<() => Promise<string>>().mockResolvedValue('x')
+    const { unmount } = renderHook(() => usePoll(read, INTERVAL))
+    await waitFor(() => {
+      expect(read).toHaveBeenCalledTimes(1)
+    })
+
+    act(() => {
+      setVisibility('hidden')
+    })
+    const whileHidden = read.mock.calls.length
+    await sleep(INTERVAL * 6)
+
+    // Six intervals, no requests. A console left open overnight is otherwise thirty thousand of
+    // them, and nobody read a single answer.
+    expect(read).toHaveBeenCalledTimes(whileHidden)
+    unmount()
+  })
+
+  it('catches up the moment the tab comes back', async () => {
+    const read = vi.fn<() => Promise<string>>().mockResolvedValue('x')
+    const { unmount } = renderHook(() => usePoll(read, 60_000))
+    await waitFor(() => {
+      expect(read).toHaveBeenCalledTimes(1)
+    })
+    act(() => {
+      setVisibility('hidden')
+    })
+
+    act(() => {
+      setVisibility('visible')
+    })
+
+    // Not on the next interval — now. The first thing somebody does on returning is read the
+    // numbers, so that is the worst moment to be showing them the old ones.
     await waitFor(() => {
       expect(read).toHaveBeenCalledTimes(2)
     })

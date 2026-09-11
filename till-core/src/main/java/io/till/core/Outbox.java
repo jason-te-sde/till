@@ -1,5 +1,6 @@
 package io.till.core;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -42,7 +43,13 @@ public interface Outbox {
      * <p>Called after delivery, which is what makes delivery at least once rather than at most once:
      * a crash between the two repeats the send, and a crash before the send repeats it as well.
      *
+     * <p>The instant is supplied rather than taken from the database, so that every timestamp in the
+     * ledger comes from the same clock. Retention decides what to delete by comparing these against
+     * a clock reading, and a comparison across two clocks is one nobody can reason about — or write
+     * a test for.
+     *
      * @param sequences the sequences to mark
+     * @param at when they were delivered
      */
-    void markPublished(List<Long> sequences);
+    void markPublished(List<Long> sequences, Instant at);
 }

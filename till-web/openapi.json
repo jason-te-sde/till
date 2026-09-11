@@ -74,6 +74,47 @@
         "required" : [ "backlog", "items" ],
         "type" : "object"
       },
+      "Problem" : {
+        "description" : "An RFC 9457 problem detail.",
+        "properties" : {
+          "code" : {
+            "enum" : [ "INSUFFICIENT_STOCK", "UNKNOWN_SKU", "RESERVATION_NOT_FOUND", "RESERVATION_EXPIRED", "ALREADY_COMMITTED", "ALREADY_RELEASED", "RESERVATION_ID_IN_USE", "IDEMPOTENCY_KEY_REUSED", "CONTENTION", "UNAUTHORIZED", "FORBIDDEN" ],
+            "example" : "INSUFFICIENT_STOCK",
+            "type" : "string"
+          },
+          "detail" : {
+            "example" : "widget: asked for 5, 2 available",
+            "type" : "string"
+          },
+          "instance" : {
+            "type" : "string"
+          },
+          "requestId" : {
+            "example" : "0f9c1a7e-1f3a-4a2b-9a1e-2c4d6e8f0a11",
+            "type" : "string"
+          },
+          "shortfalls" : {
+            "items" : {
+              "$ref" : "#/components/schemas/Shortfall"
+            },
+            "type" : "array"
+          },
+          "status" : {
+            "example" : 409,
+            "format" : "int32",
+            "type" : "integer"
+          },
+          "title" : {
+            "example" : "Not enough stock",
+            "type" : "string"
+          },
+          "type" : {
+            "example" : "about:blank",
+            "type" : "string"
+          }
+        },
+        "required" : [ "detail", "status", "title" ]
+      },
       "Released" : {
         "properties" : {
           "id" : {
@@ -169,6 +210,22 @@
         "required" : [ "expiresAt", "id", "lines" ],
         "type" : "object"
       },
+      "Shortfall" : {
+        "properties" : {
+          "available" : {
+            "format" : "int64",
+            "type" : "integer"
+          },
+          "requested" : {
+            "format" : "int64",
+            "type" : "integer"
+          },
+          "sku" : {
+            "type" : "string"
+          }
+        },
+        "required" : [ "available", "requested", "sku" ]
+      },
       "Stock" : {
         "properties" : {
           "available" : {
@@ -250,11 +307,31 @@
             },
             "description" : "the backlog and its oldest entries"
           },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
+          },
           "403" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/OutboxPage"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -296,6 +373,26 @@
               }
             },
             "description" : "OK"
+          },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
           }
         },
         "summary" : "List reservations, newest first",
@@ -333,11 +430,31 @@
             },
             "description" : "the hold was taken, or already existed under this key"
           },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
+          },
           "404" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Reserved"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -345,9 +462,9 @@
           },
           "409" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Reserved"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -355,9 +472,9 @@
           },
           "422" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Reserved"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -365,9 +482,9 @@
           },
           "503" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Reserved"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -400,11 +517,31 @@
             },
             "description" : "the reservation"
           },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
+          },
           "404" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Reservation"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -444,11 +581,31 @@
             },
             "description" : "on-hand and reserved both went down"
           },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
+          },
           "404" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Committed"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -456,9 +613,9 @@
           },
           "409" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Committed"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -466,9 +623,9 @@
           },
           "410" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Committed"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -508,11 +665,31 @@
             },
             "description" : "the hold is gone, whether it went now or earlier"
           },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
+          },
           "404" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Released"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -520,9 +697,9 @@
           },
           "409" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Released"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -563,6 +740,26 @@
               }
             },
             "description" : "OK"
+          },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
           }
         },
         "summary" : "List stock levels",
@@ -591,11 +788,31 @@
             },
             "description" : "the level"
           },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
+          },
           "404" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Stock"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -645,11 +862,31 @@
             },
             "description" : "the new level"
           },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "the request could not be read, or a value in it was not valid"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
+          },
           "403" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Stock"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -657,9 +894,9 @@
           },
           "404" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Stock"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },
@@ -667,9 +904,9 @@
           },
           "409" : {
             "content" : {
-              "*/*" : {
+              "application/problem+json" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/Stock"
+                  "$ref" : "#/components/schemas/Problem"
                 }
               }
             },

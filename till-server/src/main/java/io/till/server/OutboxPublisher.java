@@ -1,11 +1,10 @@
 package io.till.server;
 
-import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.till.core.OutboxEntry;
 import io.till.jdbc.JdbcLedger;
+import java.time.Clock;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -27,8 +26,8 @@ import org.springframework.stereotype.Component;
  * Coordinating them instead would buy exactly-once at the cost of a lock on the hot path, and the
  * consumer needs to be idempotent anyway.
  *
- * <p>Backlog is exported as a gauge. It is the number to alert on: a backlog that grows means
- * everything downstream is working from a picture of stock that is falling further behind.
+ * <p>The backlog gauge is deliberately <b>not</b> here. It reports on this component, so keeping it
+ * here made it accurate only while this component was working — see {@link TillMetrics}.
  */
 @Component
 @ConditionalOnProperty(prefix = "till.outbox", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -39,8 +38,8 @@ class OutboxPublisher {
     private final JdbcLedger ledger;
     private final EventPublisher publisher;
     private final TillProperties properties;
+    private final Clock clock;
     private final MeterRegistry registry;
-    private final AtomicLong backlog = new AtomicLong();
 
     /**
      * @param ledger the outbox to drain
@@ -49,20 +48,20 @@ class OutboxPublisher {
      *     an optional dependency so that the fallback does not depend on the order beans happen to
      *     be scanned in
      * @param properties the batch size and interval
-     * @param registry where the backlog gauge and the counters go
+     * @param clock stamps the delivery instant, so that retention compares two readings of one clock
+     * @param registry where the counters go
      */
     OutboxPublisher(
             JdbcLedger ledger,
             ObjectProvider<EventPublisher> publishers,
             TillProperties properties,
+            Clock clock,
             MeterRegistry registry) {
         this.ledger = ledger;
         this.publisher = publishers.getIfAvailable(LoggingEventPublisher::new);
         this.properties = properties;
+        this.clock = clock;
         this.registry = registry;
-        Gauge.builder("till.outbox.backlog", backlog, AtomicLong::get)
-                .description("events written but not yet published")
-                .register(registry);
     }
 
     /**
@@ -76,7 +75,6 @@ class OutboxPublisher {
     void drain() {
         List<OutboxEntry> batch = ledger.unpublished(properties.outbox().batch());
         if (batch.isEmpty()) {
-            backlog.set(0);
             return;
         }
         try {
@@ -86,11 +84,9 @@ class OutboxPublisher {
             // response to a broker that is down, and it is why delivery is at least once.
             LOG.warn("publishing {} events failed; they will be offered again", batch.size(), e);
             registry.counter("till.outbox.failures").increment();
-            backlog.set(ledger.backlog());
             return;
         }
-        ledger.markPublished(batch.stream().map(OutboxEntry::sequence).toList());
+        ledger.markPublished(batch.stream().map(OutboxEntry::sequence).toList(), clock.instant());
         registry.counter("till.outbox.published").increment(batch.size());
-        backlog.set(ledger.backlog());
     }
 }

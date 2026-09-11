@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 export interface Polled<T> {
   readonly data: T | undefined
@@ -20,6 +20,10 @@ export interface Polled<T> {
  *   component unmounts, or after a newer request, cannot overwrite what is on screen.
  * - **It reads again the moment the query changes.** Waiting out the interval means a filter button
  *   that appears to do nothing for two seconds, which is long enough for somebody to click it twice.
+ * - **It stops while the tab is hidden, and catches up the instant it comes back.** A console left
+ *   open in a background tab overnight is otherwise thirty thousand requests nobody read the answer
+ *   to — and the first thing an operator does on returning is look at the screen, so the stale
+ *   numbers sitting there are the worst possible moment to be showing them.
  *
  * `read` must be memoised — a `useCallback` whose dependencies are the query. Its identity is the
  * signal that the question changed.
@@ -29,6 +33,7 @@ export function usePoll<T>(
   intervalMs: number,
   enabled = true,
 ): Polled<T> {
+  const visible = useVisible()
   const [data, setData] = useState<T | undefined>(undefined)
   const [error, setError] = useState<unknown>(undefined)
   const [loading, setLoading] = useState(false)
@@ -80,23 +85,50 @@ export function usePoll<T>(
     }
   }, [])
 
-  // On mount, and again whenever the question changes. Keeping this separate from the timer means a
-  // filter change does not also restart the interval, and the interval does not also re-read.
+  // On mount, again whenever the question changes, and again when the tab comes back — at which
+  // point what is on screen is as old as the time spent away. Keeping this separate from the timer
+  // means a filter change does not also restart the interval, and the interval does not also
+  // re-read. A tab opened in the background reads when it is first looked at, which is the same
+  // effect and one request cheaper.
   useEffect(() => {
-    if (enabled) {
+    if (enabled && visible) {
       run()
     }
-  }, [enabled, read, run])
+  }, [enabled, read, run, visible])
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || !visible) {
       return
     }
     const timer = setInterval(run, intervalMs)
     return () => {
       clearInterval(timer)
     }
-  }, [enabled, intervalMs, run])
+  }, [enabled, intervalMs, run, visible])
 
   return { data, error, loading, refresh: run }
 }
+
+/**
+ * Whether the tab is in front.
+ *
+ * `useSyncExternalStore` rather than state plus an effect, because that is exactly what this is: a
+ * value that lives outside React and changes without React's knowledge. It also gets the
+ * server-render case right for free, which matters only in that the alternative gets it wrong
+ * silently.
+ */
+function useVisible(): boolean {
+  return useSyncExternalStore(subscribeToVisibility, isVisible, alwaysVisible)
+}
+
+function subscribeToVisibility(onChange: () => void): () => void {
+  document.addEventListener('visibilitychange', onChange)
+  return () => {
+    document.removeEventListener('visibilitychange', onChange)
+  }
+}
+
+const isVisible = () => document.visibilityState !== 'hidden'
+
+/** There is no tab to hide during a server render. */
+const alwaysVisible = () => true

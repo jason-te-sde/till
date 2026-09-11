@@ -57,7 +57,7 @@ class ProblemsTest {
         assertEquals("not enough stock for widget", problem.getDetail());
         assertEquals("INSUFFICIENT_STOCK", problem.getProperties().get("code"));
         assertEquals(
-                List.of(new Problems.Shortfall("widget", 5, 2)), problem.getProperties().get("shortfalls"));
+                List.of(new Api.Shortfall("widget", 5, 2)), problem.getProperties().get("shortfalls"));
     }
 
     @Test

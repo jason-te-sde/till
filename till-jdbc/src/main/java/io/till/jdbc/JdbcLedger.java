@@ -13,6 +13,7 @@ import io.till.core.Outbox;
 import io.till.core.OutboxEntry;
 import io.till.core.OutcomeRecord;
 import io.till.core.Reservation;
+import io.till.core.Retention;
 import io.till.core.ReservationId;
 import io.till.core.ReservationState;
 import io.till.core.Sku;
@@ -67,7 +68,7 @@ import javax.sql.DataSource;
  *
  * <p>Requires the schema in {@code db/migration/V1__till_schema.sql}; see {@link JdbcSchema}.
  */
-public final class JdbcLedger implements Ledger, LedgerInspector, Outbox {
+public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retention {
 
     private static final String SELECT_RECORD =
             "select idem_key, fingerprint, outcome, recorded_at from till_idempotency where idem_key = ?";
@@ -131,7 +132,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox {
                     + "order by sequence limit ?";
 
     private static final String MARK_PUBLISHED =
-            "update till_outbox set published_at = now() where sequence = any(?) and published_at is null";
+            "update till_outbox set published_at = ? where sequence = any(?) and published_at is null";
 
     private static final String LIST_STOCK =
             "select sku, on_hand, reserved, version from till_stock "
@@ -145,6 +146,44 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox {
     private static final String LIST_RESERVATIONS =
             "select id, idem_key, state, created_at, expires_at, version from till_reservation "
                     + "where state = coalesce(?, state) order by created_at desc, id limit ?";
+
+    /**
+     * Bounded deletes, expressed as a self-join on the primary key.
+     *
+     * <p>`delete ... where id in (select ... limit ?)` rather than `delete ... limit ?`, which
+     * PostgreSQL does not support. The subquery is ordered so the oldest go first and a run that is
+     * interrupted has still made progress from the right end.
+     *
+     * <p>This one additionally refuses to forget a key while an event named after it is still in
+     * the outbox.
+     *
+     * <p>An adjustment's deduplication key is {@code adjusted:<idempotency-key>}, because an
+     * adjustment has no identity of its own. That key is unique only for as long as the ledger
+     * remembers the idempotency key: forget the record while the event survives, and the next
+     * execution of that command writes an event whose key already exists — the insert conflicts,
+     * the decision cannot be applied, and the caller is told 503 forever.
+     *
+     * <p>Found by writing the retention test, which is exactly what it looked like: a command that
+     * had worked an hour earlier became permanently impossible.
+     */
+    private static final String FORGET_IDEMPOTENCY =
+            "delete from till_idempotency where idem_key in ("
+                    + "  select i.idem_key from till_idempotency i where i.recorded_at < ? "
+                    + "    and not exists (select 1 from till_outbox o where o.dedupe_key = ? || i.idem_key) "
+                    + "  order by i.recorded_at limit ?)";
+
+    private static final String PRUNE_OUTBOX =
+            "delete from till_outbox where sequence in ("
+                    + "  select sequence from till_outbox "
+                    + "  where published_at is not null and published_at < ? "
+                    + "  order by sequence limit ?)";
+
+    /** Lines go with it: the foreign key cascades. */
+    private static final String PRUNE_RESERVATIONS =
+            "delete from till_reservation where id in ("
+                    + "  select id from till_reservation "
+                    + "  where state <> 'HELD' and expires_at < ? "
+                    + "  order by expires_at limit ?)";
 
     /** PostgreSQL's SQLState for a check constraint violation, which is a bug and not contention. */
     private static final String CHECK_VIOLATION = "23514";
@@ -495,16 +534,62 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox {
     }
 
     @Override
-    public void markPublished(List<Long> sequences) {
+    public void markPublished(List<Long> sequences, Instant at) {
         if (sequences.isEmpty()) {
             return;
         }
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(MARK_PUBLISHED)) {
-            statement.setArray(1, connection.createArrayOf("bigint", sequences.toArray()));
+            statement.setObject(1, offset(at));
+            statement.setArray(2, connection.createArrayOf("bigint", sequences.toArray()));
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new LedgerException("marking outbox rows published", e);
+        }
+    }
+
+    @Override
+    public int forgetIdempotency(Instant before, int limit) {
+        requireBatch(limit);
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(FORGET_IDEMPOTENCY)) {
+            statement.setObject(1, offset(before));
+            // The prefix comes from the kernel rather than being spelled out here, so that changing
+            // the key's shape breaks a compile instead of quietly breaking this guard.
+            statement.setString(2, Event.StockAdjusted.DEDUPE_PREFIX);
+            statement.setInt(3, limit);
+            return statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new LedgerException("deleting idempotency records older than " + before, e);
+        }
+    }
+
+    @Override
+    public int pruneOutbox(Instant publishedBefore, int limit) {
+        return delete(PRUNE_OUTBOX, publishedBefore, limit, "published outbox rows");
+    }
+
+    @Override
+    public int pruneReservations(Instant expiredBefore, int limit) {
+        return delete(PRUNE_RESERVATIONS, expiredBefore, limit, "finished reservations");
+    }
+
+    /** The contract {@link Retention} states: zero means "delete nothing", never "no limit". */
+    private static void requireBatch(int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be at least 1, got " + limit);
+        }
+    }
+
+    private int delete(String sql, Instant before, int limit, String what) {
+        requireBatch(limit);
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, offset(before));
+            statement.setInt(2, limit);
+            return statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new LedgerException("deleting " + what + " older than " + before, e);
         }
     }
 

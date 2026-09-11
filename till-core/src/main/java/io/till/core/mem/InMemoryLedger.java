@@ -12,14 +12,16 @@ import io.till.core.Outbox;
 import io.till.core.OutboxEntry;
 import io.till.core.OutcomeRecord;
 import io.till.core.Reservation;
-import io.till.core.ReservationState;
 import io.till.core.ReservationId;
+import io.till.core.ReservationState;
+import io.till.core.Retention;
 import io.till.core.Sku;
 import io.till.core.Snapshot;
 import io.till.core.StockItem;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -54,7 +56,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * no bound on the outbox, because this is for tests and for single-process embedding. A long-running
  * service wants the PostgreSQL adapter and the retention settings that come with it.
  */
-public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox {
+public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Retention {
 
     private final ReentrantLock lock = new ReentrantLock();
 
@@ -63,6 +65,7 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox {
     private final Map<IdempotencyKey, OutcomeRecord> records = new LinkedHashMap<>();
     private final TreeMap<Long, OutboxEntry> outbox = new TreeMap<>();
     private final Set<Long> published = new LinkedHashSet<>();
+    private final Map<Long, Instant> publishedAt = new LinkedHashMap<>();
 
     private long nextSequence = 1;
     private long applied;
@@ -223,10 +226,86 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox {
     }
 
     @Override
-    public void markPublished(List<Long> sequences) {
+    public void markPublished(List<Long> sequences, Instant at) {
         lock.lock();
         try {
+            sequences.forEach(sequence -> publishedAt.put(sequence, at));
             published.addAll(sequences);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public int forgetIdempotency(Instant before, int limit) {
+        requireBatch(limit);
+        lock.lock();
+        try {
+            // Selected and removed under one lock. Streaming the map outside it and removing inside
+            // would read a collection another thread is writing, which is the bug this shape exists
+            // to avoid rather than a style preference.
+            // An adjustment's event is named after its idempotency key, so forgetting the key while
+            // the event survives would let a later adjustment produce a key that already exists.
+            Set<String> live = new HashSet<>();
+            outbox.values().forEach(entry -> live.add(entry.dedupeKey()));
+            List<IdempotencyKey> going =
+                    records.values().stream()
+                            .filter(record -> record.recordedAt().isBefore(before))
+                            .filter(record -> !live.contains(Event.StockAdjusted.dedupeKeyFor(record.key())))
+                            .sorted(Comparator.comparing(OutcomeRecord::recordedAt))
+                            .map(OutcomeRecord::key)
+                            .limit(limit)
+                            .toList();
+            going.forEach(records::remove);
+            return going.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public int pruneOutbox(Instant publishedBefore, int limit) {
+        requireBatch(limit);
+        lock.lock();
+        try {
+            List<Long> going =
+                    outbox.values().stream()
+                            .filter(entry -> published.contains(entry.sequence()))
+                            .filter(
+                                    entry -> {
+                                        Instant at = publishedAt.get(entry.sequence());
+                                        return at != null && at.isBefore(publishedBefore);
+                                    })
+                            .map(OutboxEntry::sequence)
+                            .limit(limit)
+                            .toList();
+            going.forEach(
+                    sequence -> {
+                        published.remove(sequence);
+                        publishedAt.remove(sequence);
+                        outbox.remove(sequence);
+                    });
+            return going.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public int pruneReservations(Instant expiredBefore, int limit) {
+        requireBatch(limit);
+        lock.lock();
+        try {
+            List<ReservationId> going =
+                    reservations.values().stream()
+                            .filter(reservation -> reservation.state().isTerminal())
+                            .filter(reservation -> reservation.expiresAt().isBefore(expiredBefore))
+                            .sorted(Comparator.comparing(Reservation::expiresAt))
+                            .map(Reservation::id)
+                            .limit(limit)
+                            .toList();
+            going.forEach(reservations::remove);
+            return going.size();
         } finally {
             lock.unlock();
         }
@@ -384,6 +463,18 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox {
             return conflicts;
         } finally {
             lock.unlock();
+        }
+    }
+
+    /**
+     * The contract {@link Retention} states, kept here too.
+     *
+     * <p>Not because a caller is likely to pass zero on purpose, but because one that computed a
+     * batch size and got it wrong should find out here rather than in the number of rows left.
+     */
+    private static void requireBatch(int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be at least 1, got " + limit);
         }
     }
 }

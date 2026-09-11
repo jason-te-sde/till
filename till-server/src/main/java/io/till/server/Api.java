@@ -249,4 +249,71 @@ final class Api {
      */
     @Schema(name = "AdjustRequest")
     record AdjustRequest(@NotNull Long delta) {}
+
+    /**
+     * What every failure looks like.
+     *
+     * <p>Declared as a record so that it appears in the published contract and a generated client
+     * gets a type for it, but <b>never instantiated</b>: the thing actually serialised is Spring's
+     * {@code ProblemDetail}, assembled in {@link Problems}. Two declarations of one shape is a thing
+     * that can drift, so {@code OpenApiContractTest} sends a real failing request and checks the body
+     * against this.
+     *
+     * <p>RFC 9457, plus three extensions. {@code code} exists because the interesting distinctions
+     * live <i>inside</i> one status — a 409 is "somebody got there first" or "you already paid for
+     * this", and a client that can only see {@code 409} shows the same sentence for both.
+     *
+     * @param type {@code about:blank} when present, and <b>absent</b> from most bodies: RFC 9457
+     *     makes {@code about:blank} the default and Spring omits a field that would only repeat it.
+     *     So it is declared optional, which is a statement about the wire and not a preference
+     * @param title a short name for the class of failure, stable enough to log but meant for people
+     * @param status the HTTP status, repeated in the body so a stored problem is self-contained
+     * @param detail one sentence naming the specific thing that went wrong
+     * @param instance absent here
+     * @param code the machine-readable reason, when there is one. Mostly a {@code RejectionCode},
+     *     plus {@code CONTENTION} from the retry loop and {@code UNAUTHORIZED}/{@code FORBIDDEN} from
+     *     the authentication filter, which runs before any of the kernel's vocabulary applies
+     * @param requestId the {@code X-Request-Id} of the request that failed, so a screenshot of an
+     *     error is enough to find the log lines
+     * @param shortfalls present only on {@code INSUFFICIENT_STOCK}: how far short each SKU fell, so a
+     *     client can offer a smaller basket without another round trip
+     */
+    @Schema(name = "Problem", description = "An RFC 9457 problem detail.")
+    record Problem(
+            @Schema(example = "about:blank") String type,
+            @Schema(requiredMode = REQUIRED, example = "Not enough stock") String title,
+            @Schema(requiredMode = REQUIRED, example = "409") int status,
+            @Schema(requiredMode = REQUIRED, example = "widget: asked for 5, 2 available") String detail,
+            String instance,
+            @Schema(
+                            example = "INSUFFICIENT_STOCK",
+                            allowableValues = {
+                                "INSUFFICIENT_STOCK",
+                                "UNKNOWN_SKU",
+                                "RESERVATION_NOT_FOUND",
+                                "RESERVATION_EXPIRED",
+                                "ALREADY_COMMITTED",
+                                "ALREADY_RELEASED",
+                                "RESERVATION_ID_IN_USE",
+                                "IDEMPOTENCY_KEY_REUSED",
+                                "CONTENTION",
+                                "UNAUTHORIZED",
+                                "FORBIDDEN"
+                            })
+                    String code,
+            @Schema(example = "0f9c1a7e-1f3a-4a2b-9a1e-2c4d6e8f0a11") String requestId,
+            List<Shortfall> shortfalls) {}
+
+    /**
+     * How far short one SKU fell.
+     *
+     * @param sku which SKU
+     * @param requested units asked for
+     * @param available units that could have been taken
+     */
+    @Schema(name = "Shortfall")
+    record Shortfall(
+            @Schema(requiredMode = REQUIRED) String sku,
+            @Schema(requiredMode = REQUIRED) long requested,
+            @Schema(requiredMode = REQUIRED) long available) {}
 }

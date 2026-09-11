@@ -9,6 +9,36 @@ explicitly not: it is a testing tool and it will change.
 
 ## [Unreleased]
 
+### Added
+
+- **Retention runs itself.** `Retention` is a port on the ledger with bounded-batch deletes for the
+  three tables that grow; `RetentionSweeper` runs them hourly. The idempotency window defaults to
+  seven days — the setting to raise rather than lower — and reservations default to *keep forever*.
+- **A request id on every request.** `X-Request-Id` is accepted, minted when absent, echoed on the
+  response, put in the logging pattern, and carried in the body of every error.
+- **RFC 9457 problems are in the contract.** Every non-2xx response now declares a `Problem` schema
+  instead of inheriting the success type, and `OpenApiContractTest` checks that declaration against a
+  real refusal taken off the wire.
+- Authentication denials carry `code: UNAUTHORIZED` or `code: FORBIDDEN`, because by status alone a
+  caller cannot tell "sign in" from "ask for a different token".
+- `till_auth_denied_total{reason}` and `till_retention_deleted_total{table}`;
+  `till_command_seconds` is published as a histogram, so a quantile across instances is a real one.
+- The console: an error boundary inside the shell, so a panel that throws leaves the navigation
+  usable; polling stops while the tab is hidden and catches up the moment it comes back; a favicon.
+
+### Fixed
+
+- **Pruning an idempotency record while its event was still in the outbox could wedge that command
+  permanently at 503.** An adjustment's event is named after the key; forgetting the key early let a
+  re-execution collide with its own leftover event. The delete now refuses while the event is
+  present.
+- **`till_outbox_backlog` reported correctly only while the publisher was working.** It is now read
+  through to the table on scrape, so it is right when the publisher is the broken thing.
+- **Two administrative listings were sequential scans** (`V2__listing_indexes.sql`). `order by sku
+  collate "C"` could not use the primary key's index, and the reservation listing filtered on a
+  column its index did not contain.
+- `markPublished` took its timestamp from the database rather than the injected clock.
+
 ## [0.1.0] — 2026-09-11
 
 First release.

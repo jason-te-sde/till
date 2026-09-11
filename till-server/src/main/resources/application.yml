@@ -47,6 +47,19 @@ management:
       probes:
         enabled: true
       show-details: never
+  metrics:
+    distribution:
+      # A Timer publishes a count, a sum and a max. It does not publish a percentile, and
+      # docs/operations.md tells an operator to alert on p99 — so without this the alert cannot be
+      # written. A histogram rather than client-side percentiles, because a percentile computed per
+      # instance cannot be aggregated across instances and a histogram can.
+      percentiles-histogram:
+        till.command: true
+      # Buckets chosen around what this service actually does: two short transactions against a
+      # handful of rows. Anything past a second is a database in trouble, and one bucket is enough
+      # to say so.
+      slo:
+        till.command: 2ms,5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s
   health:
     # Liveness answers "is this process wedged"; readiness answers "can it serve a request", which
     # for a service whose entire job is a database is not the same question.
@@ -72,6 +85,20 @@ till:
     enabled: true
     interval: 1s
     batch: 200
+  retention:
+    enabled: true
+    interval: 1h
+    batch: 1000
+    passes: 20
+    # Deleting an idempotency record means a retry of that command executes again, so this has to be
+    # longer than the longest window any client of yours will retry over. Raise it rather than lower
+    # it; docs/operations.md has the reasoning.
+    idempotency: 7d
+    # Published rows only. Unpublished ones are never deleted.
+    outbox: 30d
+    # Zero means forever. Finished reservations are the record of what was held and by whom, which is
+    # the first thing anybody asks for when stock does not add up.
+    reservations: 0s
 
 springdoc:
   swagger-ui:
@@ -80,3 +107,7 @@ springdoc:
 logging:
   level:
     io.till: INFO
+  pattern:
+    # Every line carries the request it belongs to. Without it the operations guide's symptom table
+    # reads "look at the logs", which in practice means grepping a timestamp and hoping.
+    level: "%5p [${spring.application.name:},%X{requestId:-}]"
