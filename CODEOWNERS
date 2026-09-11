@@ -1,0 +1,8 @@
+# Every change is reviewed by the maintainer. There is one.
+*       @jason-te-sde
+
+# Called out separately because a change here changes what the project promises, not how it
+# keeps the promise.
+/docs/design/           @jason-te-sde
+/SECURITY.md            @jason-te-sde
+/till-core/src/main/java/io/till/core/Kernel.java   @jason-te-sde

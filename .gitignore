@@ -1,0 +1,26 @@
+target/
+*.log
+.DS_Store
+
+# till-web
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.vite/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+
+# Local overrides, which must never be committed: the whole point of them is that they hold a token.
+application-local.yml
+application-local.properties
+.env

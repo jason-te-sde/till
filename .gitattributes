@@ -1,0 +1,22 @@
+# Normalise line endings in the repository and check out whatever the platform wants. Without this a
+# Windows clone rewrites every file and the first diff is thirteen thousand lines.
+* text=auto eol=lf
+
+# Always LF, because something executes them.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.sql       text eol=lf
+
+# Binary, so git does not try to merge them.
+*.png       binary
+*.jpg       binary
+*.ico       binary
+
+# Generated. Excluded from language statistics and collapsed in a pull request diff, because nobody
+# reviews a file whose contents are a build step's output.
+till-web/src/api/schema.d.ts  linguist-generated=true
+till-web/openapi.json         linguist-generated=true
+till-web/package-lock.json    linguist-generated=true
+
+# Vendored-looking but not: these are the project's own documentation and should count.
+docs/**  linguist-documentation=false
