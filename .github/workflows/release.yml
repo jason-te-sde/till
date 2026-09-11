@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build and attach artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: till
+          POSTGRES_PASSWORD: till
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U till -d postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      TILL_TEST_DB_URL: jdbc:postgresql://127.0.0.1:5432/postgres
+      TILL_TEST_DB_USER: till
+      TILL_TEST_DB_PASSWORD: till
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # The tag must be the version in the poms. A release tagged v0.2.0 built from poms saying
+      # 0.1.0 produces artifacts nobody can match to a tag afterwards.
+      - name: the tag matches the version
+        run: |
+          set -euo pipefail
+          pom=$(mvn -B -ntp -q help:evaluate -Dexpression=project.version -DforceStdout)
+          tag="${GITHUB_REF_NAME#v}"
+          echo "pom=$pom tag=$tag"
+          test "$pom" = "$tag"
+
+      # Not -DskipTests. A release that was never tested is not a release.
+      - run: mvn -B -ntp verify -Prelease
+
+      - name: attach the jars
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            till-server/target/till-server-*.jar
+            till-client/target/till-client-*-cli.jar
+          body: |
+            ## Artifacts
+
+            - `till-server-*.jar` — the service. `java -jar till-server.jar --help` for the flags,
+              and [`docs/operations.md`](docs/operations.md) before putting it anywhere real.
+            - `till-client-*-cli.jar` — `tillctl`. `java -jar till-client-*-cli.jar` for the usage.
+
+            The library modules go to Maven Central; see `RELEASING.md`.
