@@ -49,6 +49,7 @@
     <module>till-testkit</module>
     <module>till-jdbc</module>
     <module>till-client</module>
+    <module>till-server</module>
   </modules>
 
   <properties>
