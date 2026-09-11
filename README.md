@@ -526,6 +526,19 @@ names, so two controllers with a <code>list</code> method produced <code>list</c
 again. All three are now explicit in configuration rather than inherited from a default.</td>
 </tr>
 <tr>
+<td><b>Two major versions of Testcontainers were on the test classpath at once.</b> The parent
+imported Spring Boot's BOM and then a Testcontainers BOM after it. The first import of a managed
+version wins, so Boot's 2.0.5 took <code>org.testcontainers:testcontainers</code> while the later
+import supplied <code>postgresql</code>, <code>jdbc</code> and <code>junit-jupiter</code> at 1.21.4 —
+1.x modules against a 2.x core. It worked, for as long as the API surface happened to overlap.
+<code>requireUpperBoundDeps</code> cannot see it: they are different artifacts, not two versions of
+one.</td>
+<td>Reading a Dependabot pull request instead of merging it. The second BOM is gone — Boot already
+pins Testcontainers and is built against what it pins — and the modules moved to their 2.x names and
+packages. Found only because the bump was inspected; a green tick on that pull request would have
+hidden the mix rather than revealed it.</td>
+</tr>
+<tr>
 <td><b>The container image could not be built at all.</b> The runtime stage created its service user
 at uid and gid 1000, which <code>eclipse-temurin:21-jre</code> already has, so
 <code>groupadd</code> exited 4 and the build stopped. A hard-coded low id is a collision waiting for
