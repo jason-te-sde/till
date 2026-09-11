@@ -5,7 +5,7 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
 import org.testcontainers.DockerClientFactory;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * Where the PostgreSQL-backed suites get a database.
@@ -79,7 +79,7 @@ final class TestDatabase {
             username = orElse("TILL_TEST_DB_USER", "till");
             password = orElse("TILL_TEST_DB_PASSWORD", "till");
         } else {
-            PostgreSQLContainer<?> container = new PostgreSQLContainer<>("postgres:17-alpine");
+            PostgreSQLContainer container = new PostgreSQLContainer("postgres:17-alpine");
             container.start();
             serverUrl = container.getJdbcUrl();
             username = container.getUsername();

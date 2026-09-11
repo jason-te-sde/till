@@ -5,21 +5,56 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     groups:
-      # Spring Boot's modules are released together and are only tested together. Ten separate pull
-      # requests for one upgrade is ten chances to merge half of it.
-      spring:
-        patterns: ['org.springframework.boot:*', 'org.springframework:*', 'io.micrometer:*']
-      testing:
-        patterns: ['org.junit*', 'org.testcontainers:*']
+      # Everything that is not a major, in one pull request. These are read together and merged
+      # together, and twelve separate ones on a Monday morning is twelve chances to merge eleven.
+      routine:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+    # Majors are deliberately *not* grouped. A major hidden among patches is a major nobody reads:
+    # the first week of this repository proposed Testcontainers 1.21 -> 2.0 inside a group called
+    # "testing", and 2.0 renamed every module it ships.
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    open-pull-requests-limit: 10
+    groups:
+      routine:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+
+  - package-ecosystem: npm
+    directory: /till-web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      routine:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+      # A frontend toolchain is only ever upgraded as a set: Vite, its React plugin and Vitest all
+      # have to agree about the same Rollup and the same environment.
+      toolchain:
+        patterns: ['vite', '@vitejs/*', 'vitest', '@vitest/*', 'typescript', 'typescript-eslint', 'eslint*']
+    ignore:
+      # TypeScript 7 is the native port and typescript-eslint does not support it yet: its peer range
+      # is `>=4.8.4 <6.1.0`, so taking 7 would mean dropping type-aware linting. Revisit when
+      # typescript-eslint says it is ready; until then a pull request a week about it is noise.
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: monthly
+    # Both images in the Dockerfile are ignored on purpose, and it is not neglect. The tags are
+    # `21-jre` and `3.9-eclipse-temurin-21`, which float: a security rebuild of either arrives on the
+    # next `docker build` with no pull request at all. What a major bump would change is the JDK the
+    # project ships on, and that follows the compile target in pom.xml — a decision, not an upgrade.
+    ignore:
+      - dependency-name: 'eclipse-temurin'
+      - dependency-name: 'maven'
