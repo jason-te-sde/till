@@ -43,17 +43,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Not root. The service writes nothing to the filesystem, so there is no reason for it to be able to.
-RUN groupadd --system --gid 1000 till && useradd --system --uid 1000 --gid till till
+#
+# 10001 rather than 1000: the base image already ships a user at 1000, so pinning that fails the
+# build outright. The id is pinned rather than left to the system because a Kubernetes
+# `runAsUser` has to name a number, and high ids are out of the way of anything a distribution
+# assigns.
+RUN groupadd --system --gid 10001 till && useradd --system --uid 10001 --gid till till
 USER till:till
 WORKDIR /app
 
 COPY --from=build /src/till-server/target/till-server-*.jar /app/till-server.jar
 COPY --from=build /src/till-client/target/till-client-*-cli.jar /app/tillctl.jar
-
-# A percentage rather than a fixed -Xmx, so the same image is right in a 256 MB container and in a
-# 4 GB one. Nothing else is set: this has no interesting garbage collection story and inventing one
-# would be a pile of flags nobody could justify later.
-ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75"
 
 EXPOSE 8080 9101
 
@@ -63,4 +63,11 @@ EXPOSE 8080 9101
 HEALTHCHECK --interval=5s --timeout=3s --start-period=40s --retries=12 \
     CMD curl -fsS http://127.0.0.1:9101/actuator/health/readiness || exit 1
 
-ENTRYPOINT ["java", "-jar", "/app/till-server.jar"]
+# A percentage rather than a fixed -Xmx, so the same image is right in a 256 MB container and in a
+# 4 GB one. Nothing else is set: this has no interesting garbage collection story, and inventing one
+# would be a pile of flags nobody could justify later.
+#
+# On the entrypoint rather than in JAVA_TOOL_OPTIONS, because that variable applies to every JVM the
+# image starts — including tillctl, which then prints "Picked up JAVA_TOOL_OPTIONS" to stderr before
+# every single command it runs.
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/till-server.jar"]

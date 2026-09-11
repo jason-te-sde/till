@@ -48,6 +48,10 @@ services:
 
   # Not started with the stack; run one command at a time:
   #   docker compose run --rm tillctl reserve widget:2
+  #
+  # It is behind a profile, which means `docker compose build` does not rebuild it. After changing
+  # the Dockerfile, `docker compose --profile cli build` — otherwise `run` quietly uses the image
+  # from before the change, and you debug the old one.
   tillctl:
     build: .
     profiles: ["cli"]

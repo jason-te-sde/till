@@ -331,13 +331,11 @@ replays, injected crashes, lost answers, expiries and refusals all have to have 
 There is no throughput figure for the service, on purpose. Measuring it on one laptop against one
 PostgreSQL would say more about the laptop than about till.
 
-**What has and has not been run.** Every number above is measured. The service has been started
-against a real PostgreSQL and driven end to end by `tillctl`, by the Java client, and by a real
-browser against the jar with the console bundled into it — that is where the transcript above comes
-from and where six of the bugs below were found. The **container path has not been executed**: the
-Dockerfile, the compose file and the CI job that exercises them are written and reviewed but have
-never run, because the machine this was built on could not start Docker. Treat `docker compose up`
-as untested until the first green CI run, and `scripts/demo.sh` with it.
+**What has been run.** Every number above is measured, and every path in this README has now been
+executed: the service against a real PostgreSQL, driven by `tillctl`, by the Java client and by a
+real browser against the jar with the console bundled into it; the full `docker compose` stack, which
+is where the last two bugs below came from; and all eight CI jobs on GitHub's runners, across two
+JDKs and two Node versions.
 
 ## How it is tested
 
@@ -526,6 +524,24 @@ names, so two controllers with a <code>list</code> method produced <code>list</c
 <code>list_2</code> in every generated client.</td>
 <td>Three small ones, grouped because each is a twenty-minute confusion the first time and never
 again. All three are now explicit in configuration rather than inherited from a default.</td>
+</tr>
+<tr>
+<td><b>The container image could not be built at all.</b> The runtime stage created its service user
+at uid and gid 1000, which <code>eclipse-temurin:21-jre</code> already has, so
+<code>groupadd</code> exited 4 and the build stopped. A hard-coded low id is a collision waiting for
+whichever base image picks it next.</td>
+<td>The first CI run after the repository was pushed — the one job in this project that had never
+been executed, failing on the first thing it did. The id is now 10001: still pinned, because a
+Kubernetes <code>runAsUser</code> has to name a number, and out of the way of anything a distribution
+assigns.</td>
+</tr>
+<tr>
+<td><b>Every command line invocation printed a line about a JVM flag.</b>
+<code>JAVA_TOOL_OPTIONS</code> in the image applies to every JVM it starts, and the JVM announces it
+on stderr — so <code>tillctl stock widget</code> greeted its answer with
+<code>Picked up JAVA_TOOL_OPTIONS</code> every time.</td>
+<td>Running the compose stack and reading the output. The flag moved onto the server's entrypoint,
+which is the only process it was ever about.</td>
 </tr>
 <tr>
 <td><b>Two of my own assertions were wrong, not the code.</b> A stale-version test asserted one outbox
