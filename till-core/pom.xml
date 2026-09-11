@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.jason-te-sde</groupId>
+    <artifactId>till-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>till-core</artifactId>
+  <name>till-core</name>
+  <description>
+    The reservation kernel: a pure decision function over a snapshot, plus the storage port it is
+    driven through and an in-memory implementation of that port.
+  </description>
+
+  <dependencies>
+    <!-- The only runtime dependency in the module, and an API-only one: the caller chooses the
+         binding. Nothing else here touches a clock, a socket, or a disk. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>${slf4j.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
