@@ -188,6 +188,14 @@ committed copy has drifted, and CI re-runs the generator and fails on a diff. Wi
 to an endpoint leaves the console compiling against types for an API that no longer exists, and
 finding out in a browser.
 
+**And the contract is checked against reality, not only against itself.** A document can be perfectly
+current and still describe a service nobody wrote. So one test takes a **real refusal off the wire**
+and compares it to the declared `Problem` schema in both directions: every field the service sends is
+declared, and every field the contract marks required is really sent. The second half is the one that
+earns its keep — `type` is absent from most problem bodies, because RFC 9457 makes `about:blank` the
+default and Spring omits a field that would only repeat it, and declaring it required would have
+typed a generated client's `problem.type` as a string that is in fact undefined.
+
 ## Running it
 
 ```bash

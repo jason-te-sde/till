@@ -63,6 +63,11 @@ If only the client token is set, it also allows adjustments, and the service say
 They are separate so that metrics and probes are not reachable from wherever the API is, and so the
 API's authentication does not have to carve out exceptions for them. **Do not expose 9101.**
 
+Setting `management.server.port` to the same value as `server.port` puts them back on one port, where
+anything that can reach the API can also read the metrics and the environment. Till logs a warning at
+startup when it sees that, and starts anyway — it is a reasonable thing to do on a laptop and a
+mistake in production, and only you can tell which this is.
+
 | | |
 | --- | --- |
 | `/actuator/health/readiness` | can this instance serve a request? Checks the database. Use this for the load balancer |
@@ -80,12 +85,29 @@ instance at once, which is the worst possible response to a database hiccup.
 | `till_outcome_total{outcome="exhausted"}` | non-zero and rising | commands are being refused for contention, not for stock. Raise `till.max-attempts`, or look at why so many callers are on one SKU |
 | `till_outbox_failures_total` | rising | the broker is unreachable. Nothing is lost — the batch is offered again — but it is not being delivered |
 | `till_sweeper_failures_total` | non-zero | the sweep is throwing. Stock still comes back on demand, so this is not urgent, but something is wrong |
-| `till_command_seconds` p99 | above a few tens of milliseconds | almost always the database, or contention producing retries |
+| `till_retention_failures_total` | non-zero | the pruning pass is throwing, so three tables are growing. Not urgent on the hour it starts; very urgent on the month it continues |
+| `till_auth_denied_total{reason}` | a spike, or a slow climb | `missing` and `unknown` mean callers without a usable token — usually a deploy that did not get the secret. `insufficient` means a client token reaching for an admin endpoint |
+| `till_command_seconds` p99 | above a few tens of milliseconds | almost always the database, or contention producing retries. Published as a histogram, so this is a real quantile across instances rather than an average of per-instance quantiles, and `till_command_seconds_bucket` can be read against an SLO directly |
 | `till_outcome_total{outcome="insufficient_stock"}` | however you like | this is a business metric, not a fault. It is what running out of stock looks like |
 
 `till_outcome_total` is tagged by outcome rather than by status code on purpose: "how many
 reservations were refused for want of stock" is a question about the business, and "how many POSTs
 returned 409" is a question about the router.
+
+### Following one request
+
+Every request has an id. Send `X-Request-Id` and till uses it; send nothing and it mints one. It
+comes back on the response, appears in every log line for that request, and is in the body of every
+error — so a screenshot of a failure is enough to find the log lines, with nothing to correlate by
+timestamp.
+
+```
+%5p [till,3f2a9c1e-...]   the logging pattern; the second field is the id
+```
+
+Ids you send are accepted only if they look like one: 8–64 characters of `A-Za-z0-9._-`. Anything
+else is replaced rather than refused, because a caller with a strange id should still get an answer,
+and an unvalidated value goes into log lines.
 
 ## The console
 
@@ -127,26 +149,56 @@ caller pick, which till supports by having no opinion about what a SKU means.
 
 ## Retention
 
-Three tables grow without bound and none of them is pruned automatically, because how long to keep
-them is a business decision rather than a technical one.
+Three tables grow for as long as the service runs. Till prunes them itself, on a schedule, because
+the alternative is a paragraph here telling you to write a cron job — which works right up until the
+person who read it changes team, and then a disk fills at three in the morning over rows that stopped
+mattering months ago.
 
-| Table | What it costs to keep | What it costs to delete |
+| Setting | Default | Meaning |
 | --- | --- | --- |
-| `till_idempotency` | one row per command, forever | a client retrying a command older than the cutoff would execute it **again**. Keep it comfortably longer than your longest client retry window — a day is generous, an hour is usually enough |
-| `till_outbox` | one row per event | published rows are only history. Keep whatever your replay story needs |
-| `till_reservation` | one row per hold, plus its lines | finished reservations are only history |
+| `till.retention.enabled` | `true` | set `false` to do it yourself |
+| `till.retention.interval` | `1h` | how often a pass runs |
+| `till.retention.idempotency` | `7d` | **the dangerous one** — see below |
+| `till.retention.outbox` | `30d` | published rows only; unpublished ones are never deleted, at any age |
+| `till.retention.reservations` | `0s` | **zero means keep forever**, which is the default |
+| `till.retention.batch` | `1000` | rows per statement |
+| `till.retention.passes` | `20` | batches per table per pass, so a first run against years of history is bounded and comes back for the rest |
+
+**`till.retention.idempotency` is the one to think about.** Deleting a record means a client retrying
+that command **executes it again** rather than getting its original answer back. Seven days is far
+longer than any sensible client retry window; it is the setting to raise, not lower. What the right
+value is depends on your callers, not on till.
+
+**For adjustments the effective window is the larger of `idempotency` and `outbox`.** An adjustment's
+event is named `adjusted:<idempotency-key>` — an adjustment has no identity of its own to name it
+after — so that name is unique only while the record exists. Till therefore refuses to forget a key
+whose event is still queued, and errs long, in the safe direction, by construction.
+
+Deletes are **bounded batches, repeatedly**, not one statement per table: a single delete removing a
+month of rows holds a lock long enough for everything else to notice, and an interrupted run has
+still made progress. Running it on every instance at once is safe — the deletes are idempotent, and
+two of them racing produce one deletion and one that finds nothing.
+
+A finished reservation is deleted with its lines, by cascade. A **`HELD`** one is never deleted at
+any age and cannot be asked for: its units are counted in `till_stock.reserved`, and removing the row
+without lowering that counter leaks the stock permanently.
+
+| Metric | |
+| --- | --- |
+| `till_retention_deleted_total{table}` | rows removed, per table |
+| `till_retention_failures_total` | a pass threw. Non-urgent — nothing is wrong with the data — but it means the tables are growing |
+
+If you would rather do it yourself, turn it off and run the equivalent:
 
 ```sql
--- Safe once no client could still be retrying. Batched, because one statement deleting a month of
--- rows takes a lock long enough to notice.
-delete from till_idempotency where recorded_at < now() - interval '24 hours';
-delete from till_outbox      where published_at is not null and published_at < now() - interval '7 days';
+delete from till_outbox      where published_at is not null and published_at < now() - interval '30 days';
+delete from till_idempotency where recorded_at  < now() - interval '7 days'
+                               and not exists (select 1 from till_outbox o
+                                               where o.dedupe_key = 'adjusted:' || till_idempotency.idem_key);
 delete from till_reservation where state <> 'HELD' and expires_at < now() - interval '30 days';
 ```
 
-The reservation delete cascades to `till_reservation_line`. Do **not** delete a `HELD` reservation:
-its units are counted in `till_stock.reserved`, and removing the row without lowering that counter
-leaks the stock permanently. Release or expire it first.
+Outbox first, so that one pass can do both once both windows have elapsed.
 
 ## Sizing
 
@@ -188,7 +240,9 @@ There is one migration so far, so this is advice rather than experience.
 | The console loads but every call fails with 401 | the token in the tab is wrong. "Forget token" and paste it again |
 | Refuses to start, Flyway validation | the database has a schema this build did not create, or a migration was edited after being applied |
 | `LedgerException` about an impossible stock level | a bug in till. The database refused a level the application should not have been able to produce. The stock row named in the message is the place to start, and it has **not** been corrupted — the transaction rolled back |
-| The outbox backlog grows and nothing errors | the publisher is not running. `till.outbox.enabled`, and whether the scheduler is alive |
+| The outbox backlog grows and nothing errors | the publisher is not running. `till.outbox.enabled`, and whether the scheduler is alive. The gauge is read straight from the table, so it is right even when the publisher is the thing that is broken |
+| `till_idempotency` keeps growing past its window | rows are only forgotten once the matching outbox event has gone. Check `till.retention.outbox` and whether the publisher is draining |
+| A caller reports an error you cannot find | ask for the `requestId` in the body. It is in every log line for that request |
 
 ## What till does not do
 

@@ -11,8 +11,8 @@
     <img alt="CI" src="https://github.com/jason-te-sde/till/actions/workflows/ci.yml/badge.svg">
   </a>
   <img alt="Java 21" src="https://img.shields.io/badge/Java-21%2B-orange">
-  <img alt="tests" src="https://img.shields.io/badge/tests-351-brightgreen">
-  <img alt="coverage" src="https://img.shields.io/badge/coverage-87.6%25%20java%20%C2%B7%2086.8%25%20web-brightgreen">
+  <img alt="tests" src="https://img.shields.io/badge/tests-393-brightgreen">
+  <img alt="coverage" src="https://img.shields.io/badge/coverage-88.1%25%20java%20%C2%B7%2087.1%25%20web-brightgreen">
   <img alt="Maven Central" src="https://img.shields.io/badge/maven--central-pending-lightgrey">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
@@ -281,7 +281,10 @@ because the alternative is a client that retried a timeout being told "out of st
 | Oversell impossible at the database | `check (reserved >= 0 and on_hand >= 0 and reserved <= on_hand)` |
 | Two bearer tokens | separate, because ejecting stock is not the same privilege as holding it |
 | Secure by default | refuses to listen on a non-loopback address with no token, unless `--till.insecure` |
-| Prometheus, OpenAPI, probes | metrics tagged by outcome rather than by status code; readiness and liveness answer different questions |
+| Prometheus, OpenAPI, probes | metrics tagged by outcome rather than by status code; readiness and liveness answer different questions; latency published as a histogram so a quantile across instances is a real one |
+| Retention that runs itself | three growing tables pruned on a schedule, in bounded batches, with the dangerous window defaulted long and the safe ones defaulted to *keep forever* |
+| A request id on everything | `X-Request-Id` in, out, in every log line, and in the body of every error — so a screenshot of a failure is enough to find the logs |
+| Errors described in the contract | every non-2xx response declares an RFC 9457 `Problem`, and a test checks the declaration against a real refusal taken off the wire |
 | Container image | a multi-stage build with the console inside it, and a CI job that brings the stack up and drives a hold through it |
 | A browser console | `/shop` to see why reservations exist, `/ops` to see what the ledger holds. Served from inside the jar, same origin, with the SPA routes enumerated rather than caught all |
 | A typed contract | the console's TypeScript is generated from a committed `openapi.json`, which a server test regenerates and fails on when it goes stale |
@@ -298,18 +301,18 @@ produced it.
 
 | | |
 | --- | --- |
-| Tests | **351** — 259 Java, 81 console, 11 end-to-end (plus one soak, off by default) |
-| Coverage | **87.6% / 81.4%** lines / branches on the Java, **86.8% / 83.3%** on the console |
-| `mvn verify`, whole reactor | **16s** |
-| Simulation throughput | **79,780 steps/s** |
-| Soak | 10,000 seeds, **30,216,914 invariant checks**, 4,812,844 conflicts, 4,301,575 answers, **379s**, zero violations |
+| Tests | **393** — 296 Java, 86 console, 11 end-to-end (plus one soak, off by default) |
+| Coverage | **88.1% / 81.0%** lines / branches on the Java, **87.1% / 83.6%** on the console |
+| `mvn verify`, whole reactor | **21s** |
+| Simulation throughput | **79,416 steps/s** |
+| Soak | 10,000 seeds, **30,216,914 invariant checks**, 4,812,844 conflicts, 4,301,575 answers, **381s**, zero violations |
 | Real threads, real PostgreSQL | 200 callers, 20 units, **exactly 20 sales** |
 | Two browser tabs, one unit | **exactly one gets it**, the other is told by how much it fell short |
-| Service start to ready | **2.1s** |
-| Console bundle | 287 kB, **90 kB gzipped** |
-| Hand-written Java | 8,486 lines main, 4,914 lines test |
-| Hand-written TypeScript | 1,795 lines source, 1,778 lines test, 140 lines CSS |
-| SQL | 79 lines, all of it in one migration |
+| Service start to ready | **2.0s** |
+| Console bundle | 289 kB, **89 kB gzipped** |
+| Hand-written Java | 9,265 lines main, 5,603 lines test |
+| Hand-written TypeScript | 1,910 lines source, 1,890 lines test, 140 lines CSS |
+| SQL | 103 lines across two migrations |
 | Runtime dependencies | `till-core`: **one**, `slf4j-api`. `till-web`: **three**, React, its DOM renderer, a router |
 
 ```bash
@@ -402,6 +405,70 @@ offers a live hold as reclaimable (the kernel re-checks the deadline; it does no
 
 <table>
 <tr><th>Bug</th><th>What caught it</th></tr>
+<tr>
+<td><b>Pruning old idempotency records could wedge a command permanently.</b> An adjustment has no
+identity of its own, so its event borrows the command's idempotency key:
+<code>adjusted:&lt;key&gt;</code>. That name is unique only for as long as the ledger remembers the
+key. Forget the record while the event is still in the outbox and the next execution of that command
+writes an event whose deduplication key already exists — the insert conflicts, the decision can never
+be applied, and the caller is told <b>503, for good</b>. A command that had worked an hour earlier
+becomes impossible.</td>
+<td>Writing the retention test, which is exactly what it looked like from the outside: a 503 with no
+contention behind it. The delete now refuses while the event is present, the sweep does the outbox
+first so one pass can still do both, and the resulting coupling — for adjustments the effective
+window is the larger of the two — is written down rather than left to be rediscovered.</td>
+</tr>
+<tr>
+<td><b>The published contract described every failure with the schema of the success.</b> springdoc
+gives a declared response the return type of the method unless told otherwise, so
+<code>POST /v1/reservations</code> published 404, 409, 422 <i>and</i> 503 as all returning a
+<code>Reserved</code>. Not merely undocumented: actively wrong, and the generated TypeScript said so
+too, so a client written against the contract would have destructured <code>id</code> off a problem
+body.</td>
+<td>Reading the generated types during a self-audit. There is now a <code>Problem</code> schema, one
+customizer pointing every non-2xx at it, and a test that takes a <i>real</i> refusal off the wire and
+asserts the contract declares every field in it — because a hand-written schema beside a
+hand-assembled body is two declarations of one shape, and two declarations drift.</td>
+</tr>
+<tr>
+<td><b>The console invented an error code the service never sent.</b> The shop front turned a 403
+into an error carrying <code>code: 'FORBIDDEN'</code> so its notice component had something to match
+on. The authentication filter's problem body carried no <code>code</code> at all — it writes its JSON
+by hand, because it runs before Spring MVC exists — so the value existed only inside the browser.</td>
+<td>Typing that field from the generated contract, which turned the invented value into a compile
+error. The filter now sends <code>UNAUTHORIZED</code> or <code>FORBIDDEN</code>, which is a
+distinction worth having anyway: by status alone a caller cannot tell "sign in" from "ask somebody
+for a better token", and those call for opposite things.</td>
+</tr>
+<tr>
+<td><b>The most important metric in the operations guide could not fire for the failure it was
+written for.</b> <code>till_outbox_backlog</code> was a number the publisher pushed after each run.
+So it was accurate exactly while the publisher was working, and frozen — or, with the publisher
+disabled, absent — when it was not. A stalled publisher and an empty outbox reported the same
+thing.</td>
+<td>Rereading the alerting table and asking what each metric does when the component it describes is
+the broken one. It is now a gauge read through to the table on scrape: one indexed
+<code>count(*)</code>, correct whether the publisher is running, disabled, or dead.</td>
+</tr>
+<tr>
+<td><b>Both administrative listings were sequential scans.</b> <code>order by sku collate "C"</code>
+cannot use the primary key's index, because that index is built with the database's collation and the
+query asks for another one — and the explicit collation is not optional, it is what makes the two
+ledgers order rows identically. The reservation listing filtered on <code>state</code> using an index
+that does not contain it, so filtering to a rare state read the whole index and threw most of it
+away — and the rarest state is the one an operator clicks.</td>
+<td><code>explain (analyze)</code> against 200,000 rows, during the same audit. Before: 100,000 rows
+sorted to return 100. After: 100 rows read. The plans are in the migration, beside the indexes.</td>
+</tr>
+<tr>
+<td><b>One timestamp came from a different clock than every other.</b> <code>markPublished</code>
+stamped <code>published_at</code> with SQL <code>now()</code> while everything else in the system
+takes the instant from an injected <code>Clock</code>. Harmless until retention had to compare the
+two, at which point "delete rows published more than thirty days ago" was a comparison across two
+clocks that nobody can reason about — or write a test for.</td>
+<td>A retention test that moved its clock thirty-one days forward and found nothing had been pruned.
+The instant is now passed in, like every other one.</td>
+</tr>
 <tr>
 <td><b>Committing a hold that had already been written off gave its stock back a second time.</b>
 <code>effectiveState</code> collapses two different situations into one answer — a hold still stored
