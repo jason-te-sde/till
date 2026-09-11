@@ -46,6 +46,7 @@
 
   <modules>
     <module>till-core</module>
+    <module>till-testkit</module>
   </modules>
 
   <properties>
