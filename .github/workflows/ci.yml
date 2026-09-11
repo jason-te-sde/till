@@ -47,9 +47,9 @@ jobs:
       TILL_TEST_DB_PASSWORD: till
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
@@ -80,7 +80,7 @@ jobs:
       # diagnosing a red run means downloading the raw log and grepping it.
       - name: test reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: surefire-jdk${{ matrix.java }}
           path: '**/target/surefire-reports/**'
@@ -111,8 +111,8 @@ jobs:
       TILL_TEST_DB_PASSWORD: till
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -140,7 +140,7 @@ jobs:
           print(f"{'overall':16} {100 * lc / (lm + lc):5.1f}% lines, {100 * bc / (bm + bc):5.1f}% branches")
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jacoco
           path: '**/target/site/jacoco/**'
@@ -160,8 +160,8 @@ jobs:
       run:
         working-directory: till-web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -194,7 +194,7 @@ jobs:
       - name: build
         run: npm run build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: web-coverage-node${{ matrix.node }}
@@ -221,13 +221,13 @@ jobs:
           --health-retries 20
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -283,7 +283,7 @@ jobs:
         if: always()
         run: tail -200 /tmp/till.log
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
@@ -297,13 +297,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
 
       # Cached across runs because the first stage resolves the whole Maven dependency tree. Without
       # a cache that download is repeated on every pull request and is most of the job's wall time.
       - name: build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           tags: till:ci
@@ -386,10 +386,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
