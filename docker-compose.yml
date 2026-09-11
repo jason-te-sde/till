@@ -1,0 +1,63 @@
+# A working service in one command:
+#
+#   docker compose up -d --wait
+#   open http://127.0.0.1:8080          # the shop, and /ops for the ledger
+#   docker compose run --rm tillctl adjust widget 100
+#
+# The tokens are in this file in plain text because this file is a demonstration. A real deployment
+# gets them from somewhere else; docs/operations.md says where.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: till
+      POSTGRES_USER: till
+      POSTGRES_PASSWORD: till
+    # `--wait` on the service below is only as good as this check. pg_isready returning true before
+    # the database will accept a connection is the classic reason a stack comes up broken, so this
+    # asks for the database by name rather than asking whether a port is open.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U till -d till"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - till-data:/var/lib/postgresql/data
+
+  till:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TILL_DB_URL: jdbc:postgresql://postgres:5432/till
+      TILL_DB_USER: till
+      TILL_DB_PASSWORD: till
+      TILL_CLIENT_TOKEN: demo-client-token
+      TILL_ADMIN_TOKEN: demo-admin-token
+    ports:
+      - "8080:8080"
+      - "9101:9101"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9101/actuator/health/readiness"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  # Not started with the stack; run one command at a time:
+  #   docker compose run --rm tillctl reserve widget:2
+  tillctl:
+    build: .
+    profiles: ["cli"]
+    depends_on:
+      till:
+        condition: service_healthy
+    environment:
+      TILL_URL: http://till:8080
+      TILL_TOKEN: demo-admin-token
+    entrypoint: ["java", "-jar", "/app/tillctl.jar"]
+
+volumes:
+  till-data:
