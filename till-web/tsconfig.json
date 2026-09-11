@@ -1,0 +1,9 @@
+{
+  // A solution file. The app and the tooling have different libs and different module resolution,
+  // and one tsconfig serving both ends up loosening whichever is stricter.
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}

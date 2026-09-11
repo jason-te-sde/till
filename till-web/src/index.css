@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+/*
+ * The design tokens, and the one rule that matters: a colour is named for the job it does, never for
+ * what it looks like. `--series-available` can be re-stepped for dark mode without a single component
+ * changing, and nothing anywhere says "blue".
+ *
+ * Dark mode is selected, not flipped. Every value below was chosen for its own surface and the pair
+ * validated against it — running the palette validator over
+ * `#2a78d6,#eb6834` on `#fcfcfb` and `#3987e5,#d95926` on `#1a1a19` passes the lightness band, the
+ * chroma floor, colour-vision separation and contrast in both. An automatic lightness flip does not.
+ */
+:root {
+  color-scheme: light;
+
+  --plane: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-sunken: #f2f1ed;
+
+  --ink-primary: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #898781;
+
+  --line-hairline: #e1e0d9;
+  --line-strong: #c3c2b7;
+  --ring: rgb(11 11 11 / 0.1);
+
+  /* Two categorical slots. Available and reserved are the two halves of on-hand. */
+  --series-available: #2a78d6;
+  --series-reserved: #eb6834;
+
+  /* Status. Reserved for state, never for a series, and always beside a word. */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-critical: #d03b3b;
+  --status-good-ink: #006300;
+}
+
+/* The OS setting, which a stamped light theme must still beat. */
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+
+    --plane: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-sunken: #121211;
+
+    --ink-primary: #ffffff;
+    --ink-secondary: #c3c2b7;
+    --ink-muted: #898781;
+
+    --line-hairline: #2c2c2a;
+    --line-strong: #383835;
+    --ring: rgb(255 255 255 / 0.1);
+
+    --series-available: #3987e5;
+    --series-reserved: #d95926;
+
+    --status-good-ink: #0ca30c;
+  }
+}
+
+/* The toggle, which wins over the OS setting in both directions. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --plane: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-sunken: #121211;
+
+  --ink-primary: #ffffff;
+  --ink-secondary: #c3c2b7;
+  --ink-muted: #898781;
+
+  --line-hairline: #2c2c2a;
+  --line-strong: #383835;
+  --ring: rgb(255 255 255 / 0.1);
+
+  --series-available: #3987e5;
+  --series-reserved: #d95926;
+
+  --status-good-ink: #0ca30c;
+}
+
+/*
+ * `inline` so the utilities resolve the custom property at use time rather than baking its value in.
+ * That is what lets one set of class names follow the mode.
+ */
+@theme inline {
+  --color-plane: var(--plane);
+  --color-surface: var(--surface);
+  --color-sunken: var(--surface-sunken);
+
+  --color-ink: var(--ink-primary);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-muted: var(--ink-muted);
+
+  --color-hairline: var(--line-hairline);
+  --color-line-strong: var(--line-strong);
+
+  --color-available: var(--series-available);
+  --color-reserved: var(--series-reserved);
+
+  --color-good: var(--status-good);
+  --color-warning: var(--status-warning);
+  --color-critical: var(--status-critical);
+  --color-good-ink: var(--status-good-ink);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html {
+  background: var(--plane);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--ink-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Columns of numbers line up; standalone values do not use tabular figures, because at display sizes
+ * every digit having the width of a zero makes a number like 121 look loose.
+ */
+.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Respecting the setting rather than deciding for everybody that motion is fine. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

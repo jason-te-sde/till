@@ -101,6 +101,90 @@
     </dependency>
   </dependencies>
 
+  <profiles>
+    <!--
+      Builds the browser console and puts it inside this jar, under /static.
+
+      Off by default, and that is a trade rather than an oversight. On, every contributor to the
+      kernel needs a working Node toolchain to run `mvn verify`; off, a default build produces a jar
+      with an API and no console, which the service says at startup rather than leaving to be
+      discovered. CI and the release both build with it, so what ships always has the console in it.
+
+      Node is downloaded and pinned rather than taken from the machine, so the bundle in a release is
+      the one this version of the project was tested against.
+    -->
+    <profile>
+      <id>web</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>com.github.eirslett</groupId>
+            <artifactId>frontend-maven-plugin</artifactId>
+            <version>${frontend.plugin.version}</version>
+            <configuration>
+              <workingDirectory>${project.basedir}/../till-web</workingDirectory>
+              <installDirectory>${project.build.directory}</installDirectory>
+            </configuration>
+            <executions>
+              <execution>
+                <id>install-node</id>
+                <goals><goal>install-node-and-npm</goal></goals>
+                <configuration>
+                  <nodeVersion>${node.version}</nodeVersion>
+                </configuration>
+              </execution>
+              <execution>
+                <id>npm-ci</id>
+                <goals><goal>npm</goal></goals>
+                <configuration>
+                  <!-- `ci`, not `install`: it installs exactly the lock file and fails if the lock
+                       and the manifest disagree, which is the behaviour a build wants. -->
+                  <arguments>ci --no-audit --no-fund</arguments>
+                </configuration>
+              </execution>
+              <execution>
+                <id>npm-check</id>
+                <goals><goal>npm</goal></goals>
+                <configuration>
+                  <!-- Typecheck, lint and the unit suite. The frontend holds itself to the same bar
+                       as the Java: a warning is a failure there too. -->
+                  <arguments>run check</arguments>
+                </configuration>
+              </execution>
+              <execution>
+                <id>npm-build</id>
+                <goals><goal>npm</goal></goals>
+                <configuration>
+                  <arguments>run build</arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-resources-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>bundle-console</id>
+                <phase>process-resources</phase>
+                <goals><goal>copy-resources</goal></goals>
+                <configuration>
+                  <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${project.basedir}/../till-web/dist</directory>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+
   <build>
     <plugins>
       <plugin>
