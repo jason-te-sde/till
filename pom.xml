@@ -1,0 +1,371 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.github.jason-te-sde</groupId>
+  <artifactId>till-parent</artifactId>
+  <version>0.1.0</version>
+  <packaging>pom</packaging>
+
+  <name>till</name>
+  <description>
+    An oversell-proof inventory reservation kernel: a pure decision function, a deterministic
+    concurrency simulator, and a PostgreSQL adapter with a transactional outbox.
+  </description>
+  <url>https://github.com/jason-te-sde/till</url>
+
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <id>jason-te-sde</id>
+      <name>Jason Te</name>
+      <url>https://github.com/jason-te-sde</url>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:https://github.com/jason-te-sde/till.git</connection>
+    <developerConnection>scm:git:git@github.com:jason-te-sde/till.git</developerConnection>
+    <url>https://github.com/jason-te-sde/till</url>
+    <tag>HEAD</tag>
+  </scm>
+
+  <issueManagement>
+    <system>GitHub Issues</system>
+    <url>https://github.com/jason-te-sde/till/issues</url>
+  </issueManagement>
+
+  <modules>
+    <module>till-core</module>
+  </modules>
+
+  <properties>
+    <!-- 21, not 25: the kernel is meant to be embedded, and a library that forces its callers
+         onto the newest JDK is a library most of them cannot adopt. CI compiles and tests on
+         both, so a construct that only works on 25 fails before it is released. -->
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <slf4j.version>2.0.18</slf4j.version>
+    <junit.version>6.1.2</junit.version>
+
+    <!-- Only till-server depends on Spring. Everything below it is plain Java, which is what
+         makes the kernel testable without a container and embeddable without one. -->
+    <spring-boot.version>4.1.1</spring-boot.version>
+    <springdoc.version>3.1.1</springdoc.version>
+    <postgresql.version>42.7.13</postgresql.version>
+
+    <!-- Spring Boot 4 serialises with Jackson 3 (tools.jackson) and manages Jackson 2 only for the
+         things that still need it. springdoc's Swagger dependencies and Flyway want a newer Jackson 2
+         than Boot's BOM pins, which requireUpperBoundDeps reports as four separate conflicts. One BOM
+         import declared ahead of Boot's settles all of them, and it is the version the graph already
+         wanted rather than a version chosen here. -->
+    <jackson2.version>2.22.2</jackson2.version>
+    <testcontainers.version>1.21.4</testcontainers.version>
+
+    <compiler.plugin.version>3.15.0</compiler.plugin.version>
+    <surefire.plugin.version>3.5.6</surefire.plugin.version>
+    <failsafe.plugin.version>3.5.6</failsafe.plugin.version>
+    <jacoco.plugin.version>0.8.15</jacoco.plugin.version>
+    <enforcer.plugin.version>3.6.3</enforcer.plugin.version>
+    <shade.plugin.version>3.6.2</shade.plugin.version>
+    <frontend.plugin.version>2.0.2</frontend.plugin.version>
+    <!-- Pinned, and downloaded by the build rather than taken from the machine, so that the bundle
+         in a release is the one this version of the project was tested against. -->
+    <node.version>v24.21.0</node.version>
+    <source.plugin.version>3.4.0</source.plugin.version>
+    <javadoc.plugin.version>3.12.0</javadoc.plugin.version>
+    <gpg.plugin.version>3.2.8</gpg.plugin.version>
+    <central.plugin.version>0.7.0</central.plugin.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Declared first on purpose: the first import of a managed version wins, and the point is
+           to override the Jackson 2 versions that Spring Boot's BOM pins lower. -->
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson2.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <version>${postgresql.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springdoc</groupId>
+        <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        <version>${springdoc.version}</version>
+      </dependency>
+
+      <!-- Modules -->
+      <dependency>
+        <groupId>io.github.jason-te-sde</groupId>
+        <artifactId>till-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.jason-te-sde</groupId>
+        <artifactId>till-jdbc</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.jason-te-sde</groupId>
+        <artifactId>till-testkit</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.jason-te-sde</groupId>
+        <artifactId>till-client</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>${compiler.plugin.version}</version>
+          <configuration>
+            <compilerArgs>
+              <!-- Warnings are build failures. 'serial' is off because the exception types here
+                   are never serialized, and 'this-escape' because Spring's own generated
+                   configuration classes trip it. -->
+              <arg>-Xlint:all,-serial,-this-escape</arg>
+              <arg>-Werror</arg>
+              <!-- Keeps parameter names in the class file. Spring MVC needs them to bind
+                   @PathVariable and @RequestHeader without repeating each name as a string, and
+                   without this the failure is a 400 at runtime telling you to set this flag. Spring
+                   Boot's own parent POM sets it; this build does not use that parent. -->
+              <arg>-parameters</arg>
+            </compilerArgs>
+          </configuration>
+        </plugin>
+
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${surefire.plugin.version}</version>
+          <configuration>
+            <!-- Test classes run in parallel, methods within a class do not: the concurrency
+                 suites saturate every core on their own, and nesting that inside a parallel
+                 method runner makes their timings meaningless. -->
+            <properties>
+              <configurationParameters>
+                junit.jupiter.execution.parallel.enabled = true
+                junit.jupiter.execution.parallel.mode.default = same_thread
+                junit.jupiter.execution.parallel.mode.classes.default = concurrent
+              </configurationParameters>
+            </properties>
+          </configuration>
+        </plugin>
+
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-failsafe-plugin</artifactId>
+          <version>${failsafe.plugin.version}</version>
+        </plugin>
+
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>${shade.plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>${enforcer.plugin.version}</version>
+        <executions>
+          <execution>
+            <id>enforce-environment</id>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion><version>[21,)</version></requireJavaVersion>
+                <requireMavenVersion><version>[3.9,)</version></requireMavenVersion>
+                <!-- A declared module that was never committed, or a version that drifts between
+                     modules, breaks a clean clone without breaking the maintainer's machine. -->
+                <reactorModuleConvergence/>
+                <requireUpperBoundDeps/>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>${source.plugin.version}</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals><goal>jar-no-fork</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>${javadoc.plugin.version}</version>
+            <configuration>
+              <!-- Broken references and malformed HTML fail; a missing @param on an internal
+                   helper does not. A check that fails a release for the second is a check
+                   people disable. -->
+              <doclint>all,-missing</doclint>
+              <quiet>true</quiet>
+              <detectOfflineLinks>false</detectOfflineLinks>
+            </configuration>
+            <executions>
+              <execution>
+                <id>attach-javadoc</id>
+                <goals><goal>jar</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <!-- Signing and upload, kept out of `release` so that building release artifacts locally
+         does not need a GPG key and so a mistake here cannot silently skip signing. -->
+    <profile>
+      <id>publish</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>${gpg.plugin.version}</version>
+            <configuration>
+              <!-- Read the passphrase from the environment. Without this, signing on a machine
+                   with no terminal does not fail, it hangs on a pinentry dialog nobody sees. -->
+              <gpgArguments>
+                <arg>--pinentry-mode</arg>
+                <arg>loopback</arg>
+              </gpgArguments>
+            </configuration>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals><goal>sign</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>${central.plugin.version}</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>false</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <!-- Coverage runs under one JDK rather than the whole matrix: the JaCoCo agent has to
+         understand the class file version it runs against, which makes it the first thing to
+         break on a new JDK. Enable with -Dcoverage. -->
+    <profile>
+      <id>coverage</id>
+      <activation>
+        <property><name>coverage</name></property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.jacoco</groupId>
+            <artifactId>jacoco-maven-plugin</artifactId>
+            <version>${jacoco.plugin.version}</version>
+            <executions>
+              <execution>
+                <id>prepare-agent</id>
+                <goals><goal>prepare-agent</goal></goals>
+              </execution>
+              <execution>
+                <id>report</id>
+                <phase>verify</phase>
+                <goals><goal>report</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>
