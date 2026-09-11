@@ -40,32 +40,48 @@ jobs:
           java-version: '21'
           cache: maven
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: till-web/package-lock.json
+
       # The tag must be the version in the poms. A release tagged v0.2.0 built from poms saying
-      # 0.1.0 produces artifacts nobody can match to a tag afterwards.
+      # 0.1.0 produces artifacts nobody can match to a tag afterwards. The version is also an output,
+      # so the artifact paths below are exact rather than a glob that also matches the sources jar.
       - name: the tag matches the version
+        id: version
         run: |
           set -euo pipefail
           pom=$(mvn -B -ntp -q help:evaluate -Dexpression=project.version -DforceStdout)
           tag="${GITHUB_REF_NAME#v}"
           echo "pom=$pom tag=$tag"
           test "$pom" = "$tag"
+          echo "version=$pom" >> "$GITHUB_OUTPUT"
 
       # Not -DskipTests. A release that was never tested is not a release.
-      - run: mvn -B -ntp verify -Prelease
+      #
+      # -Pweb as well as -Prelease: without it the released jar has an API and no console, which is
+      # not what the README says you get. The first release shipped exactly that.
+      - run: mvn -B -ntp verify -Prelease -Pweb
 
       - name: attach the jars
         uses: softprops/action-gh-release@v2
         with:
           draft: true
           generate_release_notes: true
+          # Exact paths, not globs. `till-server-*.jar` also matches the sources and javadoc jars,
+          # which belong on Maven Central rather than attached to a release, and the first release
+          # attached all four.
           files: |
-            till-server/target/till-server-*.jar
-            till-client/target/till-client-*-cli.jar
+            till-server/target/till-server-${{ steps.version.outputs.version }}.jar
+            till-client/target/till-client-${{ steps.version.outputs.version }}-cli.jar
           body: |
             ## Artifacts
 
-            - `till-server-*.jar` — the service. `java -jar till-server.jar --help` for the flags,
-              and [`docs/operations.md`](docs/operations.md) before putting it anywhere real.
+            - `till-server-*.jar` — the service, with the browser console in it. Start it and open
+              `/` for the shop and `/ops` for the ledger. `docs/operations.md` before putting it
+              anywhere real.
             - `till-client-*-cli.jar` — `tillctl`. `java -jar till-client-*-cli.jar` for the usage.
 
             The library modules go to Maven Central; see `RELEASING.md`.
