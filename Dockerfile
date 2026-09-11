@@ -2,7 +2,7 @@
 # changes when a pom does; the second compiles, which changes on every commit. Copying the poms
 # first means an ordinary code change re-uses the cached download layer instead of fetching the
 # whole of Spring again.
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3-eclipse-temurin-26 AS build
 WORKDIR /src
 
 COPY pom.xml .
