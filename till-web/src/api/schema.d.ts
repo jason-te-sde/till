@@ -172,6 +172,29 @@ export interface components {
             backlog: number;
             items: components["schemas"]["OutboxEntry"][];
         };
+        /** @description An RFC 9457 problem detail. */
+        Problem: {
+            /**
+             * @example INSUFFICIENT_STOCK
+             * @enum {string}
+             */
+            code?: "INSUFFICIENT_STOCK" | "UNKNOWN_SKU" | "RESERVATION_NOT_FOUND" | "RESERVATION_EXPIRED" | "ALREADY_COMMITTED" | "ALREADY_RELEASED" | "RESERVATION_ID_IN_USE" | "IDEMPOTENCY_KEY_REUSED" | "CONTENTION" | "UNAUTHORIZED" | "FORBIDDEN";
+            /** @example widget: asked for 5, 2 available */
+            detail: string;
+            instance?: string;
+            /** @example 0f9c1a7e-1f3a-4a2b-9a1e-2c4d6e8f0a11 */
+            requestId?: string;
+            shortfalls?: components["schemas"]["Shortfall"][];
+            /**
+             * Format: int32
+             * @example 409
+             */
+            status: number;
+            /** @example Not enough stock */
+            title: string;
+            /** @example about:blank */
+            type?: string;
+        };
         Released: {
             id: string;
             /** Format: date-time */
@@ -206,6 +229,13 @@ export interface components {
             expiresAt: string;
             id: string;
             lines: components["schemas"]["Line"][];
+        };
+        Shortfall: {
+            /** Format: int64 */
+            available: number;
+            /** Format: int64 */
+            requested: number;
+            sku: string;
         };
         Stock: {
             /** Format: int64 */
@@ -250,13 +280,31 @@ export interface operations {
                     "*/*": components["schemas"]["OutboxPage"];
                 };
             };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description this needs the admin token */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["OutboxPage"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -280,6 +328,24 @@ export interface operations {
                 };
                 content: {
                     "*/*": components["schemas"]["ReservationPage"];
+                };
+            };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -309,13 +375,31 @@ export interface operations {
                     "*/*": components["schemas"]["Reserved"];
                 };
             };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description a SKU has never been stocked */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Reserved"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             /** @description not enough available stock; the body lists every shortfall */
@@ -324,7 +408,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Reserved"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             /** @description this key was used for a different request */
@@ -333,7 +417,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Reserved"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             /** @description too much contention; retry */
@@ -342,7 +426,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Reserved"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -367,13 +451,31 @@ export interface operations {
                     "*/*": components["schemas"]["Reservation"];
                 };
             };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description no such reservation */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Reservation"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -400,13 +502,31 @@ export interface operations {
                     "*/*": components["schemas"]["Committed"];
                 };
             };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description no such reservation */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Committed"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             /** @description already committed, or already released */
@@ -415,7 +535,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Committed"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             /** @description the hold ran out of time */
@@ -424,7 +544,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Committed"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -451,13 +571,31 @@ export interface operations {
                     "*/*": components["schemas"]["Released"];
                 };
             };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description no such reservation */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Released"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             /** @description it was committed and cannot be released */
@@ -466,7 +604,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Released"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -492,6 +630,24 @@ export interface operations {
                     "*/*": components["schemas"]["StockPage"];
                 };
             };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     getStock: {
@@ -514,13 +670,31 @@ export interface operations {
                     "*/*": components["schemas"]["Stock"];
                 };
             };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description this SKU has never been stocked */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Stock"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -551,13 +725,31 @@ export interface operations {
                     "*/*": components["schemas"]["Stock"];
                 };
             };
+            /** @description the request could not be read, or a value in it was not valid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description no bearer token, or one this service does not know */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description this needs the admin token */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Stock"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             /** @description removing stock from a SKU that has no row */
@@ -566,7 +758,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Stock"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             /** @description this would take on-hand below what is reserved */
@@ -575,7 +767,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Stock"];
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };

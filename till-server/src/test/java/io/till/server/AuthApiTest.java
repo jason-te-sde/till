@@ -53,6 +53,33 @@ class AuthApiTest extends ApiTestBase {
     }
 
     @Test
+    @DisplayName("a denial says which kind it is, not just which status")
+    void denialsCarryACode() {
+        // Status alone does not separate "sign in" from "ask somebody for a better token", and the
+        // two call for opposite things. Read off the wire because these are not RejectionCodes: the
+        // filter runs before any of the kernel's vocabulary applies.
+        assertEquals("UNAUTHORIZED", codeOf(null, "/v1/stock/widget"));
+        assertEquals("FORBIDDEN", codeOf(CLIENT_TOKEN, "/v1/outbox"));
+    }
+
+    private String codeOf(String token, String path) {
+        try {
+            HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path));
+            if (token != null) {
+                request.header("Authorization", "Bearer " + token);
+            }
+            String body = HttpClient.newHttpClient()
+                    .send(request.GET().build(), HttpResponse.BodyHandlers.ofString())
+                    .body();
+            int at = body.indexOf("\"code\":\"");
+            assertTrue(at >= 0, "the denial carried no code: " + body);
+            return body.substring(at + 8, body.indexOf('"', at + 8));
+        } catch (IOException | InterruptedException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
     @DisplayName("the admin token can do everything the client token can")
     void adminTokenIsASuperset() {
         client(ADMIN_TOKEN).adjust(IdempotencyKey.of("d1"), Sku.of("widget"), 10);

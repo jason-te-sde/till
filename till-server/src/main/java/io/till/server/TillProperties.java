@@ -24,6 +24,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param sweeper the background expiry job
  * @param outbox the background publisher
  * @param web how the browser console is served
+ * @param retention how long history is kept
  */
 @ConfigurationProperties(prefix = "till")
 public record TillProperties(
@@ -35,7 +36,8 @@ public record TillProperties(
         @DefaultValue Auth auth,
         @DefaultValue Sweeper sweeper,
         @DefaultValue Outbox outbox,
-        @DefaultValue Web web) {
+        @DefaultValue Web web,
+        @DefaultValue RetentionPolicy retention) {
 
     public TillProperties {
         if (maxAttempts < 1) {
@@ -79,6 +81,47 @@ public record TillProperties(
          */
         public boolean isAdminConfigured() {
             return adminToken != null && !adminToken.isBlank();
+        }
+    }
+
+    /**
+     * How long history is kept.
+     *
+     * <p>A duration of zero means keep it forever, which is the default for reservations and not for
+     * the other two. See {@code RetentionSweeper} for why they differ.
+     *
+     * @param enabled whether to delete anything at all
+     * @param interval how often a pass runs
+     * @param batch rows per statement; small enough that a delete does not hold a lock long enough
+     *     for anything else to notice
+     * @param passes batches per table per run, so a first pass over years of history is bounded and
+     *     comes back for the rest rather than holding a connection for an hour
+     * @param idempotency how long a key is remembered. <b>Deleting one means a caller retrying that
+     *     command executes it again</b>, so this must be comfortably longer than the longest client
+     *     retry window — a fact about your callers, not about till
+     * @param outbox how long published events are kept. Unpublished rows are never deleted
+     * @param reservations how long finished reservations are kept. Zero, meaning forever, because
+     *     they are the record of what was held and by whom
+     */
+    public record RetentionPolicy(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("1h") Duration interval,
+            @DefaultValue("1000") int batch,
+            @DefaultValue("20") int passes,
+            @DefaultValue("7d") Duration idempotency,
+            @DefaultValue("30d") Duration outbox,
+            @DefaultValue("0s") Duration reservations) {
+
+        public RetentionPolicy {
+            if (batch < 1) {
+                throw new IllegalArgumentException("till.retention.batch must be at least 1");
+            }
+            if (passes < 1) {
+                throw new IllegalArgumentException("till.retention.passes must be at least 1");
+            }
+            if (idempotency.isNegative() || outbox.isNegative() || reservations.isNegative()) {
+                throw new IllegalArgumentException("a retention period must not be negative");
+            }
         }
     }
 

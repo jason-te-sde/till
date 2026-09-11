@@ -56,6 +56,18 @@ class ExposureCheckTest {
     }
 
     @Test
+    @DisplayName("management endpoints on the API's own port are a warning, not a refusal")
+    void warnsWhenManagementSharesThePort() {
+        TillProperties properties = properties("secret", "admin", false);
+
+        // A warning rather than a refusal: it is the right configuration for a test, and the tests
+        // in this repository use it. What matters is that it starts and says so rather than leaving
+        // /actuator/prometheus quietly readable by anyone who can reach the service.
+        assertDoesNotThrow(() -> new ExposureCheck(properties, "", "8080", "8080").check());
+        assertDoesNotThrow(() -> new ExposureCheck(properties, "", "8080", "").check());
+    }
+
+    @Test
     @DisplayName("a wildcard CORS origin is refused, because an inventory API is not a public one")
     void refusesWildcardCors() {
         assertThrows(IllegalArgumentException.class, () -> new TillProperties.Web(List.of("*")));
@@ -69,17 +81,27 @@ class ExposureCheckTest {
     }
 
     private static void check(String address, String clientToken, String adminToken, boolean insecure) {
-        TillProperties properties =
-                new TillProperties(
-                        8,
-                        32,
-                        Duration.ofMinutes(15),
-                        Duration.ofHours(24),
-                        insecure,
-                        new TillProperties.Auth(clientToken, adminToken),
-                        new TillProperties.Sweeper(true, Duration.ofSeconds(5), 200),
-                        new TillProperties.Outbox(true, Duration.ofSeconds(1), 200),
-                        new TillProperties.Web(List.of()));
-        new ExposureCheck(properties, address).check();
+        new ExposureCheck(properties(clientToken, adminToken, insecure), address, "8080", "9101").check();
+    }
+
+    private static TillProperties properties(String clientToken, String adminToken, boolean insecure) {
+        return new TillProperties(
+                8,
+                32,
+                Duration.ofMinutes(15),
+                Duration.ofHours(24),
+                insecure,
+                new TillProperties.Auth(clientToken, adminToken),
+                new TillProperties.Sweeper(true, Duration.ofSeconds(5), 200),
+                new TillProperties.Outbox(true, Duration.ofSeconds(1), 200),
+                new TillProperties.Web(List.of()),
+                new TillProperties.RetentionPolicy(
+                        true,
+                        Duration.ofHours(1),
+                        1000,
+                        20,
+                        Duration.ofDays(7),
+                        Duration.ofDays(30),
+                        Duration.ZERO));
     }
 }

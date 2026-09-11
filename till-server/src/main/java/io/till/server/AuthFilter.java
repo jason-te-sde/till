@@ -1,5 +1,6 @@
 package io.till.server;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -7,6 +8,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -32,10 +35,14 @@ class AuthFilter extends OncePerRequestFilter {
 
     private static final String BEARER = "Bearer ";
 
-    private final TillProperties properties;
+    private static final Logger LOG = LoggerFactory.getLogger(AuthFilter.class);
 
-    AuthFilter(TillProperties properties) {
+    private final TillProperties properties;
+    private final MeterRegistry registry;
+
+    AuthFilter(TillProperties properties, MeterRegistry registry) {
         this.properties = properties;
+        this.registry = registry;
     }
 
     @Override
@@ -57,17 +64,22 @@ class AuthFilter extends OncePerRequestFilter {
 
         String presented = bearer(request);
         if (presented == null) {
-            deny(response, HttpServletResponse.SC_UNAUTHORIZED, "a bearer token is required");
+            deny(request, response, HttpServletResponse.SC_UNAUTHORIZED, "missing", "a bearer token is required");
             return;
         }
         boolean isAdmin = auth.isAdminConfigured() && matches(presented, auth.adminToken());
         boolean isClient = matches(presented, auth.clientToken());
         if (!isAdmin && !isClient) {
-            deny(response, HttpServletResponse.SC_UNAUTHORIZED, "that token is not recognised");
+            deny(request, response, HttpServletResponse.SC_UNAUTHORIZED, "unknown", "that token is not recognised");
             return;
         }
         if (needsAdmin(request) && auth.isAdminConfigured() && !isAdmin) {
-            deny(response, HttpServletResponse.SC_FORBIDDEN, "changing stock levels needs the admin token");
+            deny(
+                    request,
+                    response,
+                    HttpServletResponse.SC_FORBIDDEN,
+                    "insufficient",
+                    "this endpoint needs the admin token");
             return;
         }
         chain.doFilter(request, response);
@@ -103,12 +115,35 @@ class AuthFilter extends OncePerRequestFilter {
                 presented.getBytes(StandardCharsets.UTF_8), configured.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static void deny(HttpServletResponse response, int status, String detail) throws IOException {
+    /**
+     * Refuses a request, and leaves a trace of it.
+     *
+     * <p>Counted by reason and logged at warning. "Somebody is probing us" and "a deploy shipped the
+     * wrong token" look identical in a 401 rate and completely different in the reason — and neither
+     * is answerable if the only record is the caller's side of it. The token itself is never logged.
+     */
+    private void deny(
+            HttpServletRequest request, HttpServletResponse response, int status, String reason, String detail)
+            throws IOException {
+        registry.counter("till.auth.denied", "reason", reason).increment();
+        LOG.warn("denied {} {} ({})", request.getMethod(), request.getRequestURI(), reason);
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+        // Written by hand rather than through the exception handler, because this filter runs before
+        // Spring MVC exists. The identifier is included for the same reason every other problem body
+        // has one: so a caller can quote it.
+        //
+        // `code` matters more than it looks: without it a client cannot tell "you sent no token" from
+        // "your token is not enough for this", and the two call for opposite things — sign in, or ask
+        // somebody for a different token. The console had been inventing the value locally off the
+        // status, which is the sort of thing that works until a second endpoint answers 403.
+        String id = RequestId.of(request);
+        boolean unauthorized = status == HttpServletResponse.SC_UNAUTHORIZED;
         response.getWriter()
                 .write(
-                        "{\"type\":\"about:blank\",\"title\":\"" + (status == 401 ? "Unauthorized" : "Forbidden")
-                                + "\",\"status\":" + status + ",\"detail\":\"" + detail + "\"}");
+                        "{\"type\":\"about:blank\",\"title\":\"" + (unauthorized ? "Unauthorized" : "Forbidden")
+                                + "\",\"status\":" + status + ",\"detail\":\"" + detail + "\""
+                                + ",\"code\":\"" + (unauthorized ? "UNAUTHORIZED" : "FORBIDDEN") + "\""
+                                + (id == null ? "" : ",\"requestId\":\"" + id + "\"") + "}");
     }
 }
