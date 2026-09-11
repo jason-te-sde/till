@@ -303,7 +303,7 @@ jobs:
       # Cached across runs because the first stage resolves the whole Maven dependency tree. Without
       # a cache that download is repeated on every pull request and is most of the job's wall time.
       - name: build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           tags: till:ci
