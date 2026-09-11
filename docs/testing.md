@@ -236,6 +236,9 @@ mvn test -pl till-testkit -Dtill.sim.seeds=10000 -Dtest=SoakTest \
   the JSON reader is strict and tested, but nobody has pointed a fuzzer at either.
 - **No load test.** There are no published throughput numbers for the service, only for the simulator
   and the suite. Publishing a figure measured on one laptop would say more about the laptop.
+- **The container job checks that the stack works, not that the image is small or safe.** Nothing
+  scans it, nothing measures it, and nothing checks that the base image is current beyond Dependabot
+  raising a pull request when it is not.
 - **Multi-line reservations are covered by the invariants but not by the history checker's
   serialisability reasoning**, which is per-key. See the note in `History` for why a full
   linearizability search is not attempted.
