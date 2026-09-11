@@ -46,6 +46,11 @@ updates:
       # typescript-eslint says it is ready; until then a pull request a week about it is noise.
       - dependency-name: 'typescript'
         update-types: ['version-update:semver-major']
+      # @types/node tracks the *lowest* Node the project supports, not the highest, so that an API
+      # added in a later release is a type error here rather than a surprise on the version somebody
+      # is actually running. It moves when `engines` moves, which is a decision rather than a bump.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: docker
     directory: /
