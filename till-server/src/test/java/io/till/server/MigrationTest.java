@@ -43,7 +43,30 @@ class MigrationTest extends ApiTestBase {
             }
         }
 
-        assertEquals(List.of("1 till schema"), applied, "the schema history is not what this build ships");
+        assertEquals(
+                List.of("1 till schema", "2 listing indexes"),
+                applied,
+                "the schema history is not what this build ships");
+    }
+
+    @Test
+    @DisplayName("the listing indexes exist, because without them both listings are sequential scans")
+    void theListingIndexesExist() throws SQLException {
+        List<String> indexes = new ArrayList<>();
+        try (var connection = dataSource.getConnection();
+                Statement statement = connection.createStatement();
+                ResultSet rows =
+                        statement.executeQuery(
+                                "select indexname from pg_indexes where schemaname = 'public' "
+                                        + "and indexname in ('till_stock_sku_c', 'till_reservation_by_state')")) {
+            while (rows.next()) {
+                indexes.add(rows.getString("indexname"));
+            }
+        }
+
+        // Named individually: an index that quietly stops being created turns a paged listing into a
+        // full sort, which nothing else in this suite would notice on a table with ten rows in it.
+        assertEquals(List.of("till_reservation_by_state", "till_stock_sku_c"), indexes.stream().sorted().toList());
     }
 
     @Test
