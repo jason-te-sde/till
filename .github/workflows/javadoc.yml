@@ -32,7 +32,7 @@ jobs:
       - name: aggregate javadoc
         run: mvn -B -ntp install -DskipTests && mvn -B -ntp javadoc:aggregate -Prelease
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: target/reports/apidocs
 
