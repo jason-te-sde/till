@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Spring Boot's modules are released together and are only tested together. Ten separate pull
+      # requests for one upgrade is ten chances to merge half of it.
+      spring:
+        patterns: ['org.springframework.boot:*', 'org.springframework:*', 'io.micrometer:*']
+      testing:
+        patterns: ['org.junit*', 'org.testcontainers:*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
