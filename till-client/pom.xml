@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.jason-te-sde</groupId>
+    <artifactId>till-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>till-client</artifactId>
+  <name>till-client</name>
+  <description>
+    A Java client for the till HTTP API and the tillctl command line, on the JDK's own HTTP client
+    and nothing else.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.jason-te-sde</groupId>
+      <artifactId>till-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+    <!-- A binding, so that tillctl does not greet every invocation with three lines about there
+         being no logger. Optional, so that a service using this as a library keeps its own; the
+         shaded command line jar picks it up because it is on this module's own runtime classpath.
+         simplelogger.properties turns it off by default and a system property turns it back on. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>${slf4j.version}</version>
+      <scope>runtime</scope>
+      <optional>true</optional>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- A runnable tillctl, attached beside the library jar rather than replacing it.
+           `java -jar till-client-<version>-cli.jar` is the whole installation, which matters for a
+           command line: the alternative is telling somebody to assemble a classpath by hand, and
+           the alternative to that is a Spring Boot jar, whose nested layout cannot be put on a
+           classpath at all. The plain jar stays plain for people using this as a library. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>tillctl</id>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>cli</shadedClassifierName>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>io.till.client.Tillctl</mainClass>
+                </transformer>
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <!-- Another jar's signature does not survive being repacked, and a jar with a
+                       signature that no longer matches refuses to load rather than warning. -->
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

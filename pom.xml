@@ -48,6 +48,7 @@
     <module>till-core</module>
     <module>till-testkit</module>
     <module>till-jdbc</module>
+    <module>till-client</module>
   </modules>
 
   <properties>
