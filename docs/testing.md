@@ -242,6 +242,8 @@ mvn test -pl till-testkit -Dtill.sim.seeds=10000 -Dtest=SoakTest \
 - **Multi-line reservations are covered by the invariants but not by the history checker's
   serialisability reasoning**, which is per-key. See the note in `History` for why a full
   linearizability search is not attempted.
+- **Only the Node versions in the matrix.** `engines` says 24 or newer and CI tests 24 and 26.
+  Nothing tests anything older, which is why the manifest no longer claims to support it.
 - **One browser.** The end-to-end suite runs Chromium only. Nothing here is doing anything a
   rendering engine disagrees about, but that is an argument rather than a test.
 - **No visual regression testing.** Light and dark mode were looked at by a person, once. A palette
