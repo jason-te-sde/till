@@ -34,7 +34,7 @@ COPY till-web till-web
 # to discover that either is missing. CI runs every suite before it builds this.
 RUN mvn -B -ntp -q -Pweb package -DskipTests
 
-FROM eclipse-temurin:21-jre AS runtime
+FROM eclipse-temurin:25-jre AS runtime
 
 # curl is here for the health check and nothing else. The alternative is a Java class that exists
 # only to make one HTTP request, which is more code in the shipped artifact than a 250 kB package.
