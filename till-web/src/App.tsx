@@ -4,6 +4,7 @@ import { useTill } from './api/context'
 import { ShopPage } from './shop/ShopPage'
 import { OpsPage } from './ops/OpsPage'
 import { ThemeToggle } from './components/ThemeToggle'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 export function App() {
   return (
@@ -39,12 +40,19 @@ function Shell() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-6">
-        <Routes>
-          <Route path="/" element={<Navigate to="/shop" replace />} />
-          <Route path="/shop" element={<ShopPage />} />
-          <Route path="/ops" element={<OpsPage />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        {/*
+          Inside the shell, not around it: a page that throws leaves the header, the tabs and the
+          token control on screen, so the operator can still go somewhere else. A boundary around
+          the whole app would take those with it.
+        */}
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/" element={<Navigate to="/shop" replace />} />
+            <Route path="/shop" element={<ShopPage />} />
+            <Route path="/ops" element={<OpsPage />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   )

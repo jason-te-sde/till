@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="till">
+  <!--
+    The stock meter, which is the one picture this whole project draws: a bar split into the part
+    that is available and the part that is spoken for. Same two categorical slots as the console,
+    same order. `prefers-color-scheme` is honoured because a tab strip has its own surface.
+  -->
+  <style>
+    .plane { fill: #f2f1ed }
+    .available { fill: #2a78d6 }
+    .reserved { fill: #eb6834 }
+    @media (prefers-color-scheme: dark) {
+      .plane { fill: #1a1a19 }
+      .available { fill: #3987e5 }
+      .reserved { fill: #d95926 }
+    }
+  </style>
+  <rect class="plane" width="32" height="32" rx="7" />
+  <rect class="available" x="6" y="7" width="20" height="5" rx="2.5" />
+  <rect class="available" x="6" y="14" width="13" height="5" rx="2.5" />
+  <rect class="reserved" x="6" y="21" width="8" height="5" rx="2.5" />
+</svg>

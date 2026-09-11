@@ -1,9 +1,16 @@
+import type { components } from './schema'
+
 /** How far short one SKU fell, from an RFC 9457 problem body. */
-export interface Shortfall {
-  readonly sku: string
-  readonly requested: number
-  readonly available: number
-}
+export type Shortfall = components['schemas']['Shortfall']
+
+/**
+ * The reasons the service gives for refusing something.
+ *
+ * Taken from the generated contract rather than written out here, so that renaming a rejection code
+ * in the kernel is a TypeScript error in this file instead of a comparison that quietly stops
+ * matching and a branch that quietly stops running.
+ */
+export type RejectionCode = NonNullable<components['schemas']['Problem']['code']>
 
 /**
  * The service answered, and the answer was no.
@@ -18,13 +25,13 @@ export interface Shortfall {
  */
 export class TillError extends Error {
   readonly status: number
-  readonly code: string | undefined
+  readonly code: RejectionCode | undefined
   readonly detail: string
   readonly shortfalls: readonly Shortfall[]
 
   constructor(
     status: number,
-    code: string | undefined,
+    code: RejectionCode | undefined,
     detail: string,
     shortfalls: readonly Shortfall[] = [],
   ) {
@@ -61,7 +68,10 @@ export function problemFrom(status: number, body: unknown, fallback: string): Ti
     return new TillError(status, undefined, fallback)
   }
   const problem = body as Record<string, unknown>
-  const code = typeof problem['code'] === 'string' ? problem['code'] : undefined
+  // Narrowed by a cast rather than by checking the value against the union. A service that grows a
+  // new code should not make this console throw away the rest of a perfectly readable problem; the
+  // branches below simply do not match, which is the right behaviour for a code they predate.
+  const code = typeof problem['code'] === 'string' ? (problem['code'] as RejectionCode) : undefined
   const detail = typeof problem['detail'] === 'string' ? problem['detail'] : fallback
   const shortfalls = Array.isArray(problem['shortfalls'])
     ? (problem['shortfalls'] as unknown[]).filter(isShortfall)
