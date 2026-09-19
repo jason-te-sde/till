@@ -51,6 +51,7 @@
     <module>till-client</module>
     <module>till-kafka</module>
     <module>till-server</module>
+    <module>till-catalogue</module>
   </modules>
 
   <properties>

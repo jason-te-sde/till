@@ -10,7 +10,9 @@ COPY till-core/pom.xml till-core/
 COPY till-jdbc/pom.xml till-jdbc/
 COPY till-testkit/pom.xml till-testkit/
 COPY till-client/pom.xml till-client/
+COPY till-kafka/pom.xml till-kafka/
 COPY till-server/pom.xml till-server/
+COPY till-catalogue/pom.xml till-catalogue/
 # This project's own modules are excluded: they are not built yet, and asking Maven to resolve them
 # from a repository would fail. Everything else is fetched here so the layer can be cached.
 RUN mvn -B -ntp -q dependency:go-offline -DexcludeGroupIds=io.github.jason-te-sde
@@ -19,7 +21,9 @@ COPY till-core till-core
 COPY till-jdbc till-jdbc
 COPY till-testkit till-testkit
 COPY till-client till-client
+COPY till-kafka till-kafka
 COPY till-server till-server
+COPY till-catalogue till-catalogue
 COPY till-web till-web
 
 # The console's dependencies are not pre-warmed into a layer of their own. Doing it needs the
@@ -53,9 +57,13 @@ USER till:till
 WORKDIR /app
 
 COPY --from=build /src/till-server/target/till-server-*.jar /app/till-server.jar
+COPY --from=build /src/till-catalogue/target/till-catalogue-*.jar /app/till-catalogue.jar
 COPY --from=build /src/till-client/target/till-client-*-cli.jar /app/tillctl.jar
 
-EXPOSE 8080 9101
+# 8080/9101 are the ledger, 8081/9102 the storefront. One image, two entrypoints: the two services
+# share every dependency they have, and building two images to differ by one jar name would double
+# the build time to save nothing.
+EXPOSE 8080 8081 9101 9102
 
 # Readiness, not liveness. This asks whether the service can serve a request, which for something
 # whose whole job is a database means asking the database. A liveness probe that did the same would

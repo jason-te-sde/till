@@ -1,8 +1,14 @@
-# A working service in one command:
+# The whole platform in one command:
 #
 #   docker compose up -d --wait
 #   open http://127.0.0.1:8080          # the shop, and /ops for the ledger
-#   docker compose run --rm tillctl adjust widget 100
+#   curl -s http://127.0.0.1:8081/v1/games | jq        # the storefront's catalogue
+#   docker compose run --rm tillctl adjust sunless-orbit 100
+#
+# Two services and a broker, and the split is the point. `till` owns stock and is the only thing
+# that may decide a sale. `catalogue` owns titles and prices, keeps a read model of availability by
+# consuming till's events, and reserves by calling till over HTTP with an ordinary client token —
+# so a bug in the storefront cannot oversell.
 #
 # The tokens are in this file in plain text because this file is a demonstration. A real deployment
 # gets them from somewhere else; docs/operations.md says where.
@@ -14,7 +20,7 @@ services:
       POSTGRES_DB: till
       POSTGRES_USER: till
       POSTGRES_PASSWORD: till
-    # `--wait` on the service below is only as good as this check. pg_isready returning true before
+    # `--wait` on the services below is only as good as this check. pg_isready returning true before
     # the database will accept a connection is the classic reason a stack comes up broken, so this
     # asks for the database by name rather than asking whether a port is open.
     healthcheck:
@@ -24,11 +30,52 @@ services:
       retries: 20
     volumes:
       - till-data:/var/lib/postgresql/data
+      # Two services, two schemas, two databases — created here because the storefront must not be
+      # able to reach the ledger's tables even by accident. A shared database would make the first
+      # convenient join possible, and that join is where an oversell gets decided in the wrong place.
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+
+  kafka:
+    image: apache/kafka-native:4.1.0
+    environment:
+      # KRaft: one node that is its own controller, no ZooKeeper. A demonstration stack does not
+      # need a quorum, and the thing being demonstrated is the outbox, not Kafka's own availability.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      # A port check, which is weaker than the one above for postgres — it proves the broker is
+      # listening, not that it is serving. That is acceptable *here* and would not be there, and the
+      # difference is worth stating: Flyway runs the moment a service starts and fails hard against a
+      # database that is not ready, whereas both the producer and the consumer retry a broker that is
+      # not, and the consumer reads from the beginning when it does connect. A late broker costs a
+      # few seconds of staleness; a late database costs a failed migration.
+      #
+      # (The native image ships a single binary and none of Kafka's CLI scripts, so
+      # `kafka-topics.sh --list` — the check that would actually prove it is serving — is not there
+      # to run. Swapping to the JVM image to get it would trade thirty seconds of start-up per CI run
+      # for a distinction neither service is sensitive to.)
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9092"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
 
   till:
     build: .
     depends_on:
       postgres:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     environment:
       TILL_DB_URL: jdbc:postgresql://postgres:5432/till
@@ -36,6 +83,7 @@ services:
       TILL_DB_PASSWORD: till
       TILL_CLIENT_TOKEN: demo-client-token
       TILL_ADMIN_TOKEN: demo-admin-token
+      TILL_KAFKA_BROKERS: kafka:9092
     ports:
       - "8080:8080"
       - "9101:9101"
@@ -46,8 +94,39 @@ services:
       retries: 20
       start_period: 40s
 
+  catalogue:
+    build: .
+    # Same image, different jar. The two services share every dependency they have.
+    entrypoint: ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/till-catalogue.jar"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      till:
+        condition: service_healthy
+    environment:
+      CATALOGUE_DB_URL: jdbc:postgresql://postgres:5432/catalogue
+      CATALOGUE_DB_USER: till
+      CATALOGUE_DB_PASSWORD: till
+      CATALOGUE_KAFKA_BROKERS: kafka:9092
+      TILL_URL: http://till:8080
+      # The client token, never the admin one. The storefront reserves, commits and releases; it has
+      # no business moving stock levels, and holding the token that could would make it worth
+      # compromising.
+      TILL_CLIENT_TOKEN: demo-client-token
+    ports:
+      - "8081:8081"
+      - "9102:9102"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9102/actuator/health/readiness"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
   # Not started with the stack; run one command at a time:
-  #   docker compose run --rm tillctl reserve widget:2
+  #   docker compose run --rm tillctl reserve sunless-orbit:2
   #
   # It is behind a profile, which means `docker compose build` does not rebuild it. After changing
   # the Dockerfile, `docker compose --profile cli build` — otherwise `run` quietly uses the image
