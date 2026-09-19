@@ -1,6 +1,7 @@
 package io.till.server;
 
 import java.time.Duration;
+import java.util.Map;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
@@ -36,6 +37,7 @@ public record TillProperties(
         @DefaultValue Auth auth,
         @DefaultValue Sweeper sweeper,
         @DefaultValue Outbox outbox,
+        @DefaultValue Kafka kafka,
         @DefaultValue Web web,
         @DefaultValue RetentionPolicy retention) {
 
@@ -172,4 +174,37 @@ public record TillProperties(
             @DefaultValue("true") boolean enabled,
             @DefaultValue("1s") Duration interval,
             @DefaultValue("200") int batch) {}
+
+    /**
+     * Where the outbox goes, when it goes to Kafka.
+     *
+     * <p>Off unless {@code bootstrap-servers} is set, rather than having an {@code enabled} flag that
+     * could disagree with it. A service configured for Kafka but quietly writing log lines instead is
+     * a failure nobody notices until a downstream team asks where their events went.
+     *
+     * @param bootstrapServers the broker list; blank means do not publish to Kafka at all
+     * @param topic the topic every event goes to
+     * @param deliveryTimeout how long a record may be retried before the batch fails and is offered
+     *     again. Much longer than the outbox interval means a broker outage blocks the publisher
+     *     rather than letting it come back on the next tick
+     * @param properties extra producer settings, merged last, so a deployment can set security or
+     *     tuning options without a code change
+     */
+    public record Kafka(
+            @DefaultValue("") String bootstrapServers,
+            @DefaultValue("till.events") String topic,
+            @DefaultValue("30s") Duration deliveryTimeout,
+            @DefaultValue Map<String, String> properties) {
+
+        public Kafka {
+            properties = properties == null ? Map.of() : Map.copyOf(properties);
+        }
+
+        /**
+         * @return whether a broker was configured
+         */
+        public boolean isConfigured() {
+            return !bootstrapServers.isBlank();
+        }
+    }
 }

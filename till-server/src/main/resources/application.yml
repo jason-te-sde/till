@@ -85,6 +85,17 @@ till:
     enabled: true
     interval: 1s
     batch: 200
+  kafka:
+    # Blank means the outbox is published as log lines instead. Setting this is the whole switch:
+    # there is no separate enabled flag to disagree with it.
+    bootstrap-servers: ${TILL_KAFKA_BROKERS:}
+    topic: ${TILL_KAFKA_TOPIC:till.events}
+    # Shorter than the default two minutes, because the outbox offers the batch again on the next
+    # tick anyway. A broker outage should make the publisher retry from the top, not hang in a send.
+    delivery-timeout: 30s
+    # Merged last into the producer config, for security settings and tuning.
+    # properties:
+    #   security.protocol: SASL_SSL
   retention:
     enabled: true
     interval: 1h

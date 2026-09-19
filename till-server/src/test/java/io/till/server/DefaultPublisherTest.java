@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.till.client.TillClient;
+import io.till.core.EventPublisher;
 import io.till.core.IdempotencyKey;
 import io.till.core.Sku;
 import org.junit.jupiter.api.DisplayName;
@@ -27,6 +28,24 @@ class DefaultPublisherTest extends ApiTestBase {
 
     @Autowired
     OutboxPublisher publisher;
+
+    @Autowired
+    org.springframework.context.ApplicationContext context;
+
+    @Test
+    @DisplayName("an unset broker list leaves Kafka out entirely, rather than half-configured")
+    void kafkaIsOffWhenUnconfigured() {
+        // application.yml carries `bootstrap-servers: ${TILL_KAFKA_BROKERS:}`, which is *present*
+        // and empty on every deployment that has not opted in. @ConditionalOnProperty matched on
+        // presence, built a producer with no brokers, and Kafka's config validation then failed the
+        // bean — so the service refused to start by default. This is that regression.
+        assertTrue(
+                context.getBeansOfType(org.apache.kafka.clients.producer.Producer.class).isEmpty(),
+                "no broker configured, so there should be no producer");
+        assertTrue(
+                context.getBeansOfType(EventPublisher.class).isEmpty(),
+                "and no publisher bean, so OutboxPublisher falls back to log lines");
+    }
 
     @Test
     @DisplayName("the default publisher exists, and draining the outbox with it works")

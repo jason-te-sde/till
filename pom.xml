@@ -49,6 +49,7 @@
     <module>till-testkit</module>
     <module>till-jdbc</module>
     <module>till-client</module>
+    <module>till-kafka</module>
     <module>till-server</module>
   </modules>
 
@@ -157,6 +158,11 @@
       <dependency>
         <groupId>io.github.jason-te-sde</groupId>
         <artifactId>till-client</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.jason-te-sde</groupId>
+        <artifactId>till-kafka</artifactId>
         <version>${project.version}</version>
       </dependency>
     </dependencies>

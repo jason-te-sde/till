@@ -1,6 +1,7 @@
 package io.till.server;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.till.core.EventPublisher;
 import io.till.core.OutboxEntry;
 import io.till.jdbc.JdbcLedger;
 import java.time.Clock;
