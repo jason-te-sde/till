@@ -36,7 +36,10 @@ services:
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
 
   kafka:
-    image: apache/kafka-native:4.1.0
+    # The JVM image rather than apache/kafka-native: the native build segfaults on start when
+    # the container's UID has no /etc/passwd entry, which is host-dependent — it works on a
+    # laptop and dies on a CI runner. It also ships the CLI the health check below needs.
+    image: apache/kafka:4.1.0
     environment:
       # KRaft: one node that is its own controller, no ZooKeeper. A demonstration stack does not
       # need a quorum, and the thing being demonstrated is the outbox, not Kafka's own availability.
@@ -53,22 +56,13 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
-      # A port check, which is weaker than the one above for postgres — it proves the broker is
-      # listening, not that it is serving. That is acceptable *here* and would not be there, and the
-      # difference is worth stating: Flyway runs the moment a service starts and fails hard against a
-      # database that is not ready, whereas both the producer and the consumer retry a broker that is
-      # not, and the consumer reads from the beginning when it does connect. A late broker costs a
-      # few seconds of staleness; a late database costs a failed migration.
-      #
-      # (The native image ships a single binary and none of Kafka's CLI scripts, so
-      # `kafka-topics.sh --list` — the check that would actually prove it is serving — is not there
-      # to run. Swapping to the JVM image to get it would trade thirty seconds of start-up per CI run
-      # for a distinction neither service is sensitive to.)
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 9092"]
+      # Asks the broker to list topics, which needs it to be serving rather than merely listening —
+      # the same standard as the postgres check above, for the same reason.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list > /dev/null 2>&1"]
       interval: 3s
-      timeout: 5s
+      timeout: 10s
       retries: 30
-      start_period: 10s
+      start_period: 20s
 
   till:
     build: .

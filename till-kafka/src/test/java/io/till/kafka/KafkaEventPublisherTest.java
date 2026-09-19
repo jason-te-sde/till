@@ -48,11 +48,22 @@ class KafkaEventPublisherTest {
     private static final Instant T0 = Instant.parse("2026-09-18T12:00:00Z");
     private static final Duration TIMEOUT = Duration.ofSeconds(20);
 
+    /**
+     * The JVM image, not {@code apache/kafka-native}.
+     *
+     * <p>The native build segfaults on start when the container's UID has no {@code /etc/passwd}
+     * entry: GraalVM resolves {@code user.home} through {@code getpwuid} during class
+     * initialisation and dies in the signal handler before Kafka logs a line. It works on a Mac and
+     * fails on a GitHub runner, so it passed locally and broke CI. A few seconds of start-up is the
+     * right price for a broker that starts.
+     */
+    private static final String KAFKA_IMAGE = "apache/kafka:4.1.0";
+
     private static KafkaContainer kafka;
 
     @BeforeAll
     static void startBroker() {
-        kafka = new KafkaContainer("apache/kafka-native:4.1.0");
+        kafka = new KafkaContainer(KAFKA_IMAGE);
         kafka.start();
     }
 

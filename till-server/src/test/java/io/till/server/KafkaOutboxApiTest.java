@@ -60,7 +60,18 @@ class KafkaOutboxApiTest extends ApiTestBase {
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
     private static final String TOPIC = "till-events-e2e";
 
-    private static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka-native:4.1.0");
+    /**
+     * The JVM image, not {@code apache/kafka-native}.
+     *
+     * <p>The native build segfaults on start when the container's UID has no {@code /etc/passwd}
+     * entry: GraalVM resolves {@code user.home} through {@code getpwuid} during class
+     * initialisation, and dies in the signal handler before Kafka logs a line. It works on a Mac
+     * and fails on a GitHub runner, so it passed locally and broke CI. A few seconds of start-up is
+     * the right price for a broker that starts.
+     */
+    private static final String KAFKA_IMAGE = "apache/kafka:4.1.0";
+
+    private static final KafkaContainer KAFKA = new KafkaContainer(KAFKA_IMAGE);
 
     static {
         KAFKA.start();

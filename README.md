@@ -462,6 +462,18 @@ offers a live hold as reclaimable (the kernel re-checks the deadline; it does no
 <table>
 <tr><th>Bug</th><th>What caught it</th></tr>
 <tr>
+<td><b>The Kafka image segfaulted on CI and not on a laptop.</b>
+<code>apache/kafka-native</code> is a GraalVM build, and GraalVM resolves <code>user.home</code>
+through <code>getpwuid</code> during class initialisation — which segfaults when the container's UID
+has no <code>/etc/passwd</code> entry. That depends on the host's UID mapping, so it started every
+time locally and died before logging a line on a GitHub runner, on one JDK of the matrix and not the
+other.</td>
+<td>Reading the container's own crash dump out of the CI log rather than assuming a flaky container
+and retrying. Swapped for the JVM image, which also ships the CLI — so the compose health check
+could go back to asking the broker to list topics, instead of the port check it had been reduced to
+when the native image turned out not to have the script.</td>
+</tr>
+<tr>
 <td><b>A background job started working before its application was ready, and stole another test's
 events.</b> Test classes run in parallel; <code>@ResourceLock</code> guards test <i>methods</i>; and
 Spring builds a context in <code>beforeAll</code>, which is <b>outside the lock</b>. So while one
