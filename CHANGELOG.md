@@ -11,6 +11,23 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **`till-kafka`** — publishes the outbox to Kafka with plain `kafka-clients`. `acks=all` and
+  producer idempotence; records keyed by the entity the event is about, so one reservation's
+  lifecycle cannot arrive out of order; deduplication key, outbox sequence, type and decision
+  instant in headers. A failed batch throws, so the whole batch is offered again.
+- **`till-catalogue`** — the storefront. Owns games, prices and a read model of availability built
+  by consuming those events, and reserves by calling till over HTTP with a client token on a
+  separate database. Its `available` is a cache with a timestamp: a stale number costs one refused
+  checkout and can never cause an oversell.
+- **An inbox on the consumer.** Events are applied exactly once by inserting the producer's
+  deduplication key in the same transaction as the numbers it moves. The reservation events carry
+  deltas, so a redelivery would otherwise corrupt the projection permanently.
+- `EventPublisher` moved from `io.till.server` to `io.till.core`, so an adapter can depend on the
+  kernel without depending on the application. Not part of the declared public surface, so no
+  version bump; noted here because it is a package change.
+- Kafka in the compose stack, both services from one image, and CI steps that drive a sale through
+  the storefront and assert the storefront cannot move stock.
+
 - **Retention runs itself.** `Retention` is a port on the ledger with bounded-batch deletes for the
   three tables that grow; `RetentionSweeper` runs them hourly. The idempotency window defaults to
   seven days — the setting to raise rather than lower — and reservations default to *keep forever*.
@@ -28,6 +45,11 @@ explicitly not: it is a testing tool and it will change.
 
 ### Fixed
 
+- **A broker outage would have held the outbox publisher's thread for a minute per batch.**
+  `max.block.ms` bounds `send()`'s wait for cluster metadata and defaults to sixty seconds
+  independently of the delivery timeout. Derived from the budget now, with a test that asserts it.
+- **The service refused to start once Kafka was on the classpath.** `@ConditionalOnProperty` matches
+  on a property being *present*, and the YAML default is present and empty.
 - **Pruning an idempotency record while its event was still in the outbox could wedge that command
   permanently at 503.** An adjustment's event is named after the key; forgetting the key early let a
   re-execution collide with its own leftover event. The delete now refuses while the event is

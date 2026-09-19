@@ -1,6 +1,7 @@
 package io.till.server;
 
 import io.till.core.Codec;
+import io.till.core.EventPublisher;
 import io.till.core.OutboxEntry;
 import java.util.List;
 import org.slf4j.Logger;

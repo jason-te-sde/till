@@ -1,6 +1,7 @@
 package io.till.server;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.till.core.EventPublisher;
 import io.till.core.OutboxEntry;
 import io.till.jdbc.JdbcLedger;
 import java.time.Clock;
@@ -70,8 +71,17 @@ class OutboxPublisher {
      * <p>Scheduled with a fixed delay rather than a fixed rate: at a fixed rate a publisher that
      * falls behind is asked to start another run before the last one finished, which turns a slow
      * broker into a growing pile of concurrent runs all fighting over the same rows.
+     *
+     * <p>And with an initial delay of one interval, rather than firing the moment the bean exists.
+     * A publisher that runs during context startup is doing work before the application has said it
+     * is ready, which in production is merely impolite and in the test suite is a correctness
+     * problem: test classes run in parallel, {@code @ResourceLock} guards test <i>methods</i>, and
+     * Spring builds a context in {@code beforeAll} — outside the lock. So a second suite's context
+     * coming up mid-test drained the first suite's outbox rows to log lines and marked them
+     * published, and the events never reached the broker the first suite was watching.
+     * {@link RetentionSweeper} already had this for the same reason.
      */
-    @Scheduled(fixedDelayString = "${till.outbox.interval:1s}")
+    @Scheduled(fixedDelayString = "${till.outbox.interval:1s}", initialDelayString = "${till.outbox.interval:1s}")
     void drain() {
         List<OutboxEntry> batch = ledger.unpublished(properties.outbox().batch());
         if (batch.isEmpty()) {

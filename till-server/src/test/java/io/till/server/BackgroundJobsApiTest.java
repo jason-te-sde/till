@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.till.client.TillClient;
+import io.till.core.EventPublisher;
 import io.till.core.IdempotencyKey;
 import io.till.core.Line;
 import io.till.core.Outcome;

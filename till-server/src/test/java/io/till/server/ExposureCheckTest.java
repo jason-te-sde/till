@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -94,6 +95,7 @@ class ExposureCheckTest {
                 new TillProperties.Auth(clientToken, adminToken),
                 new TillProperties.Sweeper(true, Duration.ofSeconds(5), 200),
                 new TillProperties.Outbox(true, Duration.ofSeconds(1), 200),
+                new TillProperties.Kafka("", "till.events", Duration.ofSeconds(30), Map.of()),
                 new TillProperties.Web(List.of()),
                 new TillProperties.RetentionPolicy(
                         true,

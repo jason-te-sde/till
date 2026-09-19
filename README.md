@@ -1,9 +1,10 @@
 <h1 align="center">till</h1>
 
 <p align="center">
-  An oversell-proof inventory reservation service.<br>
-  The rules as a pure function, a deterministic concurrency simulator, a PostgreSQL adapter with a
-  transactional outbox, and a browser console you can watch two tabs race in.
+  An oversell-proof game store platform, built around a reservation kernel that cannot be wrong.<br>
+  The rules as a pure function, a deterministic concurrency simulator, a transactional outbox to
+  Kafka with an idempotent consumer on the other end, and a browser console you can watch two tabs
+  race in.
 </p>
 
 <p align="center">
@@ -11,7 +12,7 @@
     <img alt="CI" src="https://github.com/jason-te-sde/till/actions/workflows/ci.yml/badge.svg">
   </a>
   <img alt="Java 21" src="https://img.shields.io/badge/Java-21%2B-orange">
-  <img alt="tests" src="https://img.shields.io/badge/tests-393-brightgreen">
+  <img alt="tests" src="https://img.shields.io/badge/tests-419-brightgreen">
   <img alt="coverage" src="https://img.shields.io/badge/coverage-88.1%25%20java%20%C2%B7%2087.1%25%20web-brightgreen">
   <img alt="Maven Central" src="https://img.shields.io/badge/maven--central-pending-lightgrey">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
@@ -158,7 +159,9 @@ switch (outcome) {
 | `till-jdbc` | PostgreSQL: optimistic concurrency and a transactional outbox |
 | `till-testkit` | the simulator and the invariants, usable against a `Ledger` of your own |
 | `till-client` | an HTTP client and `tillctl`, with no serialisation dependency |
-| `till-server` | the whole service, if you want it rather than the pieces |
+| `till-kafka` | publishes the outbox to Kafka; no Spring, plain `kafka-clients` |
+| `till-server` | the ledger as a service — the only thing that may decide a sale |
+| `till-catalogue` | the storefront: games, prices, and a read model of availability built from the events |
 | `till-web` | the browser console, bundled into the server jar by `-Pweb` |
 
 **Not on Maven Central yet.** The build signs and uploads from CI, but the account and the signing
@@ -203,11 +206,29 @@ flowchart TB
     TILL -- "load / apply" --> LEDGER
     LEDGER --> PG
     PG -- "unpublished events" --> PUB
-    PUB -- "at least once" --> BROKER["your broker"]
+    PUB -- "at least once" --> KAFKA[["Kafka<br/><i>keyed by entity</i>"]]
+    KAFKA --> CONSUMER
+
+    subgraph store["till-catalogue · the storefront"]
+        CONSUMER["event consumer<br/><i>inbox: applied once</i>"]
+        PROJ[("availability<br/><i>a cache with a timestamp</i>")]
+        SHOP["REST · games, prices, what is buyable"]
+    end
+
+    CONSUMER --> PROJ
+    PROJ --> SHOP
+    SHOP -- "reserve / commit / release<br/><i>client token, no shortcut</i>" --> REST
 ```
 
 The load-bearing rule is one sentence: **the rules are a function, and the adapter writes all of its
 output or none of it.** Everything else follows from those two.
+
+**The two services are split so that exactly one of them can be wrong about stock.** `till-server`
+owns the ledger. `till-catalogue` owns the shop — titles, prices, and a read model of availability
+it builds by consuming events — and reserves by calling till over HTTP with an ordinary client
+token, on a separate database, with no privileged path of any kind. Its `available` is therefore
+allowed to be stale, and the worst a stale number can do is cost one customer a refused checkout.
+It cannot cause an oversell, because it is not consulted when a sale is decided.
 
 `Decision` is the seam. The kernel returns a batch — one outcome for the caller, the row changes that
 make it true, the events that describe them, and the idempotency record — and a `Ledger` applies the
@@ -240,6 +261,39 @@ sequenceDiagram
 
 If the apply is refused, `Till` loads again and decides again. There is no sleep between attempts: a
 conflict means somebody else's transaction committed, which means progress was made by somebody.
+</details>
+
+<details>
+<summary><b>Outbox, inbox, and why both are needed</b></summary>
+
+An event is written in the same transaction as the change it describes, so there is no window where
+stock moved and nobody downstream will hear about it. A publisher drains the table afterwards and
+delivers **at least once** — which is not a caveat but a design choice, because the alternative
+(marking published before delivering) loses events instead of repeating them.
+
+That choice is only affordable because the reader can absorb it. So the consumer has the mirror:
+every event is inserted into an inbox table by the producer's deduplication key **in the same
+transaction** as the numbers it moves. A redelivery hits the primary key, the transaction is
+abandoned, nothing shifts.
+
+This matters more than it sounds. The reservation events carry *deltas* — a list of lines — so a
+duplicate does not merely waste work, it moves `reserved` twice and the projection is quietly and
+permanently wrong. An outbox without an inbox is half a design, and the missing half is the half
+that keeps the reader correct.
+
+Two more details:
+
+- **Records are keyed by the entity the event is about** — the reservation, or the SKU for an
+  adjustment — so one reservation's reserve-then-commit cannot arrive backwards. There is no global
+  order; the outbox sequence rides in a header for a consumer that needs to notice. The key is
+  chosen by an exhaustive switch over the sealed `Event`, so a sixth event type breaks the build
+  rather than silently defaulting to round-robin partitioning.
+- **Offsets are committed after the projection commits.** Auto-commit acknowledges on a timer,
+  including records not yet applied, so a crash loses them silently. Committing after makes the
+  failure mode a replay, which the inbox makes free.
+
+`StockAdjusted` is the only event carrying absolute levels rather than a delta, which makes it the
+only thing that can repair a projection that has drifted — so it is applied as a set, deliberately.
 </details>
 
 <details>
@@ -278,6 +332,8 @@ because the alternative is a client that retried a timeout being told "out of st
 | Idempotency | keyed by the caller, with a fingerprint that ignores the server-minted id and the line order |
 | Optimistic concurrency | a version per row, no locks, no backoff, bounded attempts |
 | Transactional outbox | events in the same transaction as the change, delivered at least once, with stable deduplication keys |
+| Kafka, and an idempotent reader | `acks=all` with producer idempotence, records keyed by entity so one reservation's lifecycle stays ordered, and an inbox on the consumer so a redelivery moves nothing |
+| Two services, one authority | the storefront owns prices and a read model; the ledger owns stock. Separate databases, a client token, no shortcut — a bug in the shop cannot oversell |
 | Oversell impossible at the database | `check (reserved >= 0 and on_hand >= 0 and reserved <= on_hand)` |
 | Two bearer tokens | separate, because ejecting stock is not the same privilege as holding it |
 | Secure by default | refuses to listen on a non-loopback address with no token, unless `--till.insecure` |
@@ -301,7 +357,7 @@ produced it.
 
 | | |
 | --- | --- |
-| Tests | **393** — 296 Java, 86 console, 11 end-to-end (plus one soak, off by default) |
+| Tests | **419** — 322 Java, 86 console, 11 end-to-end (plus one soak, off by default) |
 | Coverage | **88.1% / 81.0%** lines / branches on the Java, **87.1% / 83.6%** on the console |
 | `mvn verify`, whole reactor | **21s** |
 | Simulation throughput | **79,416 steps/s** |
@@ -405,6 +461,60 @@ offers a live hold as reclaimable (the kernel re-checks the deadline; it does no
 
 <table>
 <tr><th>Bug</th><th>What caught it</th></tr>
+<tr>
+<td><b>The Kafka image segfaulted on CI and not on a laptop.</b>
+<code>apache/kafka-native</code> is a GraalVM build, and GraalVM resolves <code>user.home</code>
+through <code>getpwuid</code> during class initialisation — which segfaults when the container's UID
+has no <code>/etc/passwd</code> entry. That depends on the host's UID mapping, so it started every
+time locally and died before logging a line on a GitHub runner, on one JDK of the matrix and not the
+other.</td>
+<td>Reading the container's own crash dump out of the CI log rather than assuming a flaky container
+and retrying. Swapped for the JVM image, which also ships the CLI — so the compose health check
+could go back to asking the broker to list topics, instead of the port check it had been reduced to
+when the native image turned out not to have the script.</td>
+</tr>
+<tr>
+<td><b>A background job started working before its application was ready, and stole another test's
+events.</b> Test classes run in parallel; <code>@ResourceLock</code> guards test <i>methods</i>; and
+Spring builds a context in <code>beforeAll</code>, which is <b>outside the lock</b>. So while one
+suite held the lock and waited for its three events to reach Kafka, a second suite's context came up
+beside it, its outbox publisher fired the instant the bean existed, drained those three rows to log
+lines and marked them published. The events never reached the broker, and the suite that was
+watching for them failed having done nothing wrong.</td>
+<td>CI, on the first push, having passed locally twice — the interleaving is a race and the local
+ordering happened to avoid it. The publisher now waits one interval before its first run, as
+<code>RetentionSweeper</code> already did. A <code>@Scheduled</code> bean with no initial delay is
+doing work before the application has said it is ready, which is a production smell as well as a
+test one. Three consecutive full runs to confirm, because one green run proves nothing about a
+race.</td>
+</tr>
+<tr>
+<td><b>A broker outage would have held the publisher's thread for a minute per batch.</b>
+<code>max.block.ms</code> bounds how long <code>send()</code> waits for cluster metadata and defaults
+to sixty seconds <i>independently of the delivery timeout</i> — so a publisher configured to give up
+after two seconds sat in <code>send()</code> for sixty, and the scheduled drain made no progress for
+as long as Kafka was unreachable.</td>
+<td>A test against a dead broker taking 60 seconds when its budget was 2. The fix derives the setting
+from the budget; the test now asserts the bound, because otherwise the only symptom of a regression
+is that a test got slower.</td>
+</tr>
+<tr>
+<td><b>The service refused to start by default.</b> <code>@ConditionalOnProperty</code> asks whether
+a property is <i>present</i>, and <code>bootstrap-servers: ${TILL_KAFKA_BROKERS:}</code> is present
+and empty on every deployment that has not opted into Kafka — so a producer was built with no
+brokers and Kafka's own validation failed the bean. The second time a Spring condition has been wrong
+here in a way the annotation's name actively encouraged.</td>
+<td>The integration suite, which could not build a context at all. It is an explicit
+<code>Condition</code> class now, and <code>DefaultPublisherTest</code> asserts that an unset broker
+list produces no producer bean rather than a half-configured one.</td>
+</tr>
+<tr>
+<td><b>A jar that built, installed and shipped, and could not run.</b> This build does not use
+<code>spring-boot-starter-parent</code>, so nothing supplies the <code>repackage</code> goal. Without
+it the catalogue's jar passed every step — compile, test, install, <code>COPY</code> into the image —
+and then failed at <code>docker compose up</code> with "no main manifest attribute".</td>
+<td>Starting the stack, which is the only step that runs the artifact the image actually ships.</td>
+</tr>
 <tr>
 <td><b>Pruning old idempotency records could wedge a command permanently.</b> An adjustment has no
 identity of its own, so its event borrows the command's idempotency key:
@@ -666,7 +776,9 @@ till-core       the rules: a pure function, the storage port, an in-memory ledge
 till-jdbc       PostgreSQL: optimistic concurrency, a transactional outbox, the schema
 till-testkit    a deterministic simulator, the invariants, and the flaws it is proven to catch
 till-client     an HTTP client and tillctl, with no serialisation dependency
+till-kafka      the outbox to Kafka: plain kafka-clients, no Spring, keyed by entity
 till-server     REST, OpenAPI, metrics, the sweeper, the outbox publisher
+till-catalogue  the storefront: games, prices, and availability projected from the events
 till-web        the browser console: a shop front and an operator view, bundled by -Pweb
 ```
 
