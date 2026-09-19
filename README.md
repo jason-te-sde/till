@@ -462,6 +462,21 @@ offers a live hold as reclaimable (the kernel re-checks the deadline; it does no
 <table>
 <tr><th>Bug</th><th>What caught it</th></tr>
 <tr>
+<td><b>A background job started working before its application was ready, and stole another test's
+events.</b> Test classes run in parallel; <code>@ResourceLock</code> guards test <i>methods</i>; and
+Spring builds a context in <code>beforeAll</code>, which is <b>outside the lock</b>. So while one
+suite held the lock and waited for its three events to reach Kafka, a second suite's context came up
+beside it, its outbox publisher fired the instant the bean existed, drained those three rows to log
+lines and marked them published. The events never reached the broker, and the suite that was
+watching for them failed having done nothing wrong.</td>
+<td>CI, on the first push, having passed locally twice — the interleaving is a race and the local
+ordering happened to avoid it. The publisher now waits one interval before its first run, as
+<code>RetentionSweeper</code> already did. A <code>@Scheduled</code> bean with no initial delay is
+doing work before the application has said it is ready, which is a production smell as well as a
+test one. Three consecutive full runs to confirm, because one green run proves nothing about a
+race.</td>
+</tr>
+<tr>
 <td><b>A broker outage would have held the publisher's thread for a minute per batch.</b>
 <code>max.block.ms</code> bounds how long <code>send()</code> waits for cluster metadata and defaults
 to sixty seconds <i>independently of the delivery timeout</i> — so a publisher configured to give up

@@ -24,6 +24,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.ResourceLock;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
@@ -37,7 +38,15 @@ import org.testcontainers.kafka.KafkaContainer;
  * can prove is that the <b>wiring</b> is right — that setting one property actually replaces the
  * log-line publisher, that the scheduler runs, and that an event committed in a database transaction
  * comes out the other end intact. Every bug this project has had in that layer was a wiring bug.
+ *
+ * <p><b>{@code @DirtiesContext} is load-bearing.</b> Spring caches a test context for the life of
+ * the JVM, and this is the only suite that leaves a publisher running on a 200ms schedule against a
+ * database every other suite shares. Without this the scheduler outlives the class and drains
+ * <i>their</i> outbox rows — which showed up here as a reservation this test never made appearing
+ * on the topic, and would have shown up in {@code DefaultPublisherTest} as a backlog that emptied
+ * on its own. A scheduled job in a cached context is a thread that outlives the test that wanted it.
  */
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @ResourceLock("till-database")
 @TestPropertySource(
         properties = {
@@ -84,11 +93,15 @@ class KafkaOutboxApiTest extends ApiTestBase {
 
         // Three events, delivered by the scheduler on its own. No call to publish() anywhere in this
         // test: if the wiring is wrong this times out with an empty topic.
-        List<ConsumerRecord<String, String>> got = drain(3);
+        //
+        // Filtered to this test's own events rather than asserting the topic holds exactly three.
+        // The claim being made is "what I caused arrived", and a topic is a shared log — asserting
+        // it is otherwise empty would be asserting something this test does not get to decide.
+        List<String> mine =
+                List.of("adjusted:d1", "reserved:" + held.id().value(), "committed:" + held.id().value());
+        List<ConsumerRecord<String, String>> got = drain(mine);
 
-        assertEquals(
-                List.of("adjusted:d1", "reserved:" + held.id().value(), "committed:" + held.id().value()),
-                got.stream().map(r -> header(r, "till-dedupe-key")).toList());
+        assertEquals(mine, got.stream().map(r -> header(r, "till-dedupe-key")).toList());
         assertEquals(
                 held.id().value(),
                 got.get(1).key(),
@@ -105,7 +118,7 @@ class KafkaOutboxApiTest extends ApiTestBase {
         assertEquals(0, ledger.backlog(), "the publisher marked what it delivered");
     }
 
-    private List<ConsumerRecord<String, String>> drain(int expected) {
+    private List<ConsumerRecord<String, String>> drain(List<String> wanted) {
         Properties config = new Properties();
         config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
         config.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
@@ -117,11 +130,21 @@ class KafkaOutboxApiTest extends ApiTestBase {
         Instant deadline = Instant.now().plus(TIMEOUT);
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(config)) {
             consumer.subscribe(List.of(TOPIC));
-            while (collected.size() < expected && Instant.now().isBefore(deadline)) {
-                consumer.poll(Duration.ofMillis(500)).forEach(collected::add);
+            while (collected.size() < wanted.size() && Instant.now().isBefore(deadline)) {
+                consumer
+                        .poll(Duration.ofMillis(500))
+                        .forEach(record -> {
+                            if (wanted.contains(header(record, "till-dedupe-key"))) {
+                                collected.add(record);
+                            }
+                        });
             }
         }
-        assertEquals(expected, collected.size(), "nothing arrived on " + TOPIC);
+        assertEquals(
+                wanted.size(),
+                collected.size(),
+                () -> "only " + collected.stream().map(r -> header(r, "till-dedupe-key")).toList()
+                        + " arrived on " + TOPIC + ", wanted " + wanted);
         // Records land on several partitions, so arrival order is not publish order.
         collected.sort((a, b) -> Long.compare(sequence(a), sequence(b)));
         return collected;
