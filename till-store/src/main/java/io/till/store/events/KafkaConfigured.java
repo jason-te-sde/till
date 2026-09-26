@@ -1,4 +1,4 @@
-package io.till.store;
+package io.till.store.events;
 
 import org.springframework.context.annotation.Condition;
 import org.springframework.context.annotation.ConditionContext;

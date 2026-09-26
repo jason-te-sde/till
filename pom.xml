@@ -97,6 +97,16 @@
 
   <dependencyManagement>
     <dependencies>
+      <!-- Raised to what Spring Session 4.1 declares. Boot 4.1.1's BOM pins 1.3.6 while
+           spring-session-core asks for 1.4.0, so without this the session module runs against an
+           older version than it was built with — which is precisely what requireUpperBoundDeps
+           exists to catch, and caught. Remove when Boot's BOM catches up. -->
+      <dependency>
+        <groupId>commons-logging</groupId>
+        <artifactId>commons-logging</artifactId>
+        <version>1.4.0</version>
+      </dependency>
+
       <!-- Declared first on purpose: the first import of a managed version wins, and the point is
            to override the Jackson 2 versions that Spring Boot's BOM pins lower. -->
       <dependency>

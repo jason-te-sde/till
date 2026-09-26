@@ -1,8 +1,9 @@
-package io.till.store;
+package io.till.store.events;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.till.core.Codec;
 import io.till.core.Event;
+import io.till.store.StoreProperties;
 import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -31,7 +32,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>Auto-commit would acknowledge a batch on a timer, including records this process has not
  * applied yet — so a crash loses them silently and the projection is permanently wrong with nothing
- * to indicate it. Committing manually, after {@link AvailabilityProjection} has committed its own
+ * to indicate it. Committing manually, after {@link Projector} has committed its own
  * transaction, makes the failure mode the survivable one: a crash in between replays the batch, and
  * the inbox turns the replay into a no-op.
  *
@@ -52,7 +53,7 @@ class EventConsumer {
     private static final Logger LOG = LoggerFactory.getLogger(EventConsumer.class);
 
     private final StoreProperties properties;
-    private final AvailabilityProjection projection;
+    private final Projector projector;
     private final MeterRegistry registry;
 
     private final AtomicBoolean running = new AtomicBoolean(true);
@@ -60,9 +61,9 @@ class EventConsumer {
     private volatile KafkaConsumer<String, String> consumer;
     private Thread thread;
 
-    EventConsumer(StoreProperties properties, AvailabilityProjection projection, MeterRegistry registry) {
+    EventConsumer(StoreProperties properties, Projector projector, MeterRegistry registry) {
         this.properties = properties;
-        this.projection = projection;
+        this.projector = projector;
         this.registry = registry;
     }
 
@@ -122,7 +123,7 @@ class EventConsumer {
         }
         Event event = Codec.decodeEvent(record.value());
         long sequence = Long.parseLong(header(record, "till-sequence"));
-        if (projection.apply(dedupeKey, sequence, event)) {
+        if (projector.apply(dedupeKey, sequence, event)) {
             registry.counter("store.consumer.applied").increment();
         } else {
             registry.counter("store.consumer.duplicates").increment();

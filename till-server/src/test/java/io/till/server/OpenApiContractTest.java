@@ -26,15 +26,15 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * The committed OpenAPI document still describes this service.
  *
- * <p>{@code till-web} generates its TypeScript types from {@code till-web/openapi.json}, so that file
- * is the contract between the two halves of this project. A committed contract that has silently
- * stopped matching the code is worse than no contract at all: the frontend compiles against types
- * for an API that no longer exists, and finds out in a browser.
+ * <p>{@code openapi/ledger.json} is the ledger's published contract: what the store's client, and any
+ * other service that holds stock through this one, is written against. A committed contract that has
+ * silently stopped matching the code is worse than no contract at all: a client is built against an
+ * API that no longer exists, and finds out in production.
  *
  * <p>So this generates and guards in one place. Normally it compares; with
  * {@code -Dtill.openapi.write=true} it rewrites the file instead, which is the one command to run
  * after changing an endpoint. CI never passes that flag, so a forgotten regeneration is a red build
- * rather than a broken console.
+ * rather than a client that breaks in production.
  *
  * <p>Both sides are canonicalised — object keys sorted, two-space indent — because the document is
  * assembled from annotations by reflection and a change in field order is not a change in the
@@ -45,7 +45,7 @@ import tools.jackson.databind.json.JsonMapper;
 class OpenApiContractTest extends ApiTestBase {
 
     /** Relative to {@code till-server}, which is where Surefire runs. */
-    private static final Path COMMITTED = Path.of("..", "till-web", "openapi.json");
+    private static final Path COMMITTED = Path.of("..", "openapi", "ledger.json");
 
     private static final String WRITE = "till.openapi.write";
 
@@ -53,7 +53,7 @@ class OpenApiContractTest extends ApiTestBase {
     JsonMapper json;
 
     @Test
-    @DisplayName("the committed openapi.json is what this service serves")
+    @DisplayName("the committed openapi/ledger.json is what this service serves")
     void theContractIsCurrent() throws IOException, InterruptedException {
         String live = canonical(fetchSpec());
 
@@ -76,17 +76,17 @@ class OpenApiContractTest extends ApiTestBase {
                 "the API has changed and " + COMMITTED + " has not. Regenerate it with:\n"
                         + "  mvn -pl till-server test -Dtest=OpenApiContractTest -Dtill.openapi.write=true "
                         + "-Dsurefire.failIfNoSpecifiedTests=false\n"
-                        + "then `npm run api:types` in till-web, and commit both.");
+                        + "and commit it.");
     }
 
     @Test
-    @DisplayName("every endpoint the console calls is in the document")
-    void theConsolesEndpointsAreDescribed() throws IOException, InterruptedException {
+    @DisplayName("every endpoint the store's client calls is in the document")
+    void theClientsEndpointsAreDescribed() throws IOException, InterruptedException {
         @SuppressWarnings("unchecked")
         Map<String, Object> paths = (Map<String, Object>) parse(fetchSpec()).get("paths");
 
         // Named individually rather than counted, so that removing one is a failure here instead of
-        // a blank panel in the console.
+        // a failure in whichever client calls it.
         for (String path :
                 List.of(
                         "/v1/stock",
