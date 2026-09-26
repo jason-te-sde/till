@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import io.till.core.Event;
 import io.till.core.Line;
@@ -35,7 +35,7 @@ import org.springframework.stereotype.Component;
  * And the reservation events carry <b>deltas</b> — a list of lines — so applying one twice moves
  * {@code reserved} twice and the projection is quietly wrong forever after.
  *
- * <p>So every event is inserted into {@code catalogue_consumed_event} by its deduplication key
+ * <p>So every event is inserted into {@code store_consumed_event} by its deduplication key
  * <b>in the same transaction</b> as the numbers it moves. A redelivery hits the primary key, the
  * insert conflicts, and the whole transaction is abandoned with the numbers untouched. Producer-side
  * outbox, consumer-side inbox: an outbox without one is half a design, and the half that is missing
@@ -51,7 +51,7 @@ class AvailabilityProjection {
     private static final Logger LOG = LoggerFactory.getLogger(AvailabilityProjection.class);
 
     private static final String CLAIM =
-            "insert into catalogue_consumed_event (dedupe_key, sequence, consumed_at) values (?, ?, ?) "
+            "insert into store_consumed_event (dedupe_key, sequence, consumed_at) values (?, ?, ?) "
                     + "on conflict (dedupe_key) do nothing";
 
     /**
@@ -59,13 +59,13 @@ class AvailabilityProjection {
      * promise this service saw the stock arrive. The deltas are applied to whatever is there.
      */
     private static final String APPLY_DELTA =
-            "insert into catalogue_availability (sku, on_hand, reserved, available, updated_at) "
+            "insert into store_availability (sku, on_hand, reserved, available, updated_at) "
                     + "values (?, ?, ?, ? - ?, ?) "
                     + "on conflict (sku) do update set "
-                    + "  on_hand = catalogue_availability.on_hand + excluded.on_hand, "
-                    + "  reserved = catalogue_availability.reserved + excluded.reserved, "
-                    + "  available = catalogue_availability.on_hand + excluded.on_hand "
-                    + "            - (catalogue_availability.reserved + excluded.reserved), "
+                    + "  on_hand = store_availability.on_hand + excluded.on_hand, "
+                    + "  reserved = store_availability.reserved + excluded.reserved, "
+                    + "  available = store_availability.on_hand + excluded.on_hand "
+                    + "            - (store_availability.reserved + excluded.reserved), "
                     + "  updated_at = excluded.updated_at";
 
     /**
@@ -74,7 +74,7 @@ class AvailabilityProjection {
      * reason.
      */
     private static final String APPLY_ABSOLUTE =
-            "insert into catalogue_availability (sku, on_hand, reserved, available, updated_at) "
+            "insert into store_availability (sku, on_hand, reserved, available, updated_at) "
                     + "values (?, ?, ?, ?, ?) "
                     + "on conflict (sku) do update set "
                     + "  on_hand = excluded.on_hand, "
@@ -83,10 +83,10 @@ class AvailabilityProjection {
                     + "  updated_at = excluded.updated_at";
 
     private static final String SELECT_ONE =
-            "select sku, on_hand, reserved, available, updated_at from catalogue_availability where sku = ?";
+            "select sku, on_hand, reserved, available, updated_at from store_availability where sku = ?";
 
     private static final String SELECT_MANY =
-            "select sku, on_hand, reserved, available, updated_at from catalogue_availability "
+            "select sku, on_hand, reserved, available, updated_at from store_availability "
                     + "where sku = any(?)";
 
     private final DataSource dataSource;
@@ -124,7 +124,7 @@ class AvailabilityProjection {
                 connection.setAutoCommit(true);
             }
         } catch (SQLException e) {
-            throw new CatalogueException("applying " + dedupeKey + " to the availability projection", e);
+            throw new StoreException("applying " + dedupeKey + " to the availability projection", e);
         }
     }
 
@@ -193,7 +193,7 @@ class AvailabilityProjection {
                 return rows.next() ? Optional.of(read(rows)) : Optional.empty();
             }
         } catch (SQLException e) {
-            throw new CatalogueException("reading availability for " + sku, e);
+            throw new StoreException("reading availability for " + sku, e);
         }
     }
 
@@ -218,7 +218,7 @@ class AvailabilityProjection {
                 return found;
             }
         } catch (SQLException e) {
-            throw new CatalogueException("reading availability for " + skus.size() + " SKUs", e);
+            throw new StoreException("reading availability for " + skus.size() + " SKUs", e);
         }
     }
 

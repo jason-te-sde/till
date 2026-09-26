@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import io.till.client.TillClient;
 import org.springframework.context.annotation.Bean;
@@ -13,8 +13,8 @@ class TillClientConfiguration {
      * @return the client
      */
     @Bean
-    TillClient tillClient(CatalogueProperties properties) {
-        CatalogueProperties.Till till = properties.till();
+    TillClient tillClient(StoreProperties properties) {
+        StoreProperties.Till till = properties.till();
         return TillClient.builder(till.baseUrl())
                 .token(till.token().isBlank() ? null : till.token())
                 .timeout(till.timeout())

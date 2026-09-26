@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -13,21 +13,21 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * to the ledger and cannot become a second place where an oversell is decided.
  *
  * <pre>{@code
- * java -jar till-catalogue.jar \
+ * java -jar till-store.jar \
  *     --spring.datasource.url=jdbc:postgresql://localhost:5432/catalogue \
- *     --catalogue.till.base-url=http://till:8080 \
- *     --catalogue.till.token=... \
- *     --catalogue.kafka.bootstrap-servers=kafka:9092
+ *     --store.till.base-url=http://till:8080 \
+ *     --store.till.token=... \
+ *     --store.kafka.bootstrap-servers=kafka:9092
  * }</pre>
  */
 @SpringBootApplication
-@EnableConfigurationProperties(CatalogueProperties.class)
-public class CatalogueApplication {
+@EnableConfigurationProperties(StoreProperties.class)
+public class StoreApplication {
 
     /**
-     * @param args Spring Boot arguments, including any {@code --catalogue.*} overrides
+     * @param args Spring Boot arguments, including any {@code --store.*} overrides
      */
     public static void main(String[] args) {
-        SpringApplication.run(CatalogueApplication.class, args);
+        SpringApplication.run(StoreApplication.class, args);
     }
 }

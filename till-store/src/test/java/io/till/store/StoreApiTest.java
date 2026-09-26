@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -81,7 +81,7 @@ class StoreApiTest {
     void clearProjection() throws SQLException {
         try (var connection = dataSource.getConnection();
                 Statement statement = connection.createStatement()) {
-            statement.execute("truncate catalogue_availability, catalogue_consumed_event");
+            statement.execute("truncate store_availability, store_consumed_event");
         }
     }
 

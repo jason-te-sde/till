@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -10,8 +10,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param till where the ledger is, and the token to talk to it with
  * @param kafka where the events come from
  */
-@ConfigurationProperties(prefix = "catalogue")
-public record CatalogueProperties(@DefaultValue Till till, @DefaultValue Kafka kafka) {
+@ConfigurationProperties(prefix = "store")
+public record StoreProperties(@DefaultValue Till till, @DefaultValue Kafka kafka) {
 
     /**
      * @param baseUrl the till service
@@ -35,7 +35,7 @@ public record CatalogueProperties(@DefaultValue Till till, @DefaultValue Kafka k
     public record Kafka(
             @DefaultValue("") String bootstrapServers,
             @DefaultValue("till.events") String topic,
-            @DefaultValue("till-catalogue") String groupId,
+            @DefaultValue("till-store") String groupId,
             @DefaultValue("500ms") Duration pollTimeout) {
 
         /**

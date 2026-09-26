@@ -81,10 +81,10 @@ jobs:
       - name: the broker-backed suites actually ran
         run: |
           ran=$(grep -ho 'tests="[0-9]*"' till-kafka/target/surefire-reports/*.xml \
-                  till-catalogue/target/surefire-reports/*.xml \
+                  till-store/target/surefire-reports/*.xml \
                 | grep -o '[0-9]*' | paste -sd+ - | bc)
           skipped=$(grep -ho 'skipped="[0-9]*"' till-kafka/target/surefire-reports/*.xml \
-                      till-catalogue/target/surefire-reports/*.xml \
+                      till-store/target/surefire-reports/*.xml \
                     | grep -o '[0-9]*' | paste -sd+ - | bc)
           echo "kafka-backed modules: $ran tests, $skipped skipped"
           test "$skipped" -eq 0
@@ -418,7 +418,7 @@ jobs:
           set -euo pipefail
           # It holds a client token, so till refuses. The whole argument for splitting the services
           # is that this is impossible rather than merely not implemented.
-          code=$(docker compose exec -T catalogue sh -lc \
+          code=$(docker compose exec -T store sh -lc \
             'curl -s -o /dev/null -w "%{http_code}" -X POST \
                -H "Authorization: Bearer $TILL_CLIENT_TOKEN" \
                -H "Idempotency-Key: ci-should-fail" -H "Content-Type: application/json" \
@@ -439,7 +439,7 @@ jobs:
         run: |
           docker compose ps
           echo "--- health ---"
-          for service in till catalogue; do
+          for service in till store; do
             echo "--- $service ---"
             docker inspect --format '{{json .State.Health}}' "$(docker compose ps -q $service)" | head -c 600 || true
             echo

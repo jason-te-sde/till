@@ -1,10 +1,10 @@
-package io.till.catalogue;
+package io.till.store;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.till.catalogue.AvailabilityProjection.Availability;
+import io.till.store.AvailabilityProjection.Availability;
 import io.till.core.Event;
 import io.till.core.IdempotencyKey;
 import io.till.core.Line;
@@ -62,7 +62,7 @@ class AvailabilityProjectionTest {
     void clear() throws SQLException {
         try (var connection = dataSource.getConnection();
                 Statement statement = connection.createStatement()) {
-            statement.execute("truncate catalogue_availability, catalogue_consumed_event");
+            statement.execute("truncate store_availability, store_consumed_event");
         }
     }
 

@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -68,8 +68,8 @@ class EventConsumerTest {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("catalogue.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
-        registry.add("catalogue.kafka.topic", () -> TOPIC);
+        registry.add("store.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
+        registry.add("store.kafka.topic", () -> TOPIC);
     }
 
     @Autowired

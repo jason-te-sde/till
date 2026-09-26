@@ -1,7 +1,7 @@
-package io.till.catalogue;
+package io.till.store;
 
-import io.till.catalogue.AvailabilityProjection.Availability;
-import io.till.catalogue.Games.Game;
+import io.till.store.AvailabilityProjection.Availability;
+import io.till.store.Games.Game;
 import io.till.client.TillApiException;
 import io.till.client.TillClient;
 import io.till.core.IdempotencyKey;

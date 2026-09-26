@@ -10,9 +10,9 @@
     <version>0.1.0</version>
   </parent>
 
-  <artifactId>till-catalogue</artifactId>
-  <name>till-catalogue</name>
-  <description>The storefront: a catalogue of games, and a live view of what can still be bought.</description>
+  <artifactId>till-store</artifactId>
+  <name>till-store</name>
+  <description>The game store: catalogue, search, orders, sign-in, and the backend the browser talks to.</description>
 
   <dependencies>
     <!-- The event types, to read what arrives on the topic. Not till-jdbc: this service owns a
@@ -82,7 +82,7 @@
       <artifactId>testcontainers-postgresql</artifactId>
       <scope>test</scope>
     </dependency>
-    <!-- Test scope only: the catalogue consumes, it does not publish. Using the real publisher in
+    <!-- Test scope only: the store consumes, it does not publish. Using the real publisher in
          the consumer test is the point — the headers under test are the ones it writes. -->
     <dependency>
       <groupId>io.github.jason-te-sde</groupId>

@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -25,9 +25,9 @@ class Games {
             "sku, title, studio, genre, price_cents, released_on, cover, blurb";
 
     private static final String LIST =
-            "select " + COLUMNS + " from catalogue_game order by title limit ?";
+            "select " + COLUMNS + " from store_game order by title limit ?";
 
-    private static final String BY_SKU = "select " + COLUMNS + " from catalogue_game where sku = ?";
+    private static final String BY_SKU = "select " + COLUMNS + " from store_game where sku = ?";
 
     private final DataSource dataSource;
 
@@ -51,7 +51,7 @@ class Games {
                 return games;
             }
         } catch (SQLException e) {
-            throw new CatalogueException("listing the catalogue", e);
+            throw new StoreException("listing the catalogue", e);
         }
     }
 
@@ -67,7 +67,7 @@ class Games {
                 return rows.next() ? Optional.of(read(rows)) : Optional.empty();
             }
         } catch (SQLException e) {
-            throw new CatalogueException("reading " + sku, e);
+            throw new StoreException("reading " + sku, e);
         }
     }
 

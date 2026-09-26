@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import org.springframework.context.annotation.Condition;
 import org.springframework.context.annotation.ConditionContext;
@@ -8,7 +8,7 @@ import org.springframework.core.type.AnnotatedTypeMetadata;
  * True only when a broker list has actually been given.
  *
  * <p>Same trap as on the producing side, same fix: {@code @ConditionalOnProperty} asks whether the
- * property is present, and a YAML default of {@code ${CATALOGUE_KAFKA_BROKERS:}} is present and
+ * property is present, and a YAML default of {@code ${STORE_KAFKA_BROKERS:}} is present and
  * empty on every deployment that has not opted in.
  *
  * <p>Without a broker the catalogue still serves: prices and titles come from its own tables, and
@@ -20,7 +20,7 @@ class KafkaConfigured implements Condition {
     @Override
     public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
         return !context.getEnvironment()
-                .getProperty("catalogue.kafka.bootstrap-servers", "")
+                .getProperty("store.kafka.bootstrap-servers", "")
                 .isBlank();
     }
 }

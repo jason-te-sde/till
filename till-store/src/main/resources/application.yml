@@ -1,10 +1,10 @@
 spring:
   application:
-    name: till-catalogue
+    name: till-store
   datasource:
-    url: ${CATALOGUE_DB_URL:jdbc:postgresql://127.0.0.1:5432/catalogue}
-    username: ${CATALOGUE_DB_USER:catalogue}
-    password: ${CATALOGUE_DB_PASSWORD:}
+    url: ${STORE_DB_URL:jdbc:postgresql://127.0.0.1:5432/store}
+    username: ${STORE_DB_USER:store}
+    password: ${STORE_DB_PASSWORD:}
     hikari:
       maximum-pool-size: 16
   flyway:
@@ -15,10 +15,10 @@ spring:
       enabled: true
 
 server:
-  port: ${CATALOGUE_PORT:8081}
+  port: ${STORE_PORT:8081}
   shutdown: graceful
 
-catalogue:
+store:
   till:
     base-url: ${TILL_URL:http://127.0.0.1:8080}
     # The client token, never the admin one. A storefront reserves, commits and releases; moving
@@ -30,15 +30,15 @@ catalogue:
     # Blank means do not consume. The shop still serves — titles and prices come from this service's
     # own tables — and availability stays at whatever was last projected. A broker outage should make
     # the numbers stale, not the shop unreachable.
-    bootstrap-servers: ${CATALOGUE_KAFKA_BROKERS:}
+    bootstrap-servers: ${STORE_KAFKA_BROKERS:}
     topic: ${TILL_KAFKA_TOPIC:till.events}
     # One group across every instance, so an event is projected once rather than once per replica.
-    group-id: till-catalogue
+    group-id: till-store
     poll-timeout: 500ms
 
 management:
   server:
-    port: ${CATALOGUE_MANAGEMENT_PORT:9102}
+    port: ${STORE_MANAGEMENT_PORT:9102}
   endpoints:
     web:
       exposure:

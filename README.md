@@ -161,7 +161,7 @@ switch (outcome) {
 | `till-client` | an HTTP client and `tillctl`, with no serialisation dependency |
 | `till-kafka` | publishes the outbox to Kafka; no Spring, plain `kafka-clients` |
 | `till-server` | the ledger as a service — the only thing that may decide a sale |
-| `till-catalogue` | the storefront: games, prices, and a read model of availability built from the events |
+| `till-store` | the game store: catalogue, search, orders, sign-in — the backend the browser talks to |
 | `till-web` | the browser console, bundled into the server jar by `-Pweb` |
 
 **Not on Maven Central yet.** The build signs and uploads from CI, but the account and the signing
@@ -209,7 +209,7 @@ flowchart TB
     PUB -- "at least once" --> KAFKA[["Kafka<br/><i>keyed by entity</i>"]]
     KAFKA --> CONSUMER
 
-    subgraph store["till-catalogue · the storefront"]
+    subgraph store["till-store · the game store"]
         CONSUMER["event consumer<br/><i>inbox: applied once</i>"]
         PROJ[("availability<br/><i>a cache with a timestamp</i>")]
         SHOP["REST · games, prices, what is buyable"]
@@ -224,7 +224,7 @@ The load-bearing rule is one sentence: **the rules are a function, and the adapt
 output or none of it.** Everything else follows from those two.
 
 **The two services are split so that exactly one of them can be wrong about stock.** `till-server`
-owns the ledger. `till-catalogue` owns the shop — titles, prices, and a read model of availability
+owns the ledger. `till-store` owns the shop — titles, prices, and a read model of availability
 it builds by consuming events — and reserves by calling till over HTTP with an ordinary client
 token, on a separate database, with no privileged path of any kind. Its `available` is therefore
 allowed to be stale, and the worst a stale number can do is cost one customer a refused checkout.
@@ -778,7 +778,7 @@ till-testkit    a deterministic simulator, the invariants, and the flaws it is p
 till-client     an HTTP client and tillctl, with no serialisation dependency
 till-kafka      the outbox to Kafka: plain kafka-clients, no Spring, keyed by entity
 till-server     REST, OpenAPI, metrics, the sweeper, the outbox publisher
-till-catalogue  the storefront: games, prices, and availability projected from the events
+till-store      the game store: catalogue, search, orders, sign-in
 till-web        the browser console: a shop front and an operator view, bundled by -Pweb
 ```
 

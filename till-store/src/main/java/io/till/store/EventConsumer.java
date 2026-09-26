@@ -1,4 +1,4 @@
-package io.till.catalogue;
+package io.till.store;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.till.core.Codec;
@@ -51,7 +51,7 @@ class EventConsumer {
 
     private static final Logger LOG = LoggerFactory.getLogger(EventConsumer.class);
 
-    private final CatalogueProperties properties;
+    private final StoreProperties properties;
     private final AvailabilityProjection projection;
     private final MeterRegistry registry;
 
@@ -60,7 +60,7 @@ class EventConsumer {
     private volatile KafkaConsumer<String, String> consumer;
     private Thread thread;
 
-    EventConsumer(CatalogueProperties properties, AvailabilityProjection projection, MeterRegistry registry) {
+    EventConsumer(StoreProperties properties, AvailabilityProjection projection, MeterRegistry registry) {
         this.properties = properties;
         this.projection = projection;
         this.registry = registry;
@@ -75,13 +75,13 @@ class EventConsumer {
      */
     @EventListener(ApplicationReadyEvent.class)
     void start() {
-        thread = new Thread(this::run, "catalogue-events");
+        thread = new Thread(this::run, "store-events");
         thread.setDaemon(true);
         thread.start();
     }
 
     private void run() {
-        CatalogueProperties.Kafka kafka = properties.kafka();
+        StoreProperties.Kafka kafka = properties.kafka();
         LOG.info("consuming {} from {} as {}", kafka.topic(), kafka.bootstrapServers(), kafka.groupId());
         try (KafkaConsumer<String, String> client = new KafkaConsumer<>(configFor(kafka))) {
             consumer = client;
@@ -104,7 +104,7 @@ class EventConsumer {
             // never started, because the storefront keeps serving numbers that are quietly frozen —
             // so this is an error, and the counter is the thing to alert on.
             LOG.error("the event consumer stopped; availability will go stale until this is restarted", e);
-            registry.counter("catalogue.consumer.failures").increment();
+            registry.counter("store.consumer.failures").increment();
         } finally {
             stopped.countDown();
         }
@@ -117,19 +117,19 @@ class EventConsumer {
             // deduplication key there is no way to apply it exactly once, and applying a delta
             // twice is worse than not applying it.
             LOG.warn("record at {}:{} has no deduplication key; skipping", record.partition(), record.offset());
-            registry.counter("catalogue.consumer.unusable").increment();
+            registry.counter("store.consumer.unusable").increment();
             return;
         }
         Event event = Codec.decodeEvent(record.value());
         long sequence = Long.parseLong(header(record, "till-sequence"));
         if (projection.apply(dedupeKey, sequence, event)) {
-            registry.counter("catalogue.consumer.applied").increment();
+            registry.counter("store.consumer.applied").increment();
         } else {
-            registry.counter("catalogue.consumer.duplicates").increment();
+            registry.counter("store.consumer.duplicates").increment();
         }
     }
 
-    private static Properties configFor(CatalogueProperties.Kafka kafka) {
+    private static Properties configFor(StoreProperties.Kafka kafka) {
         Properties config = new Properties();
         config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.bootstrapServers());
         config.put(ConsumerConfig.GROUP_ID_CONFIG, kafka.groupId());

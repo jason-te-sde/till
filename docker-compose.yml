@@ -2,7 +2,7 @@
 #
 #   docker compose up -d --wait
 #   open http://127.0.0.1:8080          # the shop, and /ops for the ledger
-#   curl -s http://127.0.0.1:8081/v1/games | jq        # the storefront's catalogue
+#   curl -s http://127.0.0.1:8081/v1/games | jq        # the store's catalogue
 #   docker compose run --rm tillctl adjust sunless-orbit 100
 #
 # Two services and a broker, and the split is the point. `till` owns stock and is the only thing
@@ -88,10 +88,10 @@ services:
       retries: 20
       start_period: 40s
 
-  catalogue:
+  store:
     build: .
     # Same image, different jar. The two services share every dependency they have.
-    entrypoint: ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/till-catalogue.jar"]
+    entrypoint: ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/till-store.jar"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -100,10 +100,10 @@ services:
       till:
         condition: service_healthy
     environment:
-      CATALOGUE_DB_URL: jdbc:postgresql://postgres:5432/catalogue
-      CATALOGUE_DB_USER: till
-      CATALOGUE_DB_PASSWORD: till
-      CATALOGUE_KAFKA_BROKERS: kafka:9092
+      STORE_DB_URL: jdbc:postgresql://postgres:5432/store
+      STORE_DB_USER: till
+      STORE_DB_PASSWORD: till
+      STORE_KAFKA_BROKERS: kafka:9092
       TILL_URL: http://till:8080
       # The client token, never the admin one. The storefront reserves, commits and releases; it has
       # no business moving stock levels, and holding the token that could would make it worth
