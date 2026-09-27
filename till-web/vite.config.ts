@@ -2,36 +2,36 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwind from '@tailwindcss/vite'
 
-// In development the console runs on Vite's own server and the API is somewhere else, which would be
-// a cross-origin request. Proxying rather than enabling CORS keeps development the same shape as
-// production, where the service serves both from one origin and CORS never enters into it.
-const api = process.env.TILL_API ?? 'http://127.0.0.1:8080'
+// In development the SPA runs on Vite's server and everything else is behind the stack's edge proxy.
+// Proxying rather than enabling CORS keeps development the same shape as production: one origin, a
+// session cookie that is first-party, and CSRF protection that works the way it will in a deployment.
+//
+// `xfwd` and the unchanged Host header are what make signing in work through the proxy: the store
+// builds the OAuth redirect URI from them, so the identity provider sends the browser back here, to
+// Vite, rather than to the edge's own address.
+const edge = process.env.TILL_EDGE ?? 'http://127.0.0.1:8080'
+const backend = Object.fromEntries(
+  ['/api', '/oauth2', '/login/oauth2', '/v3', '/swagger-ui'].map((path) => [
+    path,
+    { target: edge, changeOrigin: false, xfwd: true },
+  ]),
+)
 
 export default defineConfig({
   plugins: [react(), tailwind()],
   server: {
     // Bound explicitly to IPv4. Vite resolves a default `localhost` to ::1 on this platform, and a
-    // CI config or a health check written against 127.0.0.1 then cannot reach it — which is a
-    // twenty-minute confusion the first time and every time.
+    // health check written against 127.0.0.1 then cannot reach it.
     host: '127.0.0.1',
     port: 5173,
-    proxy: {
-      '/v1': { target: api, changeOrigin: true },
-      '/v3': { target: api, changeOrigin: true },
-    },
+    proxy: backend,
   },
-  // `vite preview` serves the built bundle, which is what the end-to-end suite runs against. It
-  // needs the same proxy as the dev server, or every API call from the built app is cross-origin.
   preview: {
     host: '127.0.0.1',
     port: 4173,
-    proxy: {
-      '/v1': { target: api, changeOrigin: true },
-      '/v3': { target: api, changeOrigin: true },
-    },
+    proxy: backend,
   },
   build: {
-    // Ends up inside the server jar under /static; see the `web` Maven profile.
     outDir: 'dist',
     sourcemap: true,
   },
@@ -43,8 +43,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],
-      // Generated from openapi.json, and main.tsx is three lines of bootstrapping that only the
-      // end-to-end suite can meaningfully execute.
+      // Generated from the contract; and main.tsx is bootstrapping only a browser can execute.
       exclude: ['src/api/schema.d.ts', 'src/main.tsx'],
       reporter: ['text-summary', 'lcov'],
     },

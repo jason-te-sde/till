@@ -1,10 +1,11 @@
 <h1 align="center">till</h1>
 
 <p align="center">
-  An oversell-proof game store platform, built around a reservation kernel that cannot be wrong.<br>
-  The rules as a pure function, a deterministic concurrency simulator, a transactional outbox to
-  Kafka with an idempotent consumer on the other end, and a browser console you can watch two tabs
-  race in.
+  A game store that cannot oversell.<br>
+  A React storefront and operator console on a Spring Boot backend-for-frontend with OpenID Connect
+  sign-in — and, deciding every sale, a reservation ledger whose rules are a pure function, tested by a
+  deterministic concurrency simulator, with a transactional outbox to Kafka and an idempotent consumer
+  on the other end.
 </p>
 
 <p align="center">
@@ -12,13 +13,46 @@
     <img alt="CI" src="https://github.com/jason-te-sde/till/actions/workflows/ci.yml/badge.svg">
   </a>
   <img alt="Java 21" src="https://img.shields.io/badge/Java-21%2B-orange">
-  <img alt="tests" src="https://img.shields.io/badge/tests-419-brightgreen">
-  <img alt="coverage" src="https://img.shields.io/badge/coverage-88.1%25%20java%20%C2%B7%2087.1%25%20web-brightgreen">
-  <img alt="Maven Central" src="https://img.shields.io/badge/maven--central-pending-lightgrey">
+  <img alt="React 19" src="https://img.shields.io/badge/React-19-61dafb">
+  <img alt="tests" src="https://img.shields.io/badge/tests-530-brightgreen">
+  <img alt="coverage" src="https://img.shields.io/badge/coverage-88.2%25%20java%20%C2%B7%2087.4%25%20web-brightgreen">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
+<p align="center">
+  <img src="docs/images/storefront.jpg" alt="The till games storefront: a featured-game carousel over procedurally painted cover art, the store's promises, and the first shelf of games on sale" width="900">
+</p>
+
 ---
+
+till is a complete store you can run with one command, built the way a store that takes real money
+would have to be:
+
+- **A customer** browses thirty-two games with full-text search, facets and sorting; signs in through
+  an identity provider; places an order that holds the copies for fifteen minutes behind a live
+  countdown; pays; and finds it in their order history. Payment is simulated. Nothing else is.
+- **An operator** — a member of the identity provider's `admins` group — watches the ledger live: the
+  stock, the holds against it (including the ones past their deadline that nothing has written off
+  yet), and the event outbox, and restocks a game with a click. The storefront hears about it through
+  Kafka within seconds.
+- **Underneath, one service decides every sale.** The store asks it for a hold with an ordinary client
+  token and cannot move stock any other way — so a bug anywhere in the storefront can cost a customer
+  a refused checkout, and cannot oversell.
+
+<table>
+<tr>
+<td width="33%"><img src="docs/images/game-page.jpg" alt="A game's page: cover art, price with its discount, live stock, quantity and Add to cart"></td>
+<td width="33%"><img src="docs/images/checkout-hold.jpg" alt="Checkout: the order is held, with a fifteen-minute countdown and a Pay button"></td>
+<td width="33%"><img src="docs/images/operator-console.jpg" alt="The operator console: games stocked, units on hand and held, the outbox backlog, and a stock table with an available/reserved split"></td>
+</tr>
+<tr>
+<td align="center">A game's page, with stock streamed from the ledger</td>
+<td align="center">Checkout: the copies are held while you pay</td>
+<td align="center">The operator console: the ledger, live</td>
+</tr>
+</table>
+
+## Why a ledger
 
 Almost every e-commerce backend writes the checkout path like this:
 
@@ -32,11 +66,9 @@ back by hand if they do not pay — or it goes when they pay, and two customers 
 point. Add a retried request on a flaky mobile network and one of them is charged once and shipped
 twice.
 
-till is that path done properly: a hold with a deadline, an idempotency key that means a retry is a
-retry, an audit log that cannot disagree with the balance, and a test suite built to find the races
-rather than to demonstrate the happy one.
-
-Four things make it worth a read:
+till is that path done properly — a hold with a deadline, an idempotency key that means a retry is a
+retry, an audit log that cannot disagree with the balance — with a store built on top of it the way
+it would be in production. Five things make it worth a read:
 
 - **The rules are a pure function.** No Spring, no I/O, no threads, no clock — time arrives as an
   argument. A whole day of contention between eight callers, with crashes, lost answers and clock
@@ -45,35 +77,47 @@ Four things make it worth a read:
 - **The suite is proven to notice.** Four mistakes a hand-written implementation plausibly makes are
   put back on purpose, and the tests assert which check catches each. The simulator found a real bug
   on the first run it ever did.
-- **There is something to look at.** A browser console ships inside the jar: a shop front where you
-  can open two tabs and race yourself for the last unit, and an operator view of what the ledger
-  holds. The end-to-end suite drives both, in a real browser, against the jar a release ships.
-- **It runs, and it is meant to be run by somebody else.** Bearer tokens with a separate admin token,
-  Prometheus metrics, OpenAPI, a container image CI builds and exercises, and an operations guide
-  written for three in the morning.
+- **The browser never holds a token.** Signing in is the authorization-code flow with PKCE, run on the
+  server; the tokens stay in a Redis session, and the browser holds a cookie no script can read. The
+  whole round trip — PKCE, nonce, forged tokens, login CSRF, session fixation — is tested against an
+  in-process identity provider, and again in a browser against Keycloak.
+- **A retry is safe from the button to the database.** One idempotency key per checkout attempt and
+  cart, one per payment; namespaced per customer before it reaches the ledger's global key space;
+  replayed by the ledger; and absorbed by an inbox where the events land. Every one of those is
+  asserted on the wire.
+- **It runs, and it is meant to be run by somebody else.** One `docker compose up` for the whole
+  platform, with health checks; an edge proxy with a Content-Security-Policy, rate limits and a
+  microcache; OpenAPI contracts checked against real failures; Prometheus; CI that builds every image
+  and drives the store in a browser; and an operations guide written for three in the morning.
 
 ## Try it
 
 ```bash
 docker compose up -d --wait
-open http://127.0.0.1:8080        # the shop; /ops for the ledger
+open http://localhost:8080
 ```
 
-The console asks for a bearer token — `demo-admin-token` in the compose file. Restock everything,
-add a widget to the basket, and check out: the hold appears with a countdown, `available` drops and
-`onHand` does not, and paying moves both. Then open the same page in a second tab, set a SKU to one
-unit, and race yourself.
+| Account | Password | What it can do |
+| --- | --- | --- |
+| `player` | `player` | shop: browse, check out, see its orders |
+| `operator` | `operator` | the same, and the operator console at `/ops` |
 
-or without containers, against a PostgreSQL you already have:
+Demonstration accounts, from [`docker/keycloak/till-realm.json`](docker/keycloak/till-realm.json).
+New accounts can be registered from the sign-in page; Keycloak's own console is at
+`http://localhost:8180` (`admin` / `admin`).
 
-```bash
-mvn -Pweb package -DskipTests      # -Pweb builds the console into the jar
-java -jar till-server/target/till-server-0.1.0.jar \
-    --server.address=127.0.0.1 \
-    --spring.datasource.url=jdbc:postgresql://localhost:5432/till
-```
+A tour:
 
-Then, with `tillctl` — this transcript is copied from a real run, not written by hand:
+1. **Add a game or two and check out.** You are sent to sign in and brought straight back to checkout,
+   with the cart intact — it lives in the browser, not the session.
+2. **Place the order.** The copies are held, and the countdown is the ledger's deadline. The game's
+   availability drops for everybody else.
+3. **Pay**, and the order is in your history. Or let the timer run out, and the copies go back on sale.
+4. **Sign in as `operator` in a private window, open `/ops` and restock a game.** Its page catches up
+   within seconds: ledger → outbox → Kafka → the store's projection.
+
+The ledger also stands on its own, with its own CLI — this transcript is copied from a real run, not
+written by hand:
 
 ```console
 $ tillctl adjust widget 100
@@ -116,11 +160,23 @@ That `EXPIRED (stored HELD)` is the design in one line. The row still says the h
 no background job has been round yet, and it makes no difference: the deadline decides, so the answer
 never depends on whether a sweeper happened to run. `scripts/demo.sh` walks through all of it.
 
-Requires JDK 21+ and Maven 3.9+, or just Docker.
+`docker compose run --rm tillctl <command>` runs it against the stack's ledger. Without containers, the
+ledger needs only a PostgreSQL you already have:
 
-**Before putting it anywhere real:** the service refuses to listen on a non-loopback address without
-a token, unless `--till.insecure=true` is passed. [`docs/operations.md`](docs/operations.md) covers
-the settings, what to alert on, retention, sizing, backup, and a symptom-to-cause table.
+```bash
+mvn package -DskipTests
+java -jar till-server/target/till-server-0.1.0.jar \
+    --server.address=127.0.0.1 \
+    --spring.datasource.url=jdbc:postgresql://localhost:5432/till
+```
+
+Docker runs the whole platform. Building needs JDK 21+ and Maven 3.9+, and Node 24+ only to work on
+the storefront — [`CONTRIBUTING.md`](CONTRIBUTING.md) has the development loop.
+
+**Before putting it anywhere real:** the ledger refuses to listen on a non-loopback address without a
+token, unless `--till.insecure=true` is passed, and the store refuses to start without an identity
+provider. [`docs/operations.md`](docs/operations.md) covers the settings — Cognito included — what to
+alert on, retention, sizing, backup, and a symptom-to-cause table.
 
 ## Use it as a library
 
@@ -161,8 +217,8 @@ switch (outcome) {
 | `till-client` | an HTTP client and `tillctl`, with no serialisation dependency |
 | `till-kafka` | publishes the outbox to Kafka; no Spring, plain `kafka-clients` |
 | `till-server` | the ledger as a service — the only thing that may decide a sale |
-| `till-catalogue` | the storefront: games, prices, and a read model of availability built from the events |
-| `till-web` | the browser console, bundled into the server jar by `-Pweb` |
+| `till-store` | the game store: catalogue, search, orders, sign-in — the backend the browser talks to |
+| `till-web` | the storefront and operator console, served by the edge proxy |
 
 **Not on Maven Central yet.** The build signs and uploads from CI, but the account and the signing
 key behind it cannot live in the repository; [`SETUP-PUBLISHING.md`](SETUP-PUBLISHING.md) is what a
@@ -173,68 +229,103 @@ attached.
 ## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph client["client side"]
-        WEB["till-web<br/><i>/shop · /ops</i>"]
-        CTL["tillctl"]
-        API["TillClient<br/><i>retries with the same key</i>"]
+flowchart LR
+    B["browser<br/><i>React · Redux Toolkit</i>"]
+    IDP["Keycloak · Amazon Cognito<br/><i>OpenID Connect</i>"]
+
+    subgraph edge["edge · nginx"]
+        E["storefront files · CSP · rate limits<br/><i>5 s catalogue microcache</i>"]
     end
 
-    subgraph server["till-server · one of n interchangeable processes"]
-        REST["REST · OpenAPI · problem details"]
-        STATIC["the console, from /static<br/><i>same origin, enumerated routes</i>"]
-        SWEEP["sweeper<br/><i>an optimisation, never a requirement</i>"]
-        PUB["outbox publisher<br/><i>at least once</i>"]
+    subgraph store["till-store · backend-for-frontend"]
+        S["catalogue · search · orders<br/>sign-in · operator API"]
+        C["event consumer<br/><i>inbox: applied once</i>"]
     end
 
-    subgraph loop["till-core · the loop"]
-        TILL["Till<br/><i>load · decide · apply · start again</i>"]
+    R[("Redis<br/><i>sessions and tokens</i>")]
+    SDB[("PostgreSQL · store<br/><i>catalogue, orders, projection</i>")]
+
+    subgraph ledger["till-server · the ledger"]
+        L["REST · the loop · Kernel.decide"]
+        P["outbox publisher<br/><i>at least once</i>"]
     end
 
-    KERNEL["Kernel.decide<br/><i>no threads · no clock · no I/O · no state</i>"]
-    LEDGER["till-jdbc<br/><i>one snapshot in, one transaction out</i>"]
-    PG[("PostgreSQL")]
+    LDB[("PostgreSQL · till<br/><i>stock, holds, outbox</i>")]
+    K[["Kafka<br/><i>keyed by entity</i>"]]
 
-    CTL --> API
-    WEB -- "HTTP" --> REST
-    STATIC -. "served to" .-> WEB
-    API -- "HTTP" --> REST
-    REST --> TILL
-    SWEEP --> TILL
-    TILL -- "Snapshot" --> KERNEL
-    KERNEL -- "Decision" --> TILL
-    TILL -- "load / apply" --> LEDGER
-    LEDGER --> PG
-    PG -- "unpublished events" --> PUB
-    PUB -- "at least once" --> KAFKA[["Kafka<br/><i>keyed by entity</i>"]]
-    KAFKA --> CONSUMER
-
-    subgraph store["till-catalogue · the storefront"]
-        CONSUMER["event consumer<br/><i>inbox: applied once</i>"]
-        PROJ[("availability<br/><i>a cache with a timestamp</i>")]
-        SHOP["REST · games, prices, what is buyable"]
-    end
-
-    CONSUMER --> PROJ
-    PROJ --> SHOP
-    SHOP -- "reserve / commit / release<br/><i>client token, no shortcut</i>" --> REST
+    B -- "one origin · session cookie<br/>+ X-XSRF-TOKEN" --> E
+    B -. "sign in (redirects)" .-> IDP
+    E --> S
+    S -- "code exchange" --> IDP
+    S --> R
+    S --> SDB
+    S -- "reserve · commit · release<br/><i>client token, no shortcut</i>" --> L
+    L --> LDB
+    LDB --> P
+    P --> K
+    K --> C
+    C --> SDB
 ```
 
 The load-bearing rule is one sentence: **the rules are a function, and the adapter writes all of its
 output or none of it.** Everything else follows from those two.
 
+**The browser talks to one origin.** The edge serves the storefront's files and proxies the rest to
+the store — the API, the sign-in round trip, the API docs. The ledger is not reachable through it at
+all, and nothing a browser can reach holds a ledger token.
+
+**The store is a backend-for-frontend.** It owns everything a customer sees that is not a stock level
+— the catalogue, search, orders, sign-in — and the operator console's API, which answers only the
+identity provider's `admins` group. It runs the OpenID Connect flow itself, keeps the tokens in a
+Redis session, and gives the browser a cookie no script can read.
+
 **The two services are split so that exactly one of them can be wrong about stock.** `till-server`
-owns the ledger. `till-catalogue` owns the shop — titles, prices, and a read model of availability
-it builds by consuming events — and reserves by calling till over HTTP with an ordinary client
-token, on a separate database, with no privileged path of any kind. Its `available` is therefore
-allowed to be stale, and the worst a stale number can do is cost one customer a refused checkout.
-It cannot cause an oversell, because it is not consulted when a sale is decided.
+owns the ledger. `till-store` owns the shop, keeps a read model of availability it builds by consuming
+the ledger's events, and reserves by calling the ledger over HTTP with an ordinary client token, on a
+separate database, with no privileged path of any kind. Its `available` is therefore allowed to be
+stale, and the worst a stale number can do is cost one customer a refused checkout. It cannot cause an
+oversell, because it is not consulted when a sale is decided. Orders converge on the ledger's answer
+whichever way the news arrives first — the HTTP response or the event.
 
 `Decision` is the seam. The kernel returns a batch — one outcome for the caller, the row changes that
 make it true, the events that describe them, and the idempotency record — and a `Ledger` applies the
 whole batch in one transaction. Splitting that transaction is the failure the type exists to make
 hard to express: a stock level lowered without its reservation moving to `COMMITTED` is stock that has
 left the building and is still promised to somebody.
+
+<details>
+<summary><b>Signing in without giving the browser a token</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant B as browser
+    participant S as till-store
+    participant P as identity provider
+    participant R as Redis
+
+    B->>S: GET /oauth2/authorization/idp?returnTo=/checkout
+    S->>R: session: state, nonce, PKCE verifier, returnTo (checked: a path on this site)
+    S-->>B: 302 to the provider, with code_challenge (S256), state, nonce
+    B->>P: sign in on the provider's own page
+    P-->>B: 302 /login/oauth2/code/idp?code&state
+    B->>S: the callback, with the session cookie
+    S->>P: code + verifier + client secret (server to server)
+    P-->>S: ID token and access token
+    Note over S: signature, issuer, audience, nonce checked;<br/>cognito:groups → roles
+    S->>R: new session id; tokens stay here
+    S-->>B: 302 /checkout, HttpOnly SameSite=Lax cookie, new CSRF token
+```
+
+The browser ends up holding a session id it cannot read from script and a CSRF token it must echo in
+a header on every write. A script injected into the page could make requests while the page is open,
+but it could not take a token anywhere, because there is no token on the page to take.
+
+Two things a first version of this gets wrong, and both are tested: **where to return after signing
+in** has to be a path on this site, or the sign-in link becomes a way to send customers anywhere the
+moment after they have typed their password; and **the state has to be bound to the session that
+started the flow**, or an attacker can finish their own sign-in in a victim's browser and collect
+whatever the victim buys next.
+</details>
 
 <details>
 <summary><b>The path of a reservation</b></summary>
@@ -323,6 +414,23 @@ because the alternative is a client that retried a timeout being told "out of st
 
 ## What is implemented
 
+**The store**
+
+| | Notes |
+| --- | --- |
+| A storefront | home with a featured carousel and shelves; browse with search, filters, sort and pages, all in the URL; a page per game; a cart that survives reloads and the sign-in round trip; a two-step checkout with a visible hold; order history. Dark and light, responsive, keyboard- and screen-reader-friendly |
+| Cover art | an SVG scene per game from twelve motifs, seeded by the SKU — thirty-two distinct covers, and no image the project does not own |
+| Search | PostgreSQL full text over weighted fields with a GIN index, plus prefix matching on titles; facets that count each genre under every other filter |
+| Orders | placed by holding stock in the ledger, priced on the server from the catalogue, paid and cancelled through commit and release, and reconciled from the event stream so a lost response still ends up paid |
+| Sign-in | OpenID Connect code flow with PKCE on the server; tokens in Redis sessions; an `HttpOnly` `SameSite=Lax` cookie; CSRF by double submit; Cognito's groups claim turned into roles |
+| The operator console | stock with an available/reserved split, holds with their effective state, the outbox backlog, and stock adjustment — behind `/api/ops`, for the admin group only, enforced on the server |
+| Best sellers | a daily roll-up of the ledger's commit events, by the ledger's clock, in UTC |
+| An edge | nginx: the only public entry point; long-lived caching for hashed assets; a Content-Security-Policy with no inline script; rate limits answered as problems; a five-second catalogue microcache whose staleness the store bounds |
+| One error shape | every failure is an RFC 9457 problem with a `code` — the ledger's refusals with their shortfalls, validation with every bad field, the security layer's, the framework's, and a bug's |
+| Typed end to end | the storefront's TypeScript is generated from `openapi/store.json`, which the store's own test regenerates and fails on when it goes stale |
+
+**The ledger**
+
 | | Notes |
 | --- | --- |
 | Holds with a deadline | all-or-nothing across SKUs, with every shortfall reported rather than the first |
@@ -333,22 +441,23 @@ because the alternative is a client that retried a timeout being told "out of st
 | Optimistic concurrency | a version per row, no locks, no backoff, bounded attempts |
 | Transactional outbox | events in the same transaction as the change, delivered at least once, with stable deduplication keys |
 | Kafka, and an idempotent reader | `acks=all` with producer idempotence, records keyed by entity so one reservation's lifecycle stays ordered, and an inbox on the consumer so a redelivery moves nothing |
-| Two services, one authority | the storefront owns prices and a read model; the ledger owns stock. Separate databases, a client token, no shortcut — a bug in the shop cannot oversell |
 | Oversell impossible at the database | `check (reserved >= 0 and on_hand >= 0 and reserved <= on_hand)` |
 | Two bearer tokens | separate, because ejecting stock is not the same privilege as holding it |
 | Secure by default | refuses to listen on a non-loopback address with no token, unless `--till.insecure` |
 | Prometheus, OpenAPI, probes | metrics tagged by outcome rather than by status code; readiness and liveness answer different questions; latency published as a histogram so a quantile across instances is a real one |
 | Retention that runs itself | three growing tables pruned on a schedule, in bounded batches, with the dangerous window defaulted long and the safe ones defaulted to *keep forever* |
-| A request id on everything | `X-Request-Id` in, out, in every log line, and in the body of every error — so a screenshot of a failure is enough to find the logs |
-| Errors described in the contract | every non-2xx response declares an RFC 9457 `Problem`, and a test checks the declaration against a real refusal taken off the wire |
-| Container image | a multi-stage build with the console inside it, and a CI job that brings the stack up and drives a hold through it |
-| A browser console | `/shop` to see why reservations exist, `/ops` to see what the ledger holds. Served from inside the jar, same origin, with the SPA routes enumerated rather than caught all |
-| A typed contract | the console's TypeScript is generated from a committed `openapi.json`, which a server test regenerates and fails on when it goes stale |
+| A request id on everything | `X-Request-Id` in, out, in every log line, and in the body of every error |
 
-Not implemented, on purpose: a product catalogue, multi-tenancy, partial fulfilment, backorders,
-reserving a specific unit, scheduled availability, read replicas, rate limiting, and any database but
-PostgreSQL. [`docs/design/0005-scope.md`](docs/design/0005-scope.md) gives the reasoning for each and
+Not implemented, on purpose: real payment (paying commits the hold; no card, no money), shipping,
+reviews, multi-currency and tax; and in the ledger, multi-tenancy, partial fulfilment, backorders,
+reserving a specific unit, scheduled availability, read replicas, and any database but PostgreSQL.
+[`docs/design/0005-scope.md`](docs/design/0005-scope.md) gives the reasoning and
 [`SECURITY.md`](SECURITY.md) states what the project does and does not defend against.
+
+**Not done yet, and said so.** The platform runs locally and in CI; it has not been deployed to AWS,
+so the Cognito configuration is documented rather than exercised, and there is no load-test figure
+for the services — see [Numbers](#numbers) for why one laptop's number would not be worth printing.
+A Redis read cache for the catalogue waits on a measured baseline that says the database needs one.
 
 ## Numbers
 
@@ -357,23 +466,26 @@ produced it.
 
 | | |
 | --- | --- |
-| Tests | **419** — 322 Java, 86 console, 11 end-to-end (plus one soak, off by default) |
-| Coverage | **88.1% / 81.0%** lines / branches on the Java, **87.1% / 83.6%** on the console |
-| `mvn verify`, whole reactor | **21s** |
+| Tests | **530** — 451 Java (one of them the soak, off by default), 74 storefront, 5 end-to-end against the whole stack |
+| Coverage | **88.2% / 79.1%** lines / branches on the Java, **87.4% / 77.8%** on the storefront |
+| `mvn verify`, whole reactor | **about a minute**, including the store's PostgreSQL, Redis and Kafka containers |
 | Simulation throughput | **79,416 steps/s** |
 | Soak | 10,000 seeds, **30,216,914 invariant checks**, 4,812,844 conflicts, 4,301,575 answers, **381s**, zero violations |
 | Real threads, real PostgreSQL | 200 callers, 20 units, **exactly 20 sales** |
-| Two browser tabs, one unit | **exactly one gets it**, the other is told by how much it fell short |
-| Service start to ready | **2.0s** |
-| Console bundle | 289 kB, **89 kB gzipped** |
-| Hand-written Java | 9,265 lines main, 5,603 lines test |
-| Hand-written TypeScript | 1,910 lines source, 1,890 lines test, 140 lines CSS |
-| SQL | 103 lines across two migrations |
-| Runtime dependencies | `till-core`: **one**, `slf4j-api`. `till-web`: **three**, React, its DOM renderer, a router |
+| The whole stack, from `up` to healthy | **about 25 s** once the images are built |
+| Sign in, hold, pay | **8 s** end to end in a real browser, including Keycloak's login page |
+| Ledger to storefront | a restock shows in the catalogue within **about 6 s** — Kafka, the projection, and the five-second edge cache |
+| Ledger start to ready | **2.0s** |
+| Storefront bundle | 446 kB, **139 kB gzipped**, plus 4 kB for the operator console, loaded only by operators |
+| Hand-written Java | 13,692 lines main, 9,179 lines test |
+| Hand-written TypeScript | 6,003 lines source (918 of them painting cover art), 1,505 lines test, 272 lines CSS |
+| SQL | 555 lines across eight migrations, most of it the catalogue itself |
+| Runtime dependencies | `till-core`: **one**, `slf4j-api`. `till-web`: **five** — React, its DOM renderer, a router, Redux Toolkit and its React bindings |
 
 ```bash
 mvn verify -Dcoverage                                       # Java tests and coverage
-cd till-web && npm run check && npm run test:coverage       # the console
+cd till-web && npm run check && npm run test:coverage       # the storefront
+docker compose up -d --wait && (cd till-web && npm run e2e) # end to end
 mvn test -pl till-testkit -Dtill.sim.seeds=10000 \
     -Dtest=SoakTest -Dsurefire.failIfNoSpecifiedTests=false  # soak
 ```
@@ -387,18 +499,13 @@ conflicts would have tested the happy path four million times, and would go on p
 concurrency control was deleted. Every chaos test here asserts the run was hostile — conflicts,
 replays, injected crashes, lost answers, expiries and refusals all have to have happened.
 
-There is no throughput figure for the service, on purpose. Measuring it on one laptop against one
-PostgreSQL would say more about the laptop than about till.
-
-**What has been run.** Every number above is measured, and every path in this README has now been
-executed: the service against a real PostgreSQL, driven by `tillctl`, by the Java client and by a
-real browser against the jar with the console bundled into it; the full `docker compose` stack, which
-is where the last two bugs below came from; and all eight CI jobs on GitHub's runners, across two
-JDKs and two Node versions.
+There is no throughput figure for the services, on purpose. Measuring them on one laptop against one
+PostgreSQL would say more about the laptop than about till; that number comes from a written load-test
+protocol run against a deployed stack, or not at all.
 
 ## How it is tested
 
-Seven layers, each covering what the cheaper one below it cannot:
+Eleven layers, each covering what the cheaper one below it cannot:
 
 | Layer | Covers |
 | --- | --- |
@@ -406,9 +513,13 @@ Seven layers, each covering what the cheaper one below it cannot:
 | **Deterministic simulation** | interleavings, crashes, lost answers, clock jumps — every invariant after every step |
 | **Differential** | the same seeded schedule against both ledgers, compared row for row |
 | **Real concurrency** | that PostgreSQL's conditional update and unique constraint do what the design assumes |
-| **Integration** | the wiring: Flyway, Spring's binding, filter order, an `Instant` surviving Jackson and `timestamptz` |
-| **Console unit** | the checkout state machine — which requests share an idempotency key and which do not |
-| **End to end** | a real browser against the jar that ships, including two tabs racing for the last unit |
+| **Integration** | the ledger's wiring: Flyway, Spring's binding, filter order, an `Instant` surviving Jackson and `timestamptz` |
+| **Store** | checkout, orders, search and the projection against real PostgreSQL and Redis — with the real kernel in memory as the ledger, so every refusal is the kernel's own |
+| **Sign-in** | the whole OpenID Connect round trip against an in-process provider: PKCE, nonce, forged tokens, login CSRF, session fixation, sign-out |
+| **Contract** | the committed OpenAPI documents are what the services serve, and every kind of failure is the declared problem |
+| **Storefront unit** | every page against an in-memory model of the store's API at the network layer; the CSRF and idempotency headers asserted on the wire |
+| **End to end** | Chromium against the whole compose stack: Keycloak sign-in, a real hold, payment, stock that travels through Kafka |
+| **Container** | the images CI ships: the CLI against the ledger, the edge's headers, cache and rate limits, event propagation, a restart |
 
 A command is not one operation in the simulator. It is three phases — load, decide, apply — and one
 phase of one caller runs per step. That is what makes the races real: between one caller loading and
@@ -429,17 +540,29 @@ nothing was written. So every answer given during a run is kept and checked agai
 one key gives one answer, a promised hold exists with the lines and the deadline promised, and every
 committed reservation was announced to somebody.
 
-The console's suite is about the same property as the kernel's, one layer out. `useCheckout` holds
-one attempt key per attempt and derives a key per step from it, and the tests assert the
-consequences: clicking Pay twice sends one key; retrying a refused basket sends the same key;
-starting a second attempt sends a new one. Each of those decides whether somebody is charged once or
-twice, and none is visible in a screenshot — so the HTTP layer is mocked at the network rather than
-by stubbing `fetch`, and the assertions are on what went over the wire.
+The store's suites run the whole service against a real PostgreSQL and a real Redis, with one
+substitution: the ledger is the real reservation kernel running in memory. Not a stub — every refusal
+and every expiry in a checkout test is decided by the same `Kernel` the ledger service runs, so "the
+second customer is told how far short they fell" is a statement about the rules rather than a stub's
+opinion of them. The same fixture plays the outbox, Kafka and the consumer, and can hand the whole
+event history over a second time, which is how the inbox is proven to make redelivery a no-op.
 
-The end-to-end suite runs a real browser against the jar with the console inside it, which is the
-artifact a release ships. Its centrepiece is two browser contexts — two session stores, two cookie
-jars — both adding the last unit to a basket and both checking out. One gets a hold with a countdown;
-the other is told it wanted one and none is left.
+Signing in is tested the long way. Spring Security's `oidcLogin()` shortcut puts a principal on the
+request and skips everything worth testing, so `SignInTest` runs the round trip against a small
+provider on a free port — strict about PKCE, single-use codes, redirect URIs and client secrets, and
+able to issue a forgery. Requests carry cookies like a browser, and CSRF is the real exchange.
+
+The storefront's suite renders whole pages, inside the real Redux store and router, against an
+in-memory model of the store's API at the network layer — one that holds stock, refuses with
+shortfalls, replays a reused key and enforces sign-in, the admin group and the CSRF header. So the
+assertions are about what went over the wire: an outage retried sends the same key; a cart changed
+after "only 2 left" sends a new one, because reusing the refused request's key for a different basket
+would rightly be refused; paying sends a key derived from the order, so a double click is one sale.
+
+The end-to-end suite runs Chromium against the whole compose stack. A customer signs in at checkout
+through Keycloak's own login page and finds the cart intact, holds stock and pays; an operator
+restocks a game and the catalogue shows it within seconds, which is only possible if the outbox, Kafka
+and the store's consumer all did their jobs.
 
 ### Proof that the suite would notice
 
@@ -457,10 +580,77 @@ lucky one. Two plausible mistakes are deliberately **not** on the list because t
 harmless: applying a decision twice (mutations carry absolute values, not deltas) and a ledger that
 offers a live hold as reclaimable (the kernel re-checks the deadline; it does not trust the adapter).
 
-### Bugs found before the first release
+### Bugs found, and what found them
 
 <table>
 <tr><th>Bug</th><th>What caught it</th></tr>
+<tr>
+<td><b>One customer's retry could be answered with another customer's hold.</b> The first storefront
+passed the browser's idempotency key straight to the ledger, whose key space is global. Two customers
+whose browsers picked the same string would have been one key to the ledger — which, correctly by its
+own rules, would have recognised the second as a retry of the first and handed over the first
+customer's reservation.</td>
+<td>Rebuilding checkout for signed-in customers, and asking what "the same key" means when there is
+more than one of them. Invisible in every demo, because every demo had one user. Keys are now a digest
+of purpose, customer, order and key, and a test sends the same key from two customers.</td>
+</tr>
+<tr>
+<td><b>The session cookie was not <code>HttpOnly</code>.</b> Spring Boot 4 copies
+<code>server.servlet.session.cookie.*</code> onto Spring Session's cookie only when it runs its own
+embedded server. In any other deployment shape — a WAR, or the mock servlet environment tests run in
+— it copies the container's defaults instead, and those are not <code>HttpOnly</code>. The cookie
+that is the whole of a customer's authentication was readable from script in exactly the environment
+that was supposed to prove it was not.</td>
+<td>The sign-in test asserting the flag on the cookie it was actually sent, rather than trusting the
+configuration. <code>HttpOnly</code> and <code>SameSite=Lax</code> are now set in code, for every
+deployment shape.</td>
+</tr>
+<tr>
+<td><b>A test helper silently changed what every later test was testing.</b> Spring Security's
+<code>csrf()</code> post-processor works by replacing the CSRF token repository inside the filter
+chain — and the chain belongs to the cached application context, so the replacement outlives the test
+that made it. After the first test that used it, every other test in the JVM ran with session-based
+CSRF, which production never does, and the order tests happened to run in decided which suite saw
+which.</td>
+<td>A CSRF test that passed alone and failed in the full suite. None of these tests use the helper
+any more: they send the same value in the cookie and the header, which is the exchange the SPA really
+performs.</td>
+</tr>
+<tr>
+<td><b>The edge could serve one catalogue answer indefinitely.</b> nginx was told to serve stale
+entries while refreshing them, with no upper bound. The refresh was a request without a CSRF cookie,
+so the store answered it with one — and nginx never caches a response that sets a cookie. So the stale
+entry was never replaced, and for as long as traffic kept it warm the storefront said 48 copies were
+left while the ledger said 60.</td>
+<td>The container job's check that a restock reaches the catalogue, run by hand against the stack.
+Public responses now never set a cookie, the edge strips one regardless, and how stale is the origin's
+decision: <code>stale-while-revalidate=30, stale-if-error=300</code>.</td>
+</tr>
+<tr>
+<td><b>Every cover on every shelf had zero height.</b> The cover component put
+<code>relative</code> on its root, and cards passed <code>absolute inset-0</code>. Two position
+utilities on one element are resolved by the order of the generated stylesheet, not by intent, and
+<code>relative</code> won — so the cover sat in the flow with no content height. The hero and the
+thumbnails, sized differently, rendered perfectly, which is why it looked like the art itself.</td>
+<td>A screenshot of the running store. No unit test would have caught it: jsdom applies no
+stylesheet. The component's positioning now lives on an inner element, and the caller owns the
+outer one.</td>
+</tr>
+<tr>
+<td><b>The store accepted idempotency keys it could not store.</b> 200 characters were allowed; the
+column that keeps the key an order was placed under is 128. A 150-character key would have passed
+validation and failed the insert with a 500.</td>
+<td>Reading the order service against the migration during review. One limit, 128, everywhere, and a
+test that sends 129.</td>
+</tr>
+<tr>
+<td><b>Seeding a game with no copies would have left every later game unstocked.</b> The demonstration
+stock loop sends one adjustment per game and retries the loop on failure. The ledger refuses an
+adjustment of zero, so a game configured with zero copies failed the loop — ten times, and then the
+seeder gave up on every game after it.</td>
+<td>Configuring a sold-out game for the demonstration and reading the kernel's validation before
+starting the stack. Zero now means "leave it unstocked".</td>
+</tr>
 <tr>
 <td><b>The Kafka image segfaulted on CI and not on a laptop.</b>
 <code>apache/kafka-native</code> is a GraalVM build, and GraalVM resolves <code>user.home</code>
@@ -734,6 +924,17 @@ on stderr — so <code>tillctl stock widget</code> greeted its answer with
 which is the only process it was ever about.</td>
 </tr>
 <tr>
+<td><b>A fix for a problem that did not exist.</b> Chasing the CSRF failure above, I concluded that
+Spring Security's <code>csrf.spa()</code> defers the token, so the SPA would have no cookie before its
+first write, and added a filter to issue it eagerly. The real cause was the test helper. The handler
+already loads the token on every request — it asks the deferred token for its parameter name, which
+generates it — including on responses meant for a shared cache.</td>
+<td>A later test asserting that public responses set no cookie, which failed for a reason the filter
+could not explain. The token is now genuinely deferred, by a handler of our own, and the filter issues
+it on every private response and no public one — which is what its documentation always said it
+did.</td>
+</tr>
+<tr>
 <td><b>Two of my own assertions were wrong, not the code.</b> A stale-version test asserted one outbox
 row where the setup legitimately produced two adjustments; a client test expected an I/O failure
 where reporting the service's own 503 is strictly more useful; a console-route test asserted a 404
@@ -749,7 +950,7 @@ because a testing document that only lists strengths is marketing.
 
 ## Reading the code
 
-Ten minutes, in this order:
+Fifteen minutes, in this order:
 
 | File | Why |
 | --- | --- |
@@ -759,14 +960,18 @@ Ten minutes, in this order:
 | [`testkit/Invariants.java`](till-testkit/src/main/java/io/till/testkit/Invariants.java) | the properties, and what each one catches |
 | [`testkit/Sim.java`](till-testkit/src/main/java/io/till/testkit/Sim.java) | why a command is three phases rather than one |
 | [`jdbc/JdbcLedger.java`](till-jdbc/src/main/java/io/till/jdbc/JdbcLedger.java) | two transactions per attempt, and why they differ |
-| [`web/shop/useCheckout.ts`](till-web/src/shop/useCheckout.ts) | one key per attempt, one per step, and why the reserve is not in an effect |
-| [`web/api/idempotency.ts`](till-web/src/api/idempotency.ts) | the smallest file here, and the one that decides whether somebody is charged twice |
+| [`store/ledger/LedgerKeys.java`](till-store/src/main/java/io/till/store/ledger/LedgerKeys.java) | why a customer's idempotency key never reaches the ledger as it was sent |
+| [`store/orders/OrderService.java`](till-store/src/main/java/io/till/store/orders/OrderService.java) | no transaction across a call to another service, and why that is safe |
+| [`store/events/Projector.java`](till-store/src/main/java/io/till/store/events/Projector.java) | three read models, one transaction, and the inbox that makes at-least-once affordable |
+| [`store/auth/SecurityConfiguration.java`](till-store/src/main/java/io/till/store/auth/SecurityConfiguration.java) | the backend-for-frontend, in one class |
+| [`web/api/storeApi.ts`](till-web/src/api/storeApi.ts) | the two headers that are the storefront's whole security story |
+| [`web/features/checkout/useCheckoutAttempt.ts`](till-web/src/features/checkout/useCheckoutAttempt.ts) | one checkout attempt, one key per cart, and why a changed cart is a new request |
 
 | Document | |
 | --- | --- |
-| [`docs/architecture.md`](docs/architecture.md) | the layering, the seam, and where the transaction boundary is |
+| [`docs/architecture.md`](docs/architecture.md) | the layering, the seam, the store and the edge |
 | [`docs/testing.md`](docs/testing.md) | what each layer proves, and the known gaps |
-| [`docs/operations.md`](docs/operations.md) | running it: tuning, alerting, retention, sizing, backup, upgrades |
+| [`docs/operations.md`](docs/operations.md) | running it: settings, sign-in, the edge, alerting, retention, backup |
 | [`docs/design/`](docs/design/) | one note per decision, each with its costs and rejected alternatives |
 
 ## Layout
@@ -777,9 +982,11 @@ till-jdbc       PostgreSQL: optimistic concurrency, a transactional outbox, the 
 till-testkit    a deterministic simulator, the invariants, and the flaws it is proven to catch
 till-client     an HTTP client and tillctl, with no serialisation dependency
 till-kafka      the outbox to Kafka: plain kafka-clients, no Spring, keyed by entity
-till-server     REST, OpenAPI, metrics, the sweeper, the outbox publisher
-till-catalogue  the storefront: games, prices, and availability projected from the events
-till-web        the browser console: a shop front and an operator view, bundled by -Pweb
+till-server     the ledger service: REST, OpenAPI, metrics, the sweeper, the outbox publisher
+till-store      the store: catalogue, search, orders, sign-in, the operator API
+till-web        the storefront and operator console: React, Redux Toolkit, Vite
+openapi/        the two services' published contracts, kept current by their own tests
+docker/         the edge's nginx configuration, the Keycloak realm, database initialisation
 ```
 
 ## License

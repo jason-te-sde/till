@@ -1,6 +1,6 @@
 # 7. One console, two audiences, served by the service
 
-**Status:** accepted
+**Status:** superseded by [8](0008-the-store.md), which replaced the console with a store and put the server this note deferred in front of the ledger.
 
 ## Context
 

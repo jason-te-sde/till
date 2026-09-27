@@ -2,7 +2,6 @@ package io.till.server;
 
 import java.time.Duration;
 import java.util.Map;
-import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -24,7 +23,6 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param auth the two tokens
  * @param sweeper the background expiry job
  * @param outbox the background publisher
- * @param web how the browser console is served
  * @param retention how long history is kept
  */
 @ConfigurationProperties(prefix = "till")
@@ -38,7 +36,6 @@ public record TillProperties(
         @DefaultValue Sweeper sweeper,
         @DefaultValue Outbox outbox,
         @DefaultValue Kafka kafka,
-        @DefaultValue Web web,
         @DefaultValue RetentionPolicy retention) {
 
     public TillProperties {
@@ -123,26 +120,6 @@ public record TillProperties(
             }
             if (idempotency.isNegative() || outbox.isNegative() || reservations.isNegative()) {
                 throw new IllegalArgumentException("a retention period must not be negative");
-            }
-        }
-    }
-
-    /**
-     * How the browser console is served.
-     *
-     * @param corsOrigins origins allowed to call the API from a browser. Empty by default, and it
-     *     should stay empty: the console is served by this service, so it is same-origin and needs
-     *     none. This exists for the case where somebody hosts the console separately, and a wildcard
-     *     is deliberately not supported — an inventory API that any page may call is an inventory API
-     *     any page may read
-     */
-    public record Web(@DefaultValue List<String> corsOrigins) {
-
-        public Web {
-            corsOrigins = List.copyOf(corsOrigins);
-            if (corsOrigins.contains("*")) {
-                throw new IllegalArgumentException(
-                        "till.web.cors-origins does not accept '*'; name the origins that may call this API");
             }
         }
     }

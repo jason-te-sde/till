@@ -1,17 +1,22 @@
 # The whole platform in one command:
 #
 #   docker compose up -d --wait
-#   open http://127.0.0.1:8080          # the shop, and /ops for the ledger
-#   curl -s http://127.0.0.1:8081/v1/games | jq        # the storefront's catalogue
-#   docker compose run --rm tillctl adjust sunless-orbit 100
+#   open http://localhost:8080            # the store — sign in with a demo account from the README
 #
-# Two services and a broker, and the split is the point. `till` owns stock and is the only thing
-# that may decide a sale. `catalogue` owns titles and prices, keeps a read model of availability by
-# consuming till's events, and reserves by calling till over HTTP with an ordinary client token —
-# so a bug in the storefront cannot oversell.
+# What runs, and who may talk to whom:
 #
-# The tokens are in this file in plain text because this file is a demonstration. A real deployment
-# gets them from somewhere else; docs/operations.md says where.
+#   browser ──> edge (nginx, :8080) ──> store ──> till (the ledger) ──> postgres
+#      │                                  │  └──> postgres, redis (sessions)        │
+#      └──> keycloak (:8180, sign-in)     └────── kafka <── till's outbox ───────────┘
+#
+# `till` owns stock and is the only thing that may decide a sale. `store` owns the catalogue, orders
+# and sign-in; it keeps a read model of availability by consuming till's events, and reserves by
+# calling till over HTTP with an ordinary client token — so a bug in the storefront cannot oversell.
+# Nothing a browser can reach holds a ledger token, and the ledger is not reachable from outside at
+# all except on 127.0.0.1, for debugging.
+#
+# Every secret in this file is a demonstration value in plain text, because this file is a
+# demonstration. A real deployment gets them from a secret store; docs/operations.md says which.
 
 services:
   postgres:
@@ -30,19 +35,19 @@ services:
       retries: 20
     volumes:
       - till-data:/var/lib/postgresql/data
-      # Two services, two schemas, two databases — created here because the storefront must not be
-      # able to reach the ledger's tables even by accident. A shared database would make the first
-      # convenient join possible, and that join is where an oversell gets decided in the wrong place.
+      # Two services, two databases — created here because the store must not be able to reach the
+      # ledger's tables even by accident. A shared database would make the first convenient join
+      # possible, and that join is where an oversell gets decided in the wrong place.
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
 
   kafka:
-    # The JVM image rather than apache/kafka-native: the native build segfaults on start when
-    # the container's UID has no /etc/passwd entry, which is host-dependent — it works on a
-    # laptop and dies on a CI runner. It also ships the CLI the health check below needs.
+    # The JVM image rather than apache/kafka-native: the native build segfaults on start when the
+    # container's UID has no /etc/passwd entry, which is host-dependent — it works on a laptop and
+    # dies on a CI runner. It also ships the CLI the health check below needs.
     image: apache/kafka:4.1.0
     environment:
-      # KRaft: one node that is its own controller, no ZooKeeper. A demonstration stack does not
-      # need a quorum, and the thing being demonstrated is the outbox, not Kafka's own availability.
+      # KRaft: one node that is its own controller, no ZooKeeper. A demonstration stack does not need
+      # a quorum, and the thing being demonstrated is the outbox, not Kafka's own availability.
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
@@ -56,16 +61,61 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
-      # Asks the broker to list topics, which needs it to be serving rather than merely listening —
-      # the same standard as the postgres check above, for the same reason.
+      # Asks the broker to list topics, which needs it to be serving rather than merely listening.
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list > /dev/null 2>&1"]
       interval: 3s
       timeout: 10s
       retries: 30
       start_period: 20s
 
+  redis:
+    # 7.2: the last BSD-licensed release, and the protocol ElastiCache speaks. It holds sessions only,
+    # so a restart signs everybody out and loses nothing else.
+    image: redis:7.2-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  keycloak:
+    # Stands in for Amazon Cognito locally: an OpenID Connect provider with the same groups claim
+    # (`cognito:groups`), so the store runs the same code against both. The realm — client, demo
+    # users, the admins group — is imported from docker/keycloak on first start.
+    image: quay.io/keycloak/keycloak:26.7
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # The address a browser uses. Tokens are issued in its name, and it is the issuer the store
+      # checks every ID token against.
+      KC_HOSTNAME: http://localhost:8180
+      # ...while the store, inside this network, reaches the token endpoint at keycloak:8080. The
+      # back channel follows the request's own host instead of the one above.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8180:8080"
+    healthcheck:
+      # The image has no curl; bash can open a socket on its own.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"status": *"UP"' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+
   till:
-    build: .
+    build:
+      context: .
+      target: runtime
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,9 +128,11 @@ services:
       TILL_CLIENT_TOKEN: demo-client-token
       TILL_ADMIN_TOKEN: demo-admin-token
       TILL_KAFKA_BROKERS: kafka:9092
+    # Loopback only. The ledger is an internal service: the store is its only client, and nothing on
+    # the network should be able to call it. Published at all so that it can be poked while debugging.
     ports:
-      - "8080:8080"
-      - "9101:9101"
+      - "127.0.0.1:8090:8080"
+      - "127.0.0.1:9101:9101"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9101/actuator/health/readiness"]
       interval: 3s
@@ -88,45 +140,80 @@ services:
       retries: 20
       start_period: 40s
 
-  catalogue:
-    build: .
+  store:
+    build:
+      context: .
+      target: runtime
     # Same image, different jar. The two services share every dependency they have.
-    entrypoint: ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/till-catalogue.jar"]
+    entrypoint: ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/till-store.jar"]
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
       till:
         condition: service_healthy
     environment:
-      CATALOGUE_DB_URL: jdbc:postgresql://postgres:5432/catalogue
-      CATALOGUE_DB_USER: till
-      CATALOGUE_DB_PASSWORD: till
-      CATALOGUE_KAFKA_BROKERS: kafka:9092
+      STORE_DB_URL: jdbc:postgresql://postgres:5432/store
+      STORE_DB_USER: till
+      STORE_DB_PASSWORD: till
+      STORE_REDIS_HOST: redis
+      STORE_KAFKA_BROKERS: kafka:9092
       TILL_URL: http://till:8080
-      # The client token, never the admin one. The storefront reserves, commits and releases; it has
-      # no business moving stock levels, and holding the token that could would make it worth
-      # compromising.
+      # Checkout holds this; it may reserve, commit and release, and nothing else.
       TILL_CLIENT_TOKEN: demo-client-token
+      # Used only behind /api/ops, which answers only members of the admins group.
+      TILL_ADMIN_TOKEN: demo-admin-token
+      # Sign-in. The explicit endpoints are needed only because the browser and this container reach
+      # Keycloak at different addresses; against Cognito the issuer alone is enough (application.yml).
+      STORE_OIDC_ISSUER_URI: http://localhost:8180/realms/till
+      STORE_OIDC_CLIENT_ID: till-store
+      STORE_OIDC_CLIENT_SECRET: till-store-local-secret
+      STORE_OIDC_AUTHORIZATION_URI: http://localhost:8180/realms/till/protocol/openid-connect/auth
+      STORE_OIDC_TOKEN_URI: http://keycloak:8080/realms/till/protocol/openid-connect/token
+      STORE_OIDC_JWK_SET_URI: http://keycloak:8080/realms/till/protocol/openid-connect/certs
+      STORE_OIDC_LOGOUT_URI: http://localhost:8180/realms/till/protocol/openid-connect/logout?client_id={clientId}&post_logout_redirect_uri={baseUrl}/&id_token_hint={idToken}
+      # Stock every game on start, through the ledger, so the store does not open sold out. A few
+      # games get a handful of copies, so the page shows what "only 3 left" and "sold out" look like.
+      STORE_DEMO_SEED_STOCK: "true"
+      SPRING_APPLICATION_JSON: '{"store":{"demo":{"stock":{"ninefold":3,"hollow-meridian":2,"tin-soldier-hop":4,"ashen-crown":0}}}}'
     ports:
-      - "8081:8081"
-      - "9102:9102"
+      - "127.0.0.1:9102:9102"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9102/actuator/health/readiness"]
       interval: 3s
       timeout: 5s
-      retries: 20
+      retries: 30
       start_period: 40s
 
+  edge:
+    build:
+      context: .
+      target: edge
+    depends_on:
+      store:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz > /dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   # Not started with the stack; run one command at a time:
-  #   docker compose run --rm tillctl reserve sunless-orbit:2
+  #   docker compose run --rm tillctl stock
   #
-  # It is behind a profile, which means `docker compose build` does not rebuild it. After changing
-  # the Dockerfile, `docker compose --profile cli build` — otherwise `run` quietly uses the image
-  # from before the change, and you debug the old one.
+  # Behind a profile, which means `docker compose build` does not rebuild it. After changing the
+  # Dockerfile, `docker compose --profile cli build` — otherwise `run` quietly uses the old image.
   tillctl:
-    build: .
+    build:
+      context: .
+      target: runtime
     profiles: ["cli"]
     depends_on:
       till:

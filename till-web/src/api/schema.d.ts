@@ -4,7 +4,109 @@
  */
 
 export interface paths {
-    "/v1/outbox": {
+    "/api/games": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse and search the catalogue */
+        get: operations["searchGames"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/games/{sku}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One game's page */
+        get: operations["getGame"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/genres": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every genre, with how many games it has */
+        get: operations["listGenres"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/home": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Everything the home page shows, in one request */
+        get: operations["getHome"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign out */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Who is signed in */
+        get: operations["getSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ops/outbox": {
         parameters: {
             query?: never;
             header?: never;
@@ -12,7 +114,7 @@ export interface paths {
             cookie?: never;
         };
         /** The unpublished tail of the outbox */
-        get: operations["listOutbox"];
+        get: operations["opsOutbox"];
         put?: never;
         post?: never;
         delete?: never;
@@ -21,33 +123,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/reservations": {
+    "/api/ops/reservations": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List reservations, newest first */
-        get: operations["listReservations"];
-        put?: never;
-        /** Take a hold on stock */
-        post: operations["reserve"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/reservations/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Look a hold up */
-        get: operations["getReservation"];
+        /** Reservations, newest first */
+        get: operations["opsReservations"];
         put?: never;
         post?: never;
         delete?: never;
@@ -56,7 +140,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/reservations/{id}/commit": {
+    "/api/ops/stock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stock levels, in SKU order */
+        get: operations["opsStock"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ops/stock/{sku}/adjust": {
         parameters: {
             query?: never;
             header?: never;
@@ -65,57 +166,41 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Turn a hold into a sale */
-        post: operations["commitReservation"];
+        /** Add or remove stock directly */
+        post: operations["opsAdjust"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/reservations/{id}/release": {
+    "/api/orders": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Your orders, newest first */
+        get: operations["listOrders"];
         put?: never;
-        /** Give a hold back */
-        post: operations["releaseReservation"];
+        /** Place an order, holding its stock */
+        post: operations["placeOrder"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/stock": {
+    "/api/orders/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List stock levels */
-        get: operations["listStock"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/stock/{sku}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read a stock level */
-        get: operations["getStock"];
+        /** One of your orders */
+        get: operations["getOrder"];
         put?: never;
         post?: never;
         delete?: never;
@@ -124,7 +209,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/stock/{sku}/adjust": {
+    "/api/orders/{id}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -133,8 +218,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Change on-hand stock directly */
-        post: operations["adjustStock"];
+        /** Cancel an unpaid order, giving its stock back */
+        post: operations["cancelOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orders/{id}/pay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pay for an order (demonstration — no money moves) */
+        post: operations["payOrder"];
         delete?: never;
         options?: never;
         head?: never;
@@ -145,21 +247,84 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        AdjustRequest: {
+        Facet: {
+            /** Format: int64 */
+            count: number;
+            value: string;
+        };
+        Facets: {
+            genres: components["schemas"]["Facet"][];
+            tags: components["schemas"]["Facet"][];
+        };
+        GameCard: {
+            /** Format: date-time */
+            availabilityAsOf: string | null;
+            /** Format: int64 */
+            available: number;
+            blurb: string;
+            cover: string;
+            currency: string;
+            /** Format: int32 */
+            discountPercent: number;
+            genre: string;
+            /** Format: int64 */
+            listPriceCents: number;
+            /** Format: int64 */
+            priceCents: number;
+            /** Format: date */
+            releasedOn: string;
+            sku: string;
+            studio: string;
+            tags: string[];
+            title: string;
+        };
+        GameDetail: {
+            description: string;
+            features: string[];
+            game: components["schemas"]["GameCard"];
+            related: components["schemas"]["GameCard"][];
+        };
+        GamePage: {
+            facets: components["schemas"]["Facets"];
+            items: components["schemas"]["GameCard"][];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        Home: {
+            bestSellers: components["schemas"]["GameCard"][];
+            featured: components["schemas"]["GameCard"][];
+            genres: components["schemas"]["Facet"][];
+            newReleases: components["schemas"]["GameCard"][];
+            onSale: components["schemas"]["GameCard"][];
+        };
+        LineRequest: {
+            /** Format: int32 */
+            quantity: number;
+            sku: string;
+        };
+        Logout: {
+            redirect: string;
+        };
+        Me: {
+            admin: boolean;
+            authenticated: boolean;
+            email: string | null;
+            name: string | null;
+        };
+        OpsAdjust: {
             /** Format: int64 */
             delta: number;
         };
-        Committed: {
-            /** Format: date-time */
-            committedAt: string;
-            id: string;
-        };
-        Line: {
+        OpsLine: {
             /** Format: int64 */
             quantity: number;
             sku: string;
         };
-        OutboxEntry: {
+        OpsOutboxEntry: {
             dedupeKey: string;
             payload: string;
             /** Format: date-time */
@@ -167,40 +332,12 @@ export interface components {
             /** Format: int64 */
             sequence: number;
         };
-        OutboxPage: {
+        OpsOutboxPage: {
             /** Format: int64 */
             backlog: number;
-            items: components["schemas"]["OutboxEntry"][];
+            items: components["schemas"]["OpsOutboxEntry"][];
         };
-        /** @description An RFC 9457 problem detail. */
-        Problem: {
-            /**
-             * @example INSUFFICIENT_STOCK
-             * @enum {string}
-             */
-            code?: "INSUFFICIENT_STOCK" | "UNKNOWN_SKU" | "RESERVATION_NOT_FOUND" | "RESERVATION_EXPIRED" | "ALREADY_COMMITTED" | "ALREADY_RELEASED" | "RESERVATION_ID_IN_USE" | "IDEMPOTENCY_KEY_REUSED" | "CONTENTION" | "UNAUTHORIZED" | "FORBIDDEN";
-            /** @example widget: asked for 5, 2 available */
-            detail: string;
-            instance?: string;
-            /** @example 0f9c1a7e-1f3a-4a2b-9a1e-2c4d6e8f0a11 */
-            requestId?: string;
-            shortfalls?: components["schemas"]["Shortfall"][];
-            /**
-             * Format: int32
-             * @example 409
-             */
-            status: number;
-            /** @example Not enough stock */
-            title: string;
-            /** @example about:blank */
-            type?: string;
-        };
-        Released: {
-            id: string;
-            /** Format: date-time */
-            releasedAt: string;
-        };
-        Reservation: {
+        OpsReservation: {
             /** Format: date-time */
             createdAt: string;
             /** @enum {string} */
@@ -208,36 +345,14 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
             id: string;
-            lines: components["schemas"]["Line"][];
+            lines: components["schemas"]["OpsLine"][];
             /** @enum {string} */
             state: "HELD" | "COMMITTED" | "RELEASED" | "EXPIRED";
         };
-        ReservationPage: {
-            items: components["schemas"]["Reservation"][];
+        OpsReservationPage: {
+            items: components["schemas"]["OpsReservation"][];
         };
-        ReserveRequest: {
-            lines: components["schemas"]["Line"][];
-            /**
-             * Format: int64
-             * @description How long the hold lasts. Defaults to till.default-ttl.
-             * @example 900
-             */
-            ttlSeconds?: number;
-        };
-        Reserved: {
-            /** Format: date-time */
-            expiresAt: string;
-            id: string;
-            lines: components["schemas"]["Line"][];
-        };
-        Shortfall: {
-            /** Format: int64 */
-            available: number;
-            /** Format: int64 */
-            requested: number;
-            sku: string;
-        };
-        Stock: {
+        OpsStock: {
             /** Format: int64 */
             available: number;
             /** Format: int64 */
@@ -245,11 +360,66 @@ export interface components {
             /** Format: int64 */
             reserved: number;
             sku: string;
+            title: string | null;
         };
-        StockPage: {
-            items: components["schemas"]["Stock"][];
-            /** @description Absent on the last page. */
-            nextAfter?: string;
+        OpsStockPage: {
+            items: components["schemas"]["OpsStock"][];
+            nextAfter: string | null;
+        };
+        Order: {
+            /** Format: date-time */
+            closedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            currency: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: uuid */
+            id: string;
+            lines: components["schemas"]["OrderLine"][];
+            /** @enum {string} */
+            status: "PENDING" | "PAID" | "CANCELLED" | "EXPIRED";
+            /** Format: int64 */
+            totalCents: number;
+        };
+        OrderLine: {
+            cover: string | null;
+            /** Format: int32 */
+            quantity: number;
+            sku: string;
+            title: string;
+            /** Format: int64 */
+            unitPriceCents: number;
+        };
+        OrderPage: {
+            items: components["schemas"]["Order"][];
+        };
+        PlaceOrder: {
+            lines: components["schemas"]["LineRequest"][];
+        };
+        /** @description An RFC 9457 problem, with a machine-readable code. */
+        Problem: {
+            /** @description NOT_FOUND, INSUFFICIENT_STOCK, UNKNOWN_SKU, ORDER_EXPIRED, ORDER_CANCELLED, ORDER_PAID, IDEMPOTENCY_KEY_REUSED, LEDGER_UNAVAILABLE, BAD_REQUEST, INVALID_BODY, MISSING_HEADER, UNAUTHORIZED, FORBIDDEN, CSRF, INTERNAL_ERROR; otherwise the name of the HTTP status */
+            code: string;
+            detail: string;
+            errors?: components["schemas"]["ProblemFieldError"][];
+            instance?: string;
+            shortfalls?: components["schemas"]["ProblemShortfall"][];
+            /** Format: int32 */
+            status: number;
+            title: string;
+            type?: string;
+        };
+        ProblemFieldError: {
+            field: string;
+            message: string;
+        };
+        ProblemShortfall: {
+            /** Format: int64 */
+            available: number;
+            /** Format: int64 */
+            requested: number;
+            sku: string;
         };
     };
     responses: never;
@@ -260,7 +430,192 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    listOutbox: {
+    searchGames: {
+        parameters: {
+            query?: {
+                q?: string;
+                genre?: string;
+                tag?: string;
+                maxPriceCents?: number;
+                onSale?: boolean;
+                sort?: string;
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GamePage"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getGame: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sku: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GameDetail"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listGenres: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Facet"][];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getHome: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Home"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Logout"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    opsOutbox: {
         parameters: {
             query?: {
                 limit?: number;
@@ -271,35 +626,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description the backlog and its oldest entries */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["OutboxPage"];
+                    "application/json": components["schemas"]["OpsOutboxPage"];
                 };
             };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no bearer token, or one this service does not know */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description this needs the admin token */
-            403: {
+            /** @description Refused or failed; `code` says why. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -309,7 +646,7 @@ export interface operations {
             };
         };
     };
-    listReservations: {
+    opsReservations: {
         parameters: {
             query?: {
                 state?: "HELD" | "COMMITTED" | "RELEASED" | "EXPIRED";
@@ -327,20 +664,11 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["ReservationPage"];
+                    "application/json": components["schemas"]["OpsReservationPage"];
                 };
             };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no bearer token, or one this service does not know */
-            401: {
+            /** @description Refused or failed; `code` says why. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -350,266 +678,7 @@ export interface operations {
             };
         };
     };
-    reserve: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Retrying with this key returns the first answer and changes nothing */
-                "Idempotency-Key": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReserveRequest"];
-            };
-        };
-        responses: {
-            /** @description the hold was taken, or already existed under this key */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "*/*": components["schemas"]["Reserved"];
-                };
-            };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no bearer token, or one this service does not know */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description a SKU has never been stocked */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description not enough available stock; the body lists every shortfall */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description this key was used for a different request */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description too much contention; retry */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    getReservation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description the reservation */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "*/*": components["schemas"]["Reservation"];
-                };
-            };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no bearer token, or one this service does not know */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no such reservation */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    commitReservation: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description on-hand and reserved both went down */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "*/*": components["schemas"]["Committed"];
-                };
-            };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no bearer token, or one this service does not know */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no such reservation */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description already committed, or already released */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description the hold ran out of time */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    releaseReservation: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description the hold is gone, whether it went now or earlier */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "*/*": components["schemas"]["Released"];
-                };
-            };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no bearer token, or one this service does not know */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no such reservation */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description it was committed and cannot be released */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    listStock: {
+    opsStock: {
         parameters: {
             query?: {
                 limit?: number;
@@ -627,20 +696,11 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["StockPage"];
+                    "application/json": components["schemas"]["OpsStockPage"];
                 };
             };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no bearer token, or one this service does not know */
-            401: {
+            /** @description Refused or failed; `code` says why. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -650,56 +710,7 @@ export interface operations {
             };
         };
     };
-    getStock: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sku: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description the level */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "*/*": components["schemas"]["Stock"];
-                };
-            };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description no bearer token, or one this service does not know */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description this SKU has never been stocked */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    adjustStock: {
+    opsAdjust: {
         parameters: {
             query?: never;
             header: {
@@ -712,21 +723,21 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["AdjustRequest"];
+                "application/json": components["schemas"]["OpsAdjust"];
             };
         };
         responses: {
-            /** @description the new level */
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "*/*": components["schemas"]["Stock"];
+                    "application/json": components["schemas"]["OpsStock"];
                 };
             };
-            /** @description the request could not be read, or a value in it was not valid */
-            400: {
+            /** @description Refused or failed; `code` says why. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -734,8 +745,28 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description no bearer token, or one this service does not know */
-            401: {
+        };
+    };
+    listOrders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderPage"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -743,8 +774,34 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description this needs the admin token */
-            403: {
+        };
+    };
+    placeOrder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaceOrder"];
+            };
+        };
+        responses: {
+            /** @description Placed — or, for a key already used, the order it placed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Order"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -752,8 +809,30 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description removing stock from a SKU that has no row */
-            404: {
+        };
+    };
+    getOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Order"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -761,8 +840,65 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description this would take on-hand below what is reserved */
-            409: {
+        };
+    };
+    cancelOrder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Order"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    payOrder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Order"];
+                };
+            };
+            /** @description Refused or failed; `code` says why. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };

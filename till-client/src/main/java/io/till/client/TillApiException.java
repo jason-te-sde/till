@@ -15,6 +15,7 @@ public class TillApiException extends RuntimeException {
 
     private final int status;
     private final String code;
+    private final String detail;
     private final List<Shortfall> shortfalls;
 
     /**
@@ -27,7 +28,21 @@ public class TillApiException extends RuntimeException {
         super(status + " " + (code == null ? "" : code + ": ") + detail);
         this.status = status;
         this.code = code;
+        this.detail = detail;
         this.shortfalls = List.copyOf(shortfalls);
+    }
+
+    /**
+     * The service's own sentence about what went wrong, without the status and code in front of it.
+     *
+     * <p>{@link #getMessage()} carries all three, which is right for a log line and wrong for a caller
+     * passing the refusal on to somebody else — a storefront showing a customer why their basket was
+     * refused wants the sentence, not "409 INSUFFICIENT_STOCK:" in front of it.
+     *
+     * @return the {@code detail} field from the problem body
+     */
+    public String detail() {
+        return detail;
     }
 
     /**

@@ -2,38 +2,56 @@
 
 /*
  * The design tokens, and the one rule that matters: a colour is named for the job it does, never for
- * what it looks like. `--series-available` can be re-stepped for dark mode without a single component
- * changing, and nothing anywhere says "blue".
+ * what it looks like. `--accent` can be re-stepped for dark mode without a single component changing,
+ * and nothing anywhere says "violet".
  *
- * Dark mode is selected, not flipped. Every value below was chosen for its own surface and the pair
- * validated against it — running the palette validator over
- * `#2a78d6,#eb6834` on `#fcfcfb` and `#3987e5,#d95926` on `#1a1a19` passes the lightness band, the
- * chroma floor, colour-vision separation and contrast in both. An automatic lightness flip does not.
+ * Dark is the store's first look — game art reads best on a dark plane, and every storefront a player
+ * already knows is dark — but light is a real theme, chosen value by value for its own surface rather
+ * than produced by flipping lightness.
+ *
+ * The two series colours are the operator console's, and were validated as a pair on each surface
+ * (`#2a78d6,#eb6834` on `#ffffff`; `#3987e5,#d95926` on `#131722`): lightness band, chroma floor,
+ * colour-vision separation and contrast all pass. Status colours are reserved for state and always sit
+ * beside a word.
  */
 :root {
   color-scheme: light;
 
-  --plane: #f9f9f7;
-  --surface: #fcfcfb;
-  --surface-sunken: #f2f1ed;
+  --plane: #f3f4f8;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #e9ebf2;
 
-  --ink-primary: #0b0b0b;
-  --ink-secondary: #52514e;
-  --ink-muted: #898781;
+  --ink-primary: #10132a;
+  --ink-secondary: #4a5170;
+  --ink-muted: #767d97;
 
-  --line-hairline: #e1e0d9;
-  --line-strong: #c3c2b7;
-  --ring: rgb(11 11 11 / 0.1);
+  --line-hairline: #e1e4ee;
+  --line-strong: #c7ccdb;
+  --ring: rgb(16 19 42 / 0.08);
 
-  /* Two categorical slots. Available and reserved are the two halves of on-hand. */
+  --accent: #5b3df5;
+  --accent-hover: #4a2ee0;
+  --accent-ink: #ffffff;
+  --accent-soft: #ebe7ff;
+  --accent-soft-ink: #3f25c9;
+
+  /* A discount: always a number beside it, never colour alone. */
+  --sale: #11773c;
+  --sale-ink: #ffffff;
+
   --series-available: #2a78d6;
   --series-reserved: #eb6834;
 
-  /* Status. Reserved for state, never for a series, and always beside a word. */
   --status-good: #0ca30c;
-  --status-warning: #fab219;
+  --status-warning: #d98e04;
   --status-critical: #d03b3b;
   --status-good-ink: #006300;
+  --status-warning-ink: #8a5700;
+  --status-critical-ink: #a82323;
+
+  --shadow-card: 0 1px 2px rgb(16 19 42 / 0.06), 0 8px 24px -12px rgb(16 19 42 / 0.18);
+  --shadow-pop: 0 24px 64px -16px rgb(16 19 42 / 0.35);
 }
 
 /* The OS setting, which a stamped light theme must still beat. */
@@ -41,22 +59,37 @@
   :root:where(:not([data-theme="light"])) {
     color-scheme: dark;
 
-    --plane: #0d0d0d;
-    --surface: #1a1a19;
-    --surface-sunken: #121211;
+    --plane: #0a0c13;
+    --surface: #131722;
+    --surface-raised: #1a1f2e;
+    --surface-sunken: #0e1119;
 
-    --ink-primary: #ffffff;
-    --ink-secondary: #c3c2b7;
-    --ink-muted: #898781;
+    --ink-primary: #f2f4fb;
+    --ink-secondary: #a8b0c6;
+    --ink-muted: #727b94;
 
-    --line-hairline: #2c2c2a;
-    --line-strong: #383835;
-    --ring: rgb(255 255 255 / 0.1);
+    --line-hairline: #222838;
+    --line-strong: #323a51;
+    --ring: rgb(242 244 251 / 0.08);
+
+    --accent: #8f79ff;
+    --accent-hover: #a594ff;
+    --accent-ink: #0a0c13;
+    --accent-soft: #221d44;
+    --accent-soft-ink: #c3b8ff;
+
+    --sale: #4ade80;
+    --sale-ink: #052e16;
 
     --series-available: #3987e5;
     --series-reserved: #d95926;
 
-    --status-good-ink: #0ca30c;
+    --status-good-ink: #4ade80;
+    --status-warning-ink: #fbbf24;
+    --status-critical-ink: #f87171;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -16px rgb(0 0 0 / 0.7);
+    --shadow-pop: 0 32px 80px -16px rgb(0 0 0 / 0.8);
   }
 }
 
@@ -64,31 +97,47 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --plane: #0d0d0d;
-  --surface: #1a1a19;
-  --surface-sunken: #121211;
+  --plane: #0a0c13;
+  --surface: #131722;
+  --surface-raised: #1a1f2e;
+  --surface-sunken: #0e1119;
 
-  --ink-primary: #ffffff;
-  --ink-secondary: #c3c2b7;
-  --ink-muted: #898781;
+  --ink-primary: #f2f4fb;
+  --ink-secondary: #a8b0c6;
+  --ink-muted: #727b94;
 
-  --line-hairline: #2c2c2a;
-  --line-strong: #383835;
-  --ring: rgb(255 255 255 / 0.1);
+  --line-hairline: #222838;
+  --line-strong: #323a51;
+  --ring: rgb(242 244 251 / 0.08);
+
+  --accent: #8f79ff;
+  --accent-hover: #a594ff;
+  --accent-ink: #0a0c13;
+  --accent-soft: #221d44;
+  --accent-soft-ink: #c3b8ff;
+
+  --sale: #4ade80;
+  --sale-ink: #052e16;
 
   --series-available: #3987e5;
   --series-reserved: #d95926;
 
-  --status-good-ink: #0ca30c;
+  --status-good-ink: #4ade80;
+  --status-warning-ink: #fbbf24;
+  --status-critical-ink: #f87171;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -16px rgb(0 0 0 / 0.7);
+  --shadow-pop: 0 32px 80px -16px rgb(0 0 0 / 0.8);
 }
 
 /*
  * `inline` so the utilities resolve the custom property at use time rather than baking its value in.
- * That is what lets one set of class names follow the mode.
+ * That is what lets one set of class names follow the theme.
  */
 @theme inline {
   --color-plane: var(--plane);
   --color-surface: var(--surface);
+  --color-raised: var(--surface-raised);
   --color-sunken: var(--surface-sunken);
 
   --color-ink: var(--ink-primary);
@@ -98,6 +147,15 @@
   --color-hairline: var(--line-hairline);
   --color-line-strong: var(--line-strong);
 
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-soft-ink: var(--accent-soft-ink);
+
+  --color-sale: var(--sale);
+  --color-sale-ink: var(--sale-ink);
+
   --color-available: var(--series-available);
   --color-reserved: var(--series-reserved);
 
@@ -105,12 +163,41 @@
   --color-warning: var(--status-warning);
   --color-critical: var(--status-critical);
   --color-good-ink: var(--status-good-ink);
+  --color-warning-ink: var(--status-warning-ink);
+  --color-critical-ink: var(--status-critical-ink);
 
-  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --shadow-card: var(--shadow-card);
+  --shadow-pop: var(--shadow-pop);
+
+  --font-sans: "Inter", "InterVariable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Inter", "InterVariable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  --animate-rise: rise 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-fade: fade 0.2s ease-out both;
+  --animate-slide-in: slide-in 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes slide-in {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
 }
 
 html {
   background: var(--plane);
+  scroll-padding-top: 5rem;
 }
 
 body {
@@ -118,6 +205,15 @@ body {
   font-family: var(--font-sans);
   color: var(--ink-primary);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* One focus ring everywhere, and only for the keyboard. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /*
@@ -128,6 +224,41 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* A loading placeholder: the shape of what is coming, shimmering so it reads as "on its way". */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-sunken) 0%,
+    color-mix(in oklab, var(--surface-sunken), var(--ink-muted) 12%) 50%,
+    var(--surface-sunken) 100%
+  );
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+}
+
+/*
+ * Film grain over the procedural cover art, so flat vector shapes read as a painted surface. A data
+ * URI rather than an SVG filter on every cover: the browser rasterises the image once and reuses it,
+ * where a turbulence filter would be recomputed for each of the thirty covers on a page.
+ */
+.grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0.9 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  mix-blend-mode: overlay;
+  opacity: 0.35;
+}
+
+/* A shelf scrolls sideways with its own buttons; the native bar would only add a line under it. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Respecting the setting rather than deciding for everybody that motion is fine. */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -136,5 +267,6 @@ body {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

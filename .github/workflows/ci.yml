@@ -81,10 +81,10 @@ jobs:
       - name: the broker-backed suites actually ran
         run: |
           ran=$(grep -ho 'tests="[0-9]*"' till-kafka/target/surefire-reports/*.xml \
-                  till-catalogue/target/surefire-reports/*.xml \
+                  till-store/target/surefire-reports/*.xml \
                 | grep -o '[0-9]*' | paste -sd+ - | bc)
           skipped=$(grep -ho 'skipped="[0-9]*"' till-kafka/target/surefire-reports/*.xml \
-                      till-catalogue/target/surefire-reports/*.xml \
+                      till-store/target/surefire-reports/*.xml \
                     | grep -o '[0-9]*' | paste -sd+ - | bc)
           echo "kafka-backed modules: $ran tests, $skipped skipped"
           test "$skipped" -eq 0
@@ -162,6 +162,9 @@ jobs:
           retention-days: 7
 
   web:
+    # The storefront. The job keeps the name it had when the frontend was an operator console, because
+    # the repository's ruleset requires checks by name: renaming a job means changing the ruleset in
+    # the same change, or every pull request waits forever for a check that no longer reports.
     name: the console (node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -195,9 +198,10 @@ jobs:
       - name: unit tests
         run: npm run test:coverage
 
-      # The committed openapi.json is what the TypeScript types are generated from. If regenerating
-      # them changes the file, somebody changed the API and did not regenerate — which is a frontend
-      # compiling against types for an API that no longer exists.
+      # openapi/store.json is what the TypeScript types are generated from, and the store's own test
+      # keeps that file current. If regenerating the types changes them, somebody changed the API and
+      # did not regenerate — which is a frontend compiling against types for an API that no longer
+      # exists.
       - name: the generated types are current
         run: |
           npm run api:types
@@ -219,84 +223,53 @@ jobs:
   e2e:
     name: end to end
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: till
-          POSTGRES_USER: till
-          POSTGRES_PASSWORD: till
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U till -d till"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 20
-
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: docker/setup-buildx-action@v4
+
+      # Every image the stack runs, built once with a cache shared across runs: the Maven and npm
+      # dependency layers are most of the wall time, and they change far less often than the code.
+      - name: build the images
+        uses: docker/bake-action@v6
         with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
+          source: .
+          files: docker-compose.yml
+          load: true
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
+
+      # The whole platform, as the README starts it: edge, store, ledger, Kafka, Postgres, Redis and
+      # Keycloak. --wait blocks until every health check passes, so a stack that cannot start fails
+      # here, by name, rather than as a browser test timing out.
+      - name: bring the stack up
+        run: docker compose up -d --wait
+
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: till-web/package-lock.json
 
-      # The jar with the console inside it, which is what a release ships and therefore what the
-      # end-to-end suite should be driving. Serving the bundle from a separate dev server would
-      # leave the service's own route forwarding untested.
-      - name: build the jar with the console in it
-        run: mvn -B -ntp -Pweb package -DskipTests
-
-      - name: start it
-        run: |
-          nohup java -jar till-server/target/till-server-*.jar \
-            --server.address=127.0.0.1 \
-            --spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/till \
-            --spring.datasource.username=till --spring.datasource.password=till \
-            --till.auth.client-token=ci-client --till.auth.admin-token=ci-admin \
-            > /tmp/till.log 2>&1 &
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:9101/actuator/health/readiness >/dev/null; then
-              echo "ready after ${i}s"; exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::the service did not become ready"; cat /tmp/till.log; exit 1
-
-      - name: the service really is serving the console
-        run: |
-          set -euo pipefail
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)" = 200
-          # An enumerated forward, not a catch-all: a route the console has is a page, and a path
-          # nobody has is still a 404.
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ops)" = 200
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/nope)" = 404
-
       - name: install the browser
         working-directory: till-web
         run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium
 
-      # TILL_WEB pointing at the service means Playwright drives the bundled console over the same
-      # origin the API is on, exactly as a deployment serves it.
+      # A customer and an operator, driven through the real sign-in at Keycloak, a real hold in the
+      # ledger, and stock that travels through Kafka to the storefront.
       - name: run it
         working-directory: till-web
         env:
           CI: 'true'
-          TILL_WEB: http://127.0.0.1:8080
-          TILL_API: http://127.0.0.1:8080
-          TILL_TOKEN: ci-admin
+          TILL_WEB: http://localhost:8080
         run: npx playwright test
 
-      - name: service log
+      - name: stack logs
         if: always()
-        run: tail -200 /tmp/till.log
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=150 store edge keycloak
 
       - uses: actions/upload-artifact@v7
         if: failure()
@@ -307,27 +280,28 @@ jobs:
             till-web/test-results/**
           retention-days: 7
 
+      - name: tear down
+        if: always()
+        run: docker compose down -v
+
   container:
     name: the container stack works
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
 
-      # Cached across runs because the first stage resolves the whole Maven dependency tree. Without
-      # a cache that download is repeated on every pull request and is most of the job's wall time.
-      - name: build the image
-        uses: docker/build-push-action@v7
+      - name: build the images
+        uses: docker/bake-action@v6
         with:
-          context: .
-          tags: till:ci
+          source: .
+          files: docker-compose.yml
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
 
-      # --wait blocks until every service reports healthy, which for till is its own readiness
-      # probe. If it cannot reach the database, this fails here rather than in the next step.
       - name: bring the stack up
         run: docker compose up -d --wait
 
@@ -357,73 +331,92 @@ jobs:
           fi
           grep -q INSUFFICIENT_STOCK /tmp/err
 
+      # Output is captured before it is searched: `curl | grep -q` under pipefail fails whenever grep
+      # finds its match and exits before curl has finished writing.
       - name: metrics are scrapeable and health is honest
         run: |
           set -euo pipefail
-          curl -sf http://127.0.0.1:9101/actuator/prometheus | grep -q 'till_outcome_total'
-          curl -sf http://127.0.0.1:9101/actuator/health/readiness | grep -q '"status":"UP"'
-          # The API port must not serve the management endpoints, and must want a token.
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/stock/widget)" = 401
+          grep -q 'till_outcome_total' <<< "$(curl -sf http://127.0.0.1:9101/actuator/prometheus)"
+          grep -q '"status":"UP"' <<< "$(curl -sf http://127.0.0.1:9101/actuator/health/readiness)"
+          grep -q '"status":"UP"' <<< "$(curl -sf http://127.0.0.1:9102/actuator/health/readiness)"
+          # The ledger's API port must not serve the management endpoints, and must want a token.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8090/v1/stock/widget)" = 401
 
-      - name: the image serves the console
+      - name: the edge serves the store, and only the store
         run: |
           set -euo pipefail
-          # The README says `docker compose up` gives you a shop. An image built without -Pweb would
-          # pass every other step in this job and answer 404 here.
-          curl -sf http://127.0.0.1:8080/ | grep -q '<title>till</title>'
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ops)" = 200
+          grep -q '<title>till games</title>' <<< "$(curl -sf http://localhost:8080/)"
+          # A route the SPA draws is the app, with the policy that forbids inline script.
+          headers=$(curl -s -D - -o /dev/null http://localhost:8080/games/sunless-orbit)
+          grep -q '^HTTP/1.1 200' <<< "$headers"
+          grep -qi "^content-security-policy: default-src 'self'; script-src 'self'" <<< "$headers"
+          grep -qi '^x-frame-options: DENY' <<< "$headers"
+          # The API behind it answers as JSON problems, never as pages.
+          curl -sf http://localhost:8080/api/me | jq -e '.authenticated == false' > /dev/null
+          body=$(curl -s -w '\n%{http_code}' http://localhost:8080/api/orders)
+          test "$(tail -1 <<< "$body")" = 401
+          head -1 <<< "$body" | jq -e '.code == "UNAUTHORIZED"' > /dev/null
+          # Nothing of the ledger is reachable through the edge, even holding the ledger's own admin
+          # token: a path the storefront does not draw is still the storefront, never the ledger.
+          grep -q '<title>till games</title>' <<< "$(curl -s -H 'Authorization: Bearer demo-admin-token' \
+            http://localhost:8080/v1/stock)"
 
       # The reason Kafka is in this stack at all. If the outbox never reached the broker, or the
-      # consumer never started, or the headers drifted, the storefront's availability stays at zero
-      # and this step is what says so — none of the steps above would notice.
+      # consumer never started, or the headers drifted, the storefront's availability never moves and
+      # this step is what says so.
       - name: an event reaches the storefront
         run: |
           set -euo pipefail
-          docker compose run --rm tillctl adjust sunless-orbit 12
-          for i in $(seq 1 40); do
-            available=$(curl -sf http://127.0.0.1:8081/v1/games/sunless-orbit | jq -r .available)
-            if [ "$available" = "12" ]; then echo "projected after ${i}s"; break; fi
+          available() { curl -sf http://localhost:8080/api/games/sunless-orbit | jq -r .game.available; }
+          # The store stocks every game once at start-up, through the ledger. Wait until that has
+          # been projected, so the number read next is not about to jump by the seed's fifty.
+          for i in $(seq 1 60); do
+            asof=$(curl -sf http://localhost:8080/api/games/sunless-orbit | jq -r .game.availabilityAsOf)
+            if [ "$asof" != null ]; then break; fi
             sleep 1
           done
-          test "$(curl -sf http://127.0.0.1:8081/v1/games/sunless-orbit | jq -r .available)" = 12
-          # And it is stamped with till's clock, not the consumer's arrival time.
-          test "$(curl -sf http://127.0.0.1:8081/v1/games/sunless-orbit | jq -r .availabilityAsOf)" != null
-
-      - name: a sale through the storefront, and a refusal that says why
-        run: |
-          set -euo pipefail
-          held=$(curl -sf -X POST -H 'Idempotency-Key: ci-cart-1' -H 'Content-Type: application/json' \
-            -d '{"lines":[{"sku":"sunless-orbit","quantity":5}]}' \
-            http://127.0.0.1:8081/v1/checkout | jq -r .id)
-          test -n "$held"
-
-          # The same key again: the storefront passes it through, so till answers with the same hold.
-          again=$(curl -sf -X POST -H 'Idempotency-Key: ci-cart-1' -H 'Content-Type: application/json' \
-            -d '{"lines":[{"sku":"sunless-orbit","quantity":5}]}' \
-            http://127.0.0.1:8081/v1/checkout | jq -r .id)
-          test "$held" = "$again"
-
-          # Over-ordering is refused with the shortfall intact, not flattened to "sorry".
-          body=$(curl -s -X POST -H 'Idempotency-Key: ci-cart-2' -H 'Content-Type: application/json' \
-            -d '{"lines":[{"sku":"sunless-orbit","quantity":500}]}' \
-            http://127.0.0.1:8081/v1/checkout)
-          echo "$body" | jq -e '.code == "INSUFFICIENT_STOCK"' > /dev/null
-          echo "$body" | jq -e '.shortfalls[0].available == 7' > /dev/null
-
-          curl -sf -X POST -H 'Idempotency-Key: ci-pay-1' \
-            http://127.0.0.1:8081/v1/checkout/"$held"/pay | jq -e '.at' > /dev/null
+          before=$(available)
+          docker compose run --rm tillctl adjust sunless-orbit 12
+          for i in $(seq 1 45); do
+            if [ "$(available)" = "$((before + 12))" ]; then echo "projected after ${i}s"; break; fi
+            sleep 1
+          done
+          test "$(available)" = "$((before + 12))"
 
       - name: the storefront cannot move stock
         run: |
           set -euo pipefail
-          # It holds a client token, so till refuses. The whole argument for splitting the services
-          # is that this is impossible rather than merely not implemented.
-          code=$(docker compose exec -T catalogue sh -lc \
+          # Checkout holds a client token, so the ledger refuses an adjustment made with it. The whole
+          # argument for splitting the services is that this is impossible rather than merely absent.
+          code=$(docker compose exec -T store sh -lc \
             'curl -s -o /dev/null -w "%{http_code}" -X POST \
                -H "Authorization: Bearer $TILL_CLIENT_TOKEN" \
                -H "Idempotency-Key: ci-should-fail" -H "Content-Type: application/json" \
                -d "{\"delta\":1000}" http://till:8080/v1/stock/sunless-orbit/adjust')
           test "$code" = 403
+
+      - name: the catalogue is cached at the edge
+        run: |
+          set -euo pipefail
+          # The first answer sets the CSRF cookie, and nginx never caches a response that sets one;
+          # with the cookie sent back, the next answers are cacheable and the third is a hit.
+          for i in 1 2 3; do
+            curl -s -b /tmp/jar -c /tmp/jar -D - -o /dev/null http://localhost:8080/api/home | grep -i '^x-cache:' || true
+          done | tee /tmp/cache
+          grep -qi 'x-cache: HIT' /tmp/cache
+
+      - name: a flood is refused politely
+        run: |
+          set -euo pipefail
+          # Thirty a second per address with a burst of sixty; three hundred at once must be cut.
+          seq 1 300 | xargs -P 60 -I{} curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/api/me \
+            | sort | uniq -c | tee /tmp/codes
+          grep -q ' 429$' /tmp/codes
+          sleep 2
+          curl -s http://localhost:8080/api/me > /dev/null
+          # And the refusal is a problem the SPA can read, not nginx's HTML page.
+          seq 1 200 | xargs -P 60 -I{} curl -s http://localhost:8080/api/me > /tmp/bodies
+          grep -q '"code":"RATE_LIMITED"' /tmp/bodies
 
       - name: the stock survives a restart
         run: |
@@ -438,13 +431,6 @@ jobs:
         if: always()
         run: |
           docker compose ps
-          echo "--- health ---"
-          for service in till catalogue; do
-            echo "--- $service ---"
-            docker inspect --format '{{json .State.Health}}' "$(docker compose ps -q $service)" | head -c 600 || true
-            echo
-          done
-          echo
           echo "--- logs ---"
           docker compose logs --no-color --tail=120
 

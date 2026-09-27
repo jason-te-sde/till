@@ -4,21 +4,28 @@ Written for somebody who has been paged.
 
 ## The shape of it
 
-One stateless process, one PostgreSQL database. Every instance is interchangeable; there is no
-leader, no coordination, and no sticky routing. Scale by adding processes until the database is the
-limit, which it will be, because every command is two short transactions against a handful of rows.
+Two stateless services behind an edge proxy, each with a PostgreSQL database of its own, and a broker
+between them. Every instance of each service is interchangeable; there is no leader, no coordination
+and no sticky routing — sessions live in Redis, not in a process.
 
 ```
-browsers ─┐
-          ├─▶ load balancer ──▶ till (n instances) ──▶ PostgreSQL
-clients ──┘                          │
-                                     └──▶ your broker, via the outbox publisher
+browsers ──▶ edge (nginx) ──▶ till-store (n) ──▶ till (n) ──▶ PostgreSQL (till)
+                 │                 │  │                         │
+                 │                 │  └──▶ PostgreSQL (store), Redis (sessions)
+                 │                 │                            │
+                 │                 └──◀── Kafka ◀── the outbox ─┘
+                 │
+                 └── sign-in redirects ──▶ identity provider (Cognito; Keycloak locally)
 ```
 
-The browser console is inside the jar and served from the same origin as the API, so there is nothing
-extra to deploy and no CORS to configure.
+`till` is the ledger: it owns stock and decides every sale. `till-store` owns the catalogue, orders,
+sign-in and the operator API, and reaches the ledger only through its public API with a client token.
+The edge serves the storefront's files and is the only thing a browser talks to.
 
-## Starting it
+Scale either service by adding processes until its database is the limit. For the ledger that will
+be the case first, because every command is two short transactions against a handful of rows.
+
+## Starting the ledger
 
 ```bash
 java -jar till-server.jar \
@@ -53,15 +60,25 @@ damage is a day of fraudulent orders rather than an inventory that can be zeroed
 
 If only the client token is set, it also allows adjustments, and the service says so at startup.
 
+The store holds both, and the difference is where each is used: checkout reserves, commits and
+releases with the client token; the admin token is used only behind `/api/ops`, which answers only
+members of the identity provider's admin group. Give the store the admin token only if operators
+should be able to adjust stock from the console.
+
 ## Ports
 
-| | |
-| --- | --- |
-| `8080` | the API, and the browser console. `server.port` |
-| `9101` | health, metrics, info. `management.server.port` |
+| Service | API | Management |
+| --- | --- | --- |
+| `till` | `8080` — the ledger's API | `9101` |
+| `till-store` | `8081` — the store's API, reached through the edge | `9102` |
+| edge | `8080` in its container — the only port a browser needs | `/healthz` on the same port |
 
-They are separate so that metrics and probes are not reachable from wherever the API is, and so the
-API's authentication does not have to carve out exceptions for them. **Do not expose 9101.**
+In the compose stack the edge is published on `8080` and the ledger on `127.0.0.1:8090`, for
+debugging; nothing publishes the store's API port, because nothing outside should call it directly.
+
+The management ports are separate so that metrics and probes are not reachable from wherever the API
+is, and so the API's authentication does not have to carve out exceptions for them. **Do not expose
+9101 or 9102.**
 
 Setting `management.server.port` to the same value as `server.port` puts them back on one port, where
 anything that can reach the API can also read the metrics and the environment. Till logs a warning at
@@ -90,6 +107,13 @@ instance at once, which is the worst possible response to a database hiccup.
 | `till_command_seconds` p99 | above a few tens of milliseconds | almost always the database, or contention producing retries. Published as a histogram, so this is a real quantile across instances rather than an average of per-instance quantiles, and `till_command_seconds_bucket` can be read against an SLO directly |
 | `till_outcome_total{outcome="insufficient_stock"}` | however you like | this is a business metric, not a fault. It is what running out of stock looks like |
 
+For the store, the built-in HTTP metrics on `9102` and the broker's own tooling cover it:
+
+| Signal | Alert when | Because |
+| --- | --- | --- |
+| `http_server_requests_seconds_count{uri=~"/api/orders.*",status="503"}` | rising | the store cannot reach the ledger. Checkout is down; browsing is not |
+| consumer lag on the `till-store` group (`kafka-consumer-groups.sh --describe --group till-store`) | growing | store pages are showing stock that is falling further behind the ledger. Nothing oversells — the ledger decides at checkout — but more customers are refused at the last step |
+
 `till_outcome_total` is tagged by outcome rather than by status code on purpose: "how many
 reservations were refused for want of stock" is a question about the business, and "how many POSTs
 returned 409" is a question about the router.
@@ -109,23 +133,83 @@ Ids you send are accepted only if they look like one: 8–64 characters of `A-Za
 else is replaced rather than refused, because a caller with a strange id should still get an answer,
 and an unvalidated value goes into log lines.
 
-## The console
+## Starting the store
 
-`/` is the shop front and `/ops` is the operator view. Both are served from inside the jar.
+```bash
+java -jar till-store.jar
+```
+
+configured entirely by environment:
+
+| Variable | What it is |
+| --- | --- |
+| `STORE_DB_URL`, `STORE_DB_USER`, `STORE_DB_PASSWORD` | the store's own database. Not the ledger's: the store must not be able to reach the ledger's tables |
+| `TILL_URL`, `TILL_CLIENT_TOKEN` | the ledger, and the token checkout reserves with |
+| `TILL_ADMIN_TOKEN` | optional; lets the operator console adjust stock |
+| `STORE_REDIS_HOST`, `STORE_REDIS_PORT` | sessions, and the tokens inside them |
+| `STORE_KAFKA_BROKERS`, `TILL_KAFKA_TOPIC` | the ledger's events. Blank means do not consume: the store still serves, with availability frozen at whatever was last projected |
+| `STORE_OIDC_ISSUER_URI`, `STORE_OIDC_CLIENT_ID`, `STORE_OIDC_CLIENT_SECRET` | the identity provider. Required: the store refuses to start without one |
+| `STORE_OIDC_LOGOUT_URI` | where signing out ends the provider's session too; see below |
+| `STORE_COOKIE_SECURE` | `true` everywhere but a plain-HTTP laptop |
+| `STORE_HOLD_FOR` | how long a placed order holds its stock; 15 minutes |
+| `STORE_DEMO_SEED_STOCK` | stock every game on start. The compose stack sets it; a real store must not |
+
+The schema is applied by Flyway at startup, like the ledger's.
+
+## Sign-in
+
+The store runs the OpenID Connect authorization-code flow with PKCE itself, and keeps the tokens in
+the session. The browser gets an `HttpOnly`, `SameSite=Lax` session cookie and never sees a token.
+
+**Amazon Cognito.** Create a user pool with an app client that has a secret, and a group called
+`admins` for operators. Then:
 
 | | |
 | --- | --- |
-| It answers 404 | the jar was built without `-Pweb`. The startup log says which: *"no browser console in this build"* |
-| It asks for a token | by design. Paste the client token for the shop, the admin token to see the outbox. It is kept in `sessionStorage`, so closing the tab forgets it |
-| The outbox panel says it needs the admin token | also by design. The backlog is not a secret; the payloads are the whole history of what moved |
-| You want to host it elsewhere | set `till.web.cors-origins` to the origins that may call the API. `*` is refused at startup |
+| `STORE_OIDC_ISSUER_URI` | `https://cognito-idp.<region>.amazonaws.com/<pool-id>` — everything else is discovered from it |
+| Allowed callback URL | `https://<your-host>/login/oauth2/code/idp` |
+| Allowed sign-out URL | `https://<your-host>/` |
+| `STORE_OIDC_LOGOUT_URI` | `https://<domain>.auth.<region>.amazoncognito.com/logout?client_id={clientId}&logout_uri={baseUrl}/` |
+| OAuth scopes | `openid`, `profile`, `email` |
 
-**It is a console, not a customer-facing shop.** The shop route exists to demonstrate the reservation
-path; it has a hard-coded catalogue and no payment. And the authentication is the honest minimum for
-a console: a person pastes a bearer token. A product would sign somebody in, keep a session cookie
-the page cannot read, and put a small server in front that holds the token —
-[`design/0007-browser-console.md`](design/0007-browser-console.md) says why that server is out of
-scope here. **Do not expose this console to the public with a real token in it.**
+Group membership arrives in the ID token as `cognito:groups`, and members of `admins` get the operator
+console. Both names are settings (`store.auth.groups-claim`, `store.auth.admin-group`) for providers
+that spell them differently.
+
+**Keycloak, locally.** The compose stack imports a realm with the client, two demonstration accounts
+and the `admins` group, and a mapper that names the groups claim the way Cognito does — so the store
+runs the same code against both. It sets the provider's endpoints explicitly
+(`STORE_OIDC_AUTHORIZATION_URI`, `..._TOKEN_URI`, `..._JWK_SET_URI`) because the browser reaches
+Keycloak at `localhost:8180` and the store reaches it at `keycloak:8080`, and one discovery document
+cannot be right for both. The issuer is still checked against every ID token; it is just not fetched.
+
+**Behind TLS.** The redirect URI is built from the request, and behind a proxy from its
+`X-Forwarded-*` headers — so the proxy in front of the store must set them, and whatever terminates
+TLS must pass `X-Forwarded-Proto: https` on. Get this wrong and the provider refuses the sign-in with a
+redirect-URI mismatch, which is the first thing to check when signing in fails.
+
+**Sessions are in Redis**, so any instance can serve any request. The store uses Spring Session's
+non-indexed repository, which needs no keyspace notifications — so it works on ElastiCache, which does
+not allow the `CONFIG SET` the indexed one would issue. If Redis goes away, signed-in customers get
+errors until it is back and visitors can still browse; restarting it signs everybody out and loses
+nothing else.
+
+## The edge
+
+nginx, configured by `docker/edge/`. It serves the storefront's files and proxies `/api`, `/oauth2`,
+`/login/oauth2`, `/v3/api-docs` and `/swagger-ui` to the store. Nothing of the ledger is reachable
+through it.
+
+| | |
+| --- | --- |
+| Security headers | set here, for everything, including a Content-Security-Policy that forbids inline script |
+| Rate limits | per client address: 30 reads a second with a burst of 60, 5 writes a second with a burst of 10, 2 sign-in starts a second. A refusal is a `429` problem with `code: RATE_LIMITED` and a `Retry-After` |
+| Catalogue cache | `/api/home`, `/api/games` and `/api/genres`, for as long as the store says: five seconds, stale for up to thirty while refetching, and up to five minutes while the store is down. `X-Cache` on every response says which |
+| Store down | a `503` problem with `code: STORE_UNAVAILABLE`, rather than nginx's own page |
+| Health | `/healthz` |
+
+Behind a load balancer that terminates TLS, the rate limits key on the balancer's address unless you
+configure nginx's `real_ip` module to trust it — do that, or every customer shares one limit.
 
 ## Tuning
 
@@ -200,6 +284,17 @@ delete from till_reservation where state <> 'HELD' and expires_at < now() - inte
 
 Outbox first, so that one pass can do both once both windows have elapsed.
 
+**The store's inbox is not pruned yet.** `store_consumed_event` gains one row per event the store
+applies. Its safe window is the topic's retention: forget a deduplication key while the broker can
+still redeliver that event, and the redelivery is applied twice. Until the store prunes it, delete by
+hand no more recently than the topic's `retention.ms`:
+
+```sql
+delete from store_consumed_event where consumed_at < now() - interval '30 days';  -- > the topic's retention
+```
+
+Orders are kept forever, deliberately: they are a customer's purchase history.
+
 ## Sizing
 
 Per row, roughly: a stock row is tens of bytes, a reservation is about a hundred plus fifty per line,
@@ -217,6 +312,11 @@ Nothing special. `pg_dump` and `pg_restore`, or whatever your platform does, wit
 - **The outbox is part of the backup.** Restoring an older snapshot restores unpublished events that
   may already have been delivered. Consumers deduplicate on `dedupe_key`, which is what makes that
   survivable, so check that yours actually does before you need to.
+- **The store's database is backed up separately**, and restoring it to an earlier point than the
+  ledger's is safe in one direction only: its projection will be behind, and catches up from the
+  topic. Orders placed after the restore point are gone from the store while their holds remain in
+  the ledger, where they expire on their own.
+- **Redis needs no backup.** It holds sessions; losing it signs everybody out.
 
 ## Upgrades
 
@@ -236,8 +336,14 @@ There is one migration so far, so this is advice rather than experience.
 | 422 `IDEMPOTENCY_KEY_REUSED` | a client is reusing a key for a different body. Usually a key derived from something not unique per request — a cart id rather than a checkout attempt |
 | `available` lower than it should be | expired holds not yet written off. Check `till_sweeper_failures_total`; the next command touching those SKUs will reclaim them anyway |
 | Refuses to start, "refusing to listen on" | no token and a reachable address. Set `till.auth.client-token` |
-| The console is a 404 | built without `-Pweb`. The startup log says so |
-| The console loads but every call fails with 401 | the token in the tab is wrong. "Forget token" and paste it again |
+| Signing in lands back on the store with "Sign-in didn't complete" | the provider refused. In order: the redirect URI registered at the provider matches `https://<host>/login/oauth2/code/idp` exactly; the proxy passes `X-Forwarded-Proto` and `-Host`; the issuer the store is configured with is the one in the tokens; the store's clock is right |
+| 403 with `"code":"CSRF"` | a write without a matching `X-XSRF-TOKEN`. Almost always a tab left open across a session that has since ended; a reload fixes it |
+| 429 with `"code":"RATE_LIMITED"` | the edge's limits. Behind a load balancer, check nginx is seeing client addresses rather than the balancer's |
+| 503 with `"code":"STORE_UNAVAILABLE"` | the edge cannot reach the store |
+| 503 with `"code":"LEDGER_UNAVAILABLE"` | the store cannot reach the ledger. The request is safe to retry: every write carries an idempotency key |
+| Store pages show stale stock | the consumer. Is `STORE_KAFKA_BROKERS` set, is the broker up, and is the `till-store` group's lag falling? |
+| Everybody was signed out at once | Redis restarted, or lost its data |
+| The store refuses to start: "an identity provider" | `STORE_OIDC_ISSUER_URI` and `STORE_OIDC_CLIENT_ID` are required |
 | Refuses to start, Flyway validation | the database has a schema this build did not create, or a migration was edited after being applied |
 | `LedgerException` about an impossible stock level | a bug in till. The database refused a level the application should not have been able to produce. The stock row named in the message is the place to start, and it has **not** been corrupted — the transaction rolled back |
 | The outbox backlog grows and nothing errors | the publisher is not running. `till.outbox.enabled`, and whether the scheduler is alive. The gauge is read straight from the table, so it is right even when the publisher is the thing that is broken |
@@ -246,8 +352,8 @@ There is one migration so far, so this is advice rather than experience.
 
 ## What till does not do
 
-Stated here rather than discovered: no multi-tenancy, no reservation of a quantity range or a
-specific serial number, no partial fulfilment of a multi-line hold, no backorders, no pricing, no
-scheduled availability, no read replicas, no rate limiting, and no encryption of data at rest beyond
-whatever the disk does. [`SECURITY.md`](../SECURITY.md) is explicit about the security half of that
+Stated here rather than discovered: no real payment (paying commits the hold and moves no money), no
+multi-tenancy, no reservation of a quantity range or a specific serial number, no partial fulfilment of
+a multi-line hold, no backorders, no scheduled availability, no read replicas, and no encryption of
+data at rest beyond whatever the disk does. [`SECURITY.md`](../SECURITY.md) is explicit about the security half of that
 list and [`design/0005-scope.md`](design/0005-scope.md) about the rest.

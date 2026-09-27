@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -69,13 +68,6 @@ class ExposureCheckTest {
     }
 
     @Test
-    @DisplayName("a wildcard CORS origin is refused, because an inventory API is not a public one")
-    void refusesWildcardCors() {
-        assertThrows(IllegalArgumentException.class, () -> new TillProperties.Web(List.of("*")));
-        assertDoesNotThrow(() -> new TillProperties.Web(List.of("https://ops.example.com")));
-    }
-
-    @Test
     @DisplayName("a client token with no admin token starts, having said what that means")
     void oneTokenIsAllowedAndWarnedAbout() {
         assertDoesNotThrow(() -> check("", "secret", null, false));
@@ -96,7 +88,6 @@ class ExposureCheckTest {
                 new TillProperties.Sweeper(true, Duration.ofSeconds(5), 200),
                 new TillProperties.Outbox(true, Duration.ofSeconds(1), 200),
                 new TillProperties.Kafka("", "till.events", Duration.ofSeconds(30), Map.of()),
-                new TillProperties.Web(List.of()),
                 new TillProperties.RetentionPolicy(
                         true,
                         Duration.ofHours(1),

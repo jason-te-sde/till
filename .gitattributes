@@ -15,7 +15,7 @@ Dockerfile  text eol=lf
 # Generated. Excluded from language statistics and collapsed in a pull request diff, because nobody
 # reviews a file whose contents are a build step's output.
 till-web/src/api/schema.d.ts  linguist-generated=true
-till-web/openapi.json         linguist-generated=true
+openapi/*.json                linguist-generated=true
 till-web/package-lock.json    linguist-generated=true
 
 # Vendored-looking but not: these are the project's own documentation and should count.

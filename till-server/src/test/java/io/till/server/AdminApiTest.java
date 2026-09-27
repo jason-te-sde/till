@@ -20,7 +20,6 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.ResourceLock;
-import org.springframework.core.io.ClassPathResource;
 
 /** The read endpoints the operator console is built on. */
 // Suites that share the one database run one at a time; see the note in the other API tests.
@@ -103,29 +102,24 @@ class AdminApiTest extends ApiTestBase {
     }
 
     @Test
-    @DisplayName("a mistyped API path is a 404 from the API, not the console's HTML")
+    @DisplayName("a mistyped API path is a 404 problem, not an HTML page")
     void theSpaForwardDoesNotSwallowTheApi() throws IOException, InterruptedException {
         HttpResponse<String> response = get("/v1/nonsense");
 
         assertEquals(404, response.statusCode());
         assertTrue(
                 response.body() == null || !response.body().contains("<html"),
-                "a catch-all forward would turn this into an HTML page a client parses as JSON: "
+                "an HTML error page is what a client would then try to parse as JSON: "
                         + response.body());
     }
 
     @Test
-    @DisplayName("the console's routes are enumerated, whether or not a console was built in")
-    void consoleRoutes() throws IOException, InterruptedException {
-        // Whether /ops is a page depends on the profile this was built with, so the test asks the
-        // classpath rather than assuming. An earlier version asserted 404 unconditionally and broke
-        // the moment somebody ran `mvn -Pweb` before `mvn verify` — a test that only passes after a
-        // `clean` is a test that will be deleted.
-        boolean bundled = new ClassPathResource("static/index.html").exists();
-
-        assertEquals(bundled ? 200 : 404, get("/ops/reservations").statusCode());
-        // This one holds either way, and it is the part that matters: the forward is enumerated, so
-        // a path the console does not have is still a 404 rather than its index page.
+    @DisplayName("the ledger serves an API and nothing else — no pages, however the path is spelled")
+    void noPages() throws IOException, InterruptedException {
+        // The storefront and the operator console are the store's, served by the edge proxy. A page
+        // here would be a second way into the ledger that the store's access rules do not cover.
+        assertEquals(404, get("/").statusCode());
+        assertEquals(404, get("/ops/reservations").statusCode());
         assertEquals(404, get("/nonsense").statusCode());
     }
 

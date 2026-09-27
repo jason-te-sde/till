@@ -22,6 +22,22 @@ best-effort and on a timescale to be agreed rather than promised.
 | A denial of service through contention | Bounded attempts, then a 503 with `Retry-After`. One hot SKU cannot park every thread on a lock, because there are no locks |
 | Management endpoints on the public port | Health and metrics are on a separate port by default. `show-details: never` on health, so a probe does not report the database's hostname to an unauthenticated caller |
 
+## What the store defends against
+
+| | |
+| --- | --- |
+| Token theft from the page | The browser never holds a token. Sign-in runs on the server; the tokens stay in the session, in Redis; the browser holds an `HttpOnly` cookie no script can read |
+| Cross-site request forgery | `SameSite=Lax` on the session cookie, and every write must carry `X-XSRF-TOKEN` matching a cookie only a script on the store's origin can read |
+| A forged or replayed sign-in | Authorization code with PKCE, a nonce, and the ID token's signature, issuer and audience all checked; a code redeemed once. Tested against a provider that issues forgeries |
+| Login CSRF and session fixation | The sign-in state is bound to the session that started it, and the session id is replaced at sign-in, as is the CSRF token |
+| An open redirect through sign-in | Where to return after signing in is accepted only as a path on this site; every spelling that becomes another host is refused, and tested |
+| Reading another customer's orders | Every order lookup is scoped to the signed-in customer in SQL; somebody else's order is a 404, indistinguishable from none |
+| One customer's retry answering another's | Idempotency keys are namespaced per customer before they reach the ledger's global key space |
+| Operator access | `/api/ops` requires the identity provider's admin group, enforced by the server, not by hiding a link |
+| Script injection | A Content-Security-Policy with no inline script, set by the edge for every page |
+| Floods | Per-address rate limits at the edge, stricter for writes |
+| Cached cookies | A response any cache may share never sets a cookie, and the edge strips one from those responses regardless |
+
 ## What it does not
 
 Stated here rather than discovered.
@@ -30,13 +46,15 @@ Stated here rather than discovered.
   reservation identifiers are stored in plain text.
 - **Tokens are static.** There is no rotation without a restart, no expiry, and no per-caller
   identity. A leaked token is valid until the service is restarted with a new one.
-- **There is no rate limiting and no per-caller quota.** A caller with a valid token can reserve
-  everything you have, repeatedly. That belongs at the edge, where the identity of the caller is
-  known.
+- **The ledger itself has no rate limiting and no per-caller quota.** A caller with a valid token can
+  reserve everything you have, repeatedly. The store's edge limits by client address, which slows a
+  flood through the store and does nothing about a caller holding a ledger token.
+- **Payment is simulated.** Paying commits the hold; no card is taken and no money moves.
 - **There is no audit of who did what.** The outbox records what happened, not which token asked for
   it.
-- **The tokens are in `docker-compose.yml` in plain text.** That file is a demonstration. A real
-  deployment gets them from somewhere else.
+- **The tokens, the OIDC client secret and the demonstration accounts' passwords are in plain text**,
+  in `docker-compose.yml` and `docker/keycloak/till-realm.json`. Those files are a demonstration. A
+  real deployment gets its secrets from a secret store and its accounts from Cognito.
 - **Nothing is hardened against a hostile database.** A compromised PostgreSQL can say anything, and
   till will believe most of it. The check constraint in the schema is a guard against a bug in till,
   not against an attacker with write access.

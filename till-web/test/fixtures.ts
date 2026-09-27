@@ -1,74 +1,66 @@
-import { http, HttpResponse, type HttpHandler } from 'msw'
-import type { OutboxPage, Reservation, Stock, StockPage } from '../src/api/client'
+import type { GameCard, Me, Order } from '../src/api/types'
 
-export const BASE = 'http://localhost'
+/** The instant fixtures are stamped with; tests read it back rather than calling Date.now(). */
+export const NOW = '2026-09-18T12:00:00Z'
 
-export function stock(sku: string, onHand: number, reserved: number): Stock {
-  return { sku, onHand, reserved, available: onHand - reserved }
-}
-
-export function stockPage(items: Stock[], nextAfter?: string): StockPage {
-  return nextAfter === undefined ? { items } : { items, nextAfter }
-}
-
-export function reservation(
-  id: string,
-  state: Reservation['state'],
-  effectiveState: Reservation['state'] = state,
-): Reservation {
-  return {
-    id,
-    state,
-    effectiveState,
-    lines: [{ sku: 'widget', quantity: 2 }],
-    createdAt: '2026-09-11T12:00:00Z',
-    expiresAt: '2026-09-11T12:02:00Z',
-  }
-}
-
-export function outbox(backlog: number, keys: string[]): OutboxPage {
-  return {
-    backlog,
-    items: keys.map((dedupeKey, index) => ({
-      sequence: index + 1,
-      dedupeKey,
-      recordedAt: '2026-09-11T12:00:00Z',
-      payload: `v1 ${dedupeKey}`,
-    })),
-  }
-}
-
-/** How far short one SKU fell, as the service reports it. */
-interface ShortfallBody {
-  sku: string
-  requested: number
-  available: number
-}
+let counter = 0
 
 /**
- * A problem body in the shape the service actually sends.
- *
- * The return type is inferred rather than written as `HttpResponse`: that type is generic over its
- * body, and annotating it unparameterised loses the body type — which the strict lint rules then
- * report as an unsafe return at every call site.
+ * A game, as the catalogue sends one. Every field is filled, so a fixture is a valid response — the
+ * generated types say so — and a test overrides only what it is about.
  */
-export function problem(
-  status: number,
-  code: string,
-  detail: string,
-  shortfalls?: ShortfallBody[],
-) {
-  return HttpResponse.json(
-    shortfalls === undefined ? { status, code, detail } : { status, code, detail, shortfalls },
-    { status },
-  )
+export function game(overrides: Partial<GameCard> = {}): GameCard {
+  counter += 1
+  const sku = overrides.sku ?? `game-${String(counter)}`
+  return {
+    sku,
+    title: `Game ${String(counter)}`,
+    studio: 'Halfmoon Interactive',
+    genre: 'Puzzle',
+    blurb: 'A test game with a test blurb.',
+    cover: 'tessera',
+    currency: 'USD',
+    priceCents: 1999,
+    listPriceCents: 1999,
+    discountPercent: 0,
+    tags: ['single-player'],
+    releasedOn: '2026-01-15',
+    available: 50,
+    availabilityAsOf: NOW,
+    ...overrides,
+  }
 }
 
-/** Handlers for the read endpoints, so a page test does not have to stub every one it does not care about. */
-export function quietReads(): HttpHandler[] {
+/** A small catalogue with one of each state a game can be in. */
+export function catalogue(): GameCard[] {
   return [
-    http.get(`${BASE}/v1/stock`, () => HttpResponse.json(stockPage([]))),
-    http.get(`${BASE}/v1/reservations`, () => HttpResponse.json({ items: [] })),
-    http.get(`${BASE}/v1/outbox`, () => HttpResponse.json(outbox(0, []))),
+    game({ sku: 'sunless-orbit', title: 'Sunless Orbit', genre: 'Survival', cover: 'orbit', priceCents: 4499, listPriceCents: 5999, discountPercent: 25, tags: ['sci-fi', 'crafting'] }),
+    game({ sku: 'tessera', title: 'Tessera', genre: 'Puzzle', cover: 'tessera', priceCents: 1999, listPriceCents: 1999 }),
+    game({ sku: 'ninefold', title: 'Ninefold', genre: 'Roguelike', cover: 'hex', priceCents: 3499, listPriceCents: 3499, available: 2 }),
+    game({ sku: 'canopy', title: 'Canopy', genre: 'Survival', cover: 'field', priceCents: 2299, listPriceCents: 2299, available: 0 }),
+    game({ sku: 'ashen-crown', title: 'Ashen Crown', genre: 'Action RPG', cover: 'crown', priceCents: 5999, listPriceCents: 5999, available: 0, availabilityAsOf: null }),
+    game({ sku: 'undertow', title: 'Undertow', genre: 'Narrative', cover: 'tides', priceCents: 1949, listPriceCents: 2999, discountPercent: 35 }),
   ]
+}
+
+export const ANONYMOUS: Me = { authenticated: false, admin: false, name: null, email: null }
+export const PLAYER: Me = { authenticated: true, admin: false, name: 'Pat Player', email: 'pat@example.test' }
+export const OPERATOR: Me = { authenticated: true, admin: true, name: 'Olive Operator', email: 'olive@example.test' }
+
+/**
+ * An order as the store sends one.
+ */
+export function order(overrides: Partial<Order> = {}): Order {
+  counter += 1
+  return {
+    id: `0000000${String(counter)}-aaaa-4bbb-8ccc-dddddddddddd`.slice(-36),
+    status: 'PENDING',
+    totalCents: 4499,
+    currency: 'USD',
+    createdAt: NOW,
+    expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+    closedAt: null,
+    lines: [{ sku: 'sunless-orbit', title: 'Sunless Orbit', unitPriceCents: 4499, quantity: 1, cover: 'orbit' }],
+    ...overrides,
+  }
 }

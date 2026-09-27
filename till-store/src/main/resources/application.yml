@@ -1,0 +1,108 @@
+spring:
+  application:
+    name: till-store
+  datasource:
+    url: ${STORE_DB_URL:jdbc:postgresql://127.0.0.1:5432/store}
+    username: ${STORE_DB_USER:store}
+    password: ${STORE_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${STORE_DB_POOL:16}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${STORE_REDIS_HOST:127.0.0.1}
+      port: ${STORE_REDIS_PORT:6379}
+  session:
+    # Idle timeout. Long enough that nobody is signed out halfway through choosing a game, short
+    # enough that a shared machine does not stay signed in overnight.
+    timeout: 2h
+    data:
+      redis:
+        namespace: till:store:session
+        # The default, non-indexed repository. The indexed one needs Redis keyspace notifications,
+        # which it enables with CONFIG SET — a command ElastiCache does not allow. Nothing here needs
+        # to find sessions by principal, so the simpler repository is also the portable one.
+        repository-type: default
+  threads:
+    virtual:
+      enabled: true
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  port: ${STORE_PORT:8081}
+  shutdown: graceful
+  # Behind the proxy, request URLs — including the OAuth redirect_uri — are built from the
+  # X-Forwarded-* headers it sets, so they name the public address rather than this container's.
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        # HttpOnly and SameSite=Lax are fixed in code (SecurityConfiguration.sessionCookieFlags).
+        # Secure is off only because the local stack is plain HTTP; every real deployment sets it.
+        secure: ${STORE_COOKIE_SECURE:false}
+
+store:
+  till:
+    base-url: ${TILL_URL:http://127.0.0.1:8080}
+    # The client token, for checkout: reserve, commit, release.
+    token: ${TILL_CLIENT_TOKEN:}
+    # The admin token, only ever used behind /api/ops, which only the admin group can reach.
+    admin-token: ${TILL_ADMIN_TOKEN:}
+    timeout: 5s
+  kafka:
+    # Blank means do not consume. The store still serves — titles and prices come from its own
+    # tables — and availability stays at whatever was last projected. A broker outage should make the
+    # numbers stale, not the shop unreachable.
+    bootstrap-servers: ${STORE_KAFKA_BROKERS:}
+    topic: ${TILL_KAFKA_TOPIC:till.events}
+    group-id: till-store
+    poll-timeout: 500ms
+  auth:
+    oidc:
+      # Amazon Cognito: set only the issuer (https://cognito-idp.<region>.amazonaws.com/<pool-id>),
+      # the client id and secret, and a logout-uri of
+      #   https://<domain>.auth.<region>.amazoncognito.com/logout?client_id={clientId}&logout_uri={baseUrl}/
+      # The local stack sets the explicit endpoints as well; see StoreProperties.Oidc for why.
+      issuer-uri: ${STORE_OIDC_ISSUER_URI:}
+      client-id: ${STORE_OIDC_CLIENT_ID:}
+      client-secret: ${STORE_OIDC_CLIENT_SECRET:}
+      authorization-uri: ${STORE_OIDC_AUTHORIZATION_URI:}
+      token-uri: ${STORE_OIDC_TOKEN_URI:}
+      jwk-set-uri: ${STORE_OIDC_JWK_SET_URI:}
+      user-info-uri: ${STORE_OIDC_USER_INFO_URI:}
+      logout-uri: ${STORE_OIDC_LOGOUT_URI:}
+    groups-claim: cognito:groups
+    admin-group: admins
+  checkout:
+    hold-for: ${STORE_HOLD_FOR:15m}
+  demo:
+    seed-stock: ${STORE_DEMO_SEED_STOCK:false}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  paths-to-match: /api/**
+  # Every answer here is JSON; without this the document says */* and the generated client cannot
+  # tell a body it can parse from one it cannot.
+  default-produces-media-type: application/json
+
+management:
+  server:
+    port: ${STORE_MANAGEMENT_PORT:9102}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{requestId:-}]"

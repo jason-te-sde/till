@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "The browser console for till: a shop front that demonstrates why reservations exist, and an operator view of what the ledger holds.",
+  "description": "till's storefront: a game store on the store service's API, with an operator console for members of the admin group.",
   "license": "MIT",
   "engines": {
     "node": ">=24.0.0"
@@ -19,12 +19,14 @@
     "test:coverage": "vitest run --coverage",
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
-    "api:types": "openapi-typescript openapi.json --output src/api/schema.d.ts",
+    "api:types": "openapi-typescript ../openapi/store.json --output src/api/schema.d.ts",
     "check": "npm run typecheck && npm run lint && npm run test"
   },
   "dependencies": {
+    "@reduxjs/toolkit": "2.12.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-redux": "9.3.0",
     "react-router": "8.3.1"
   },
   "devDependencies": {
