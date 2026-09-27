@@ -1,6 +1,6 @@
 # How till is tested
 
-Seven layers. Each one covers what the cheaper layer below it structurally cannot, and the list of
+Eleven layers. Each one covers what the cheaper layer below it structurally cannot, and the list of
 what none of them covers is at the bottom, because a testing document that only lists strengths is
 marketing.
 
@@ -10,9 +10,13 @@ marketing.
 | **Deterministic simulation** | interleavings, crashes, lost answers, clock jumps — every invariant after every step | the database, and the Java memory model |
 | **Differential** | the two ledgers disagreeing about anything at all | a bug both of them share |
 | **Real concurrency** | that PostgreSQL's conditional update and unique constraint do what the design assumes | more than a handful of schedules |
-| **Integration** | the wiring: Flyway, Spring's binding, the filter order, an `Instant` surviving Jackson and `timestamptz` | anything below the HTTP layer, which the faster layers already cover |
-| **Console unit** | the checkout state machine, the retry-with-the-same-key rule, what each refusal looks like on screen | whether the service agrees |
-| **End to end** | a real browser against the jar that ships, including two tabs racing for the last unit | anything it cannot click |
+| **Integration** | the ledger's wiring: Flyway, Spring's binding, the filter order, an `Instant` surviving Jackson and `timestamptz` | anything below the HTTP layer, which the faster layers already cover |
+| **Store** | checkout, orders, search and the projection against real PostgreSQL and Redis, with the real kernel in memory as the ledger | the ledger's HTTP layer, and Kafka |
+| **Sign-in** | the whole OpenID Connect round trip against an in-process provider: PKCE, nonce, forged tokens, login CSRF, session fixation, sign-out | a real provider's quirks |
+| **Contract** | that the committed OpenAPI documents are what the services serve, and that every kind of failure is the declared problem | whether a client reads it correctly |
+| **Storefront unit** | every page against a model of the store's API at the network layer; the CSRF and idempotency headers on the wire | whether the store agrees |
+| **End to end** | Chromium against the whole compose stack: Keycloak sign-in, a real hold, payment, stock that travels through Kafka | anything it cannot click |
+| **Container** | the images CI ships: the CLI, the edge's headers, cache and rate limits, event propagation, a restart | how the images behave under load |
 
 ## The simulator
 
@@ -148,53 +152,90 @@ hand at three in the morning — and `apply` deliberately does **not** treat a c
 conflict, because retrying it would hide the bug that produced it behind a loop that never
 terminates.
 
-## The console
+## The store
 
-Two suites, and the division is the same one as on the Java side: the fast one covers the rules and
-the slow one covers the wiring.
+`till-store`'s suites run the whole service — Spring, Flyway, Spring Security, Spring Session — against
+a real PostgreSQL and a real Redis from Testcontainers, with one substitution: the ledger is the real
+reservation kernel running in memory (`EmbeddedLedger`). Not a stub. Every refusal and every expiry in
+a checkout test is decided by the same `Kernel` the ledger service runs, so a test that says "the
+second customer is told how far short they fell" is a statement about the rules, not about a stub's
+opinion of them. `deliver()` plays the outbox, Kafka and the consumer, handing the kernel's events to
+the projection in order — and `redeliverEverything()` hands them over again, which is how the inbox is
+proven to make redelivery a no-op.
 
-**Unit (Vitest, Testing Library, a request interceptor).** The HTTP layer is mocked at the network
-rather than by stubbing `fetch`, so the tests assert on what actually went over the wire — which is
-where the property worth asserting lives. The centre of it is `useCheckout`: one attempt key per
-attempt, reused by every retry within it, with each step deriving its own from it. Clicking Pay twice
-sends one key. Retrying a refused basket sends the same key. Starting a second attempt sends a new
-one. Every one of those decides whether somebody is charged once or twice, and none of them is
-visible in a screenshot.
+`EventConsumerTest` covers the part that substitution skips: the real publisher puts events on a real
+broker, and the store's own consumer thread projects them, so the header names, the codec round trip
+and the commit-after-apply ordering are all exercised for real.
+
+A few properties are asserted directly because they are easy to break and invisible when broken:
+
+- **Two customers sending the same idempotency key get two orders**, not one customer's hold handed to
+  the other. The ledger's key space is global; the store namespaces every key before it gets there.
+- **Nobody else's order exists.** Viewing, paying and cancelling another customer's order are all a
+  404, indistinguishable from an order that does not exist.
+- **A late expiry cannot walk a paid order backwards**, and replaying the whole event history changes
+  no level, no sale and no order.
+- **Every failure is a problem with a code** — the ledger's refusal, validation, the security layer,
+  a method not allowed, a body that is not JSON, and an unanticipated exception.
+
+## Signing in
+
+`oidcLogin()` — Spring Security's test shortcut — puts a principal on the request and skips
+everything worth testing about signing in. So `SignInTest` runs the round trip against
+`FakeIdentityProvider`: two endpoints on a free port (the token endpoint and the key set), as strict as
+a real provider about what the store's security depends on. A code is redeemed once, only with the
+verifier matching its PKCE challenge, only for its redirect URI, and only by a client with the right
+secret. The requests carry cookies like a browser, and CSRF is the real cookie-to-header exchange.
+
+It asserts that sign-in comes back to where it started and never to another site; that the admin
+group becomes the operator role; that no token ever reaches the browser; that the session id and the
+CSRF token both change at sign-in; that an ID token signed by anyone else is refused; that a callback
+started in another browser is refused (login CSRF); and that signing out deletes the session from
+Redis and names the provider's logout.
+
+Two traps were found here and are worth knowing about. Spring Security's `csrf()` test helper works by
+swapping the token repository inside the filter chain — and the chain belongs to the cached test
+context, so the swap outlives the test and quietly turns every later test's cookie-based CSRF into a
+session-based one production never runs. None of these tests use it. And Spring Boot applies
+`server.servlet.session.cookie.*` to Spring Session's cookie only under its embedded server, so in the
+mock environment the session cookie was not `HttpOnly` — which is why the store now sets those flags
+in code, for every deployment shape.
+
+## The storefront
+
+**Unit (Vitest, Testing Library, a request interceptor).** Pages are tested whole — rendered inside
+the real Redux store and router, at a URL — against `fakeStore`, a small in-memory model of the store's
+API behind the network interceptor. It has a catalogue with stock, holds copies when an order is
+placed, refuses with shortfalls when there are too few, replays an order for a reused key, and
+enforces sign-in, the admin group and the CSRF header. So a test drives a whole flow and asserts on
+the requests the page actually sent:
+
+- Placing an order carries the CSRF token from the cookie and an idempotency key; paying for it
+  carries a key derived from the order.
+- **An outage retried sends the same key**; a cart changed after "only 2 left" sends a new one —
+  because reusing the refused request's key for a different basket would rightly be refused.
+- A visitor sent to sign in comes back to the page they were on; signing out is a CSRF-protected POST
+  followed by the provider's logout.
+- A customer is told the operator console is not for them, and the console never asks the store
+  anything on their behalf.
 
 An unhandled request fails the test rather than returning nothing, because a test that silently gets
 no answer is a test that passes for the wrong reason.
 
-**End to end (Playwright).** Against `vite preview` locally and against the **jar with the console
-bundled into it** in CI, which is the artifact a release ships. Serving the bundle from a separate dev
-server would leave the service's own route forwarding untested.
+**End to end (Playwright).** Against the whole compose stack, exactly as `docker compose up` runs it.
+What it checks that nothing else can: that the edge routes the sign-in round trip to the store and
+back, that Keycloak's tokens pass the store's checks, that the session survives in Redis between
+requests, that the CSRF cookie the store issues is the one the SPA sends — and that stock moved in
+the ledger reaches the storefront through the outbox, Kafka and the projection. A customer signs in at
+checkout and finds their cart intact, holds stock, and pays; an operator restocks a game and the
+catalogue shows it within seconds; a customer is refused the console by the page and by the API.
 
-What it checks that nothing else can:
-
-- A hold sets stock aside without selling it; paying sells it. Both numbers read back off the page.
-- Clicking Pay twice produces one sale.
-- **Two browser contexts want the last unit and exactly one gets it**, and the other is told by how
-  much it fell short. Two contexts means two session stores and two cookie jars — as close to two
-  people as a test gets.
-- The operator view shows the hold the shop just took, in both of its states.
-- A filter button asks the service rather than filtering a page of fifty in the browser.
-- A reloaded deep link is served by the service, and a path the console does not have is still a 404.
-
-The suite **skips** when there is no service to talk to, and **fails** when `CI` is set and there is
-none — the same policy as the PostgreSQL suites, for the same reason.
-
-**The contract between the two halves is tested.** `till-web` generates its types from a committed
-`openapi.json`; `OpenApiContractTest` regenerates that file from the running service and fails if the
-committed copy has drifted, and CI re-runs the generator and fails on a diff. Without both, a change
-to an endpoint leaves the console compiling against types for an API that no longer exists, and
-finding out in a browser.
-
-**And the contract is checked against reality, not only against itself.** A document can be perfectly
-current and still describe a service nobody wrote. So one test takes a **real refusal off the wire**
-and compares it to the declared `Problem` schema in both directions: every field the service sends is
-declared, and every field the contract marks required is really sent. The second half is the one that
-earns its keep — `type` is absent from most problem bodies, because RFC 9457 makes `about:blank` the
-default and Spring omits a field that would only repeat it, and declaring it required would have
-typed a generated client's `problem.type` as a string that is in fact undefined.
+**The contract between the store and the SPA is tested from both ends.** `OpenApiContractTest`
+regenerates `openapi/store.json` from the running store and fails if the committed copy has drifted,
+and CI regenerates the SPA's types from it and fails on a diff. And the contract is checked against
+reality: one test produces every kind of failure — a ledger refusal, a validation error, a security
+refusal, a framework error, a bug — and compares each body with the declared `Problem` in both
+directions.
 
 ## Running it
 
@@ -206,13 +247,16 @@ mvn verify -Dcoverage            # plus JaCoCo
 TILL_TEST_DB_URL=jdbc:postgresql://localhost:5432/postgres \
 TILL_TEST_DB_USER=me TILL_TEST_DB_PASSWORD=me mvn verify
 
-# The console
+# The store's suites start PostgreSQL, Redis and Kafka themselves, so they need Docker
+
+# The storefront
 cd till-web
 npm ci
 npm run check                    # typecheck, lint, unit tests
 
-# End to end, against a service that is already running
-TILL_API=http://127.0.0.1:8080 TILL_TOKEN=... npm run e2e
+# End to end, against the whole stack
+docker compose up -d --wait      # from the repository root
+cd till-web && npx playwright install chromium && npm run e2e
 ```
 
 `TILL_TEST_DB_URL` names a **server**, not a database: each module creates one of its own on it, so
@@ -242,8 +286,9 @@ mvn test -pl till-testkit -Dtill.sim.seeds=10000 -Dtest=SoakTest \
   notice. See the ADR on deadlines for why that is survivable and what it costs.
 - **No adversarial input fuzzing at the HTTP layer.** Identifiers are validated at the boundary and
   the JSON reader is strict and tested, but nobody has pointed a fuzzer at either.
-- **No load test.** There are no published throughput numbers for the service, only for the simulator
-  and the suite. Publishing a figure measured on one laptop would say more about the laptop.
+- **No load test yet.** There are no published throughput numbers for the services, only for the
+  simulator and the suite. A figure measured on one laptop would say more about the laptop; the plan
+  is a written load-test protocol run against a deployed stack.
 - **The container job checks that the stack works, not that the image is small or safe.** Nothing
   scans it, nothing measures it, and nothing checks that the base image is current beyond Dependabot
   raising a pull request when it is not.

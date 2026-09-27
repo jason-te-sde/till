@@ -1,22 +1,37 @@
 # Architecture
 
-Six modules. The dependency arrows all point the same way, and that is the only structural rule the
-project has:
+Two services, a storefront, and a ledger underneath that decides every sale. Eight modules, and the
+dependency arrows all point the same way — the only structural rule the project has:
 
 ```
 till-core      the rules, as a pure function.      no Spring, no I/O, no threads, no clock
    ^
    |-- till-jdbc      PostgreSQL: reads a snapshot, writes a decision, or neither
    |-- till-testkit   a deterministic simulator and the invariants it checks
+   |-- till-kafka     the outbox to Kafka: plain kafka-clients, no Spring
    |-- till-client    an HTTP client and tillctl
         ^
-        |-- till-server   REST, OpenAPI, metrics, the sweeper, the outbox publisher
+        |-- till-server   the ledger service: REST, OpenAPI, metrics, the sweeper, the publisher
+        |-- till-store    the store: catalogue, orders, sign-in, the operator API — a backend-for-frontend
                  ^
-                 |-- till-web   the browser console, bundled into the jar by `-Pweb`
+                 |-- till-web   the storefront and operator console, served by the edge
 ```
 
-`till-core` has one runtime dependency, `slf4j-api`, and it is an API-only facade. Nothing below
-`till-server` knows Spring exists, and nothing below `till-web` knows a browser exists.
+`till-core` has one runtime dependency, `slf4j-api`, and it is an API-only facade. Nothing below the
+two services knows Spring exists, nothing but `till-web` knows a browser exists, and `till-store`
+reaches the ledger only through `till-client`, over HTTP, with an ordinary client token.
+
+What runs, and who may talk to whom:
+
+```
+browser ──> edge (nginx) ──> till-store ──> till-server ──> PostgreSQL (till)
+   │                            │   │                          │
+   │                            │   └──> PostgreSQL (store), Redis (sessions)
+   │                            │                              │
+   └──> identity provider <─────┘   Kafka <── the outbox ──────┘
+        (Keycloak locally,          │
+         Cognito in production)     └──> till-store's consumer ──> the store's projection
+```
 
 ## The three-bucket model
 
@@ -179,35 +194,81 @@ in between repeats the send. Two publishers can deliver the same batch. That is 
 drop, which it can, because every event carries a deduplication key that is a function of what
 happened rather than of when it was published.
 
-## The console
+## The store
 
-`till-web` is a React and TypeScript application with two routes, served by the service itself from
-`/static`. `/shop` is a shop front — a basket, a hold with a visible countdown, a Pay button — and it
-exists to show why reservations are worth having: open it in two tabs, race for the last unit, and
-exactly one tab gets it. `/ops` is the operator view: the ledger's totals, the stock split per SKU,
-the reservations with their states, and the outbox backlog.
+`till-store` owns everything a customer sees that is not a stock level: the catalogue, search,
+orders, sign-in, and the operator console's API. It is a backend-for-frontend — the one server the
+storefront talks to — and three decisions shape it.
 
-Three things about it are load-bearing.
+**It cannot move stock.** It reserves, commits and releases through the ledger's public API with a
+client token, exactly as any other client would, on a database of its own. The admin token it also
+holds is used only behind `/api/ops`, which answers only members of the identity provider's admin
+group. So the worst a bug in the store can do to stock is fail to ask for it.
 
-**The catalogue is in the frontend.** Names, prices and pictures are the shop's business; how many
-there are is the ledger's. till never joins to a product table, and this is the demonstration of that
-rather than a gap in it.
+**It believes the ledger, eventually.** Availability on a store page comes from a projection of the
+ledger's events, consumed from Kafka through an inbox that applies each event once. It lags, and it
+says so — every level carries the ledger's decision instant — and a stale number costs one customer
+a refused checkout, never an oversell, because it is not consulted when a sale is decided. Orders
+converge the same way: the HTTP answer moves an order to paid, and if that answer is lost, the
+commit event does it. Every transition is guarded by the state it expects, so a late event can never
+walk an order backwards.
 
-**The types are generated from a committed `openapi.json`.** `OpenApiContractTest` regenerates that
-file from the running service and fails when the committed copy has gone stale, so a change to an
-endpoint that nobody regenerated is a red build rather than a console compiled against an API that no
-longer exists. CI additionally re-runs the generator and fails on a diff.
+**The browser holds no token.** Signing in is the OpenID Connect authorization-code flow with PKCE,
+run on the server; the tokens stay in the session, in Redis; the browser gets an `HttpOnly`,
+`SameSite=Lax` cookie and nothing it could leak. Every write also needs the `X-XSRF-TOKEN` header,
+copied from a cookie only a script on the store's own origin can read. Locally the provider is
+Keycloak and in production it is Amazon Cognito; the same code runs against both, because Keycloak
+is configured to name its groups claim the way Cognito does.
 
-**The route forward is enumerated.** A reload of `/ops/reservations` arrives as a request for a path
-no controller has. The usual answer is a catch-all forward to `index.html`; the usual bug that comes
-with it is that the catch-all also swallows `/v1/nonsense` and returns HTML, which a client parses as
-JSON and reports as a corrupt response. Only the console's own routes are forwarded, and there is a
-test for the difference.
+A customer's idempotency key is never passed to the ledger as sent. The ledger's key space is global
+and a browser's is not, so two customers could send the same string — and the ledger would, correctly
+by its own rules, hand the second customer the first one's hold. The store sends a digest of the
+purpose, the customer and the key instead (`LedgerKeys`): a retry is still a retry, and two customers
+can no longer collide. That was a real bug in the first storefront, invisible because every demo had
+one user.
 
-The console is built by an opt-in Maven profile. `mvn package` produces a jar with an API and no
-console — and says so at startup; `mvn -Pweb package` produces one with both. CI and the release
-build with the profile. [`design/0007-browser-console.md`](design/0007-browser-console.md) has the
-reasoning, including what a product would do about authentication that this deliberately does not.
+## The storefront
+
+`till-web` is a React and TypeScript single-page application: browse, search and filter the
+catalogue, a page per game, a cart, a two-step checkout with a visible hold, order history, and — for
+the admin group — the operator console. It holds no token of any kind, and every request it makes
+goes to its own origin.
+
+**State is Redux Toolkit, and server state is RTK Query.** Four unrelated parts of the page read the
+cart, and one of them — checkout — has to rewrite it when the store reports a shortfall, so the cart
+is a slice. Everything fetched is an RTK Query endpoint with cache tags, so paying for an order makes
+the order list stale in one declaration rather than in every component that happens to pay.
+
+**The two headers that are its whole security story are set in one place.** `storeApi.ts` copies the
+CSRF token into every write and passes the caller's idempotency key. Which key counts as "the same
+attempt" is the caller's decision, and checkout makes it carefully: the key for placing an order is
+the attempt plus a fingerprint of the cart, so a retry of the same cart replays the order already
+placed, a changed cart is a new request, and a paid order starts a new attempt.
+
+**The types are generated.** `openapi/store.json` is the store's contract; `OpenApiContractTest`
+regenerates it from the running service and fails when the committed copy is stale, and the SPA's
+types are generated from it. A renamed field is a compile error, not an `undefined` on a page.
+
+**The cover art is painted, not shipped.** Each game names a motif, and its SKU seeds the details, so
+thirty-two games get thirty-two distinct covers from twelve small SVG scenes, with no image the
+project does not own.
+
+## The edge
+
+nginx is the only thing a browser talks to. It serves the SPA's files and proxies the API, the
+sign-in round trip and the API documentation to the store; the ledger is not reachable through it at
+all.
+
+- **One origin**, so the session cookie is first-party and the API needs no CORS.
+- **Security headers from one place**, including a Content-Security-Policy that forbids inline
+  script — which is why the pre-paint theme script is a file.
+- **Rate limits** per address, generous for reads and strict for writes, answered with a `429`
+  problem in the store's own shape rather than an HTML page.
+- **A five-second microcache** for the catalogue. The store marks those responses `public` with a
+  bounded `stale-while-revalidate`, and sets no cookie on them — a shared response must never carry
+  one. How stale the cache may serve is the origin's decision: an earlier configuration let nginx
+  serve stale "while updating", with no upper bound, and one refetch it could not store froze an
+  entry for as long as traffic kept it warm.
 
 ## Further reading
 

@@ -35,6 +35,7 @@ window as its own SKU.
 
 **Pricing, carts, orders, payment.** till is the piece those things call. It is deliberately the
 narrowest part of a checkout, because the narrowest part is the one that can be made provably correct.
+The store in this repository is one such caller, and owns all four — see [decision 8](0008-the-store.md).
 
 **Read replicas.** `GET /v1/stock/{sku}` reads the primary. Routing it to a replica would be easy and
 would make `available` a number that is sometimes wrong in a direction that matters, and there is no
@@ -42,7 +43,8 @@ mechanism here to say how wrong. A caller that wants a cheap approximate number 
 it gets.
 
 **Rate limiting.** Belongs at the edge, where the identity of the caller is known and where a decision
-can be made without a database round trip.
+can be made without a database round trip. The store's edge proxy does it, in front of everything a
+browser can reach.
 
 **Encryption at rest, beyond whatever the disk does.** See [`SECURITY.md`](../../SECURITY.md).
 

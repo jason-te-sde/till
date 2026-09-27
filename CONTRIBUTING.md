@@ -3,49 +3,52 @@
 ## Prerequisites
 
 - JDK 21 or newer, Maven 3.9 or newer.
-- Optional but strongly recommended: Docker, or a PostgreSQL server you can point the tests at.
-  Without one, the adapter and integration suites **skip**, and about a quarter of the Java tests
-  with them.
-- Node 24 or newer, **only if you are touching the console**. A plain `mvn verify` does not need it.
+- Docker. The store's suites start PostgreSQL, Redis and Kafka with Testcontainers, and the whole
+  platform runs under `docker compose`. The ledger's adapter and integration suites can use a
+  PostgreSQL server you already have instead; without either, they **skip**.
+- Node 24 or newer, **only if you are touching the storefront**. `mvn verify` does not need it.
 
 ```bash
-mvn verify                                  # the kernel, the simulator, the client
+mvn verify                                  # everything Java (Docker for the store's suites)
 TILL_TEST_DB_URL=jdbc:postgresql://localhost:5432/postgres \
-TILL_TEST_DB_USER=me TILL_TEST_DB_PASSWORD=me mvn verify   # everything Java
+TILL_TEST_DB_USER=me TILL_TEST_DB_PASSWORD=me mvn verify   # the ledger's suites against your server
 
-cd till-web && npm ci && npm run check      # the console: typecheck, lint, unit tests
+cd till-web && npm ci && npm run check      # the storefront: typecheck, lint, unit tests
 ```
 
 `TILL_TEST_DB_URL` names a **server**, not a database. Each module creates one of its own on it.
 
-### Working on the console
+### Working on the storefront
 
 ```bash
-# a service to talk to
-java -jar till-server/target/till-server-0.1.0.jar \
-    --server.address=127.0.0.1 --till.auth.admin-token=dev
+# the whole platform, from the repository root
+docker compose up -d --wait
 
-# and the console, proxying /v1 to it
-cd till-web && npm run dev            # http://127.0.0.1:5173
+# and the storefront's dev server, proxying the API and sign-in to the stack's edge
+cd till-web && npm run dev            # http://127.0.0.1:5173 — sign in works here too
 
-# end to end, against a service that is already running
-TILL_API=http://127.0.0.1:8080 TILL_TOKEN=dev npm run e2e
+# end to end, against the stack
+npm run e2e
 ```
 
-`mvn -Pweb package` builds the console into the server jar, which is what CI and the release do. A
-plain `mvn package` does not, and the service says so at startup rather than answering 404 without
-explanation.
+After changing the store or the edge, rebuild what changed: `docker compose up -d --build --wait store
+edge`. The demonstration accounts are in `docker/keycloak/till-realm.json`.
 
 **If you change an endpoint,** regenerate the contract and the types and commit both:
 
 ```bash
-mvn -pl till-server test -Dtest=OpenApiContractTest -Dtill.openapi.write=true \
+# the store's contract, which the storefront's types are generated from
+mvn -pl till-store -am test -Dtest=OpenApiContractTest -Dtill.openapi.write=true \
     -Dsurefire.failIfNoSpecifiedTests=false
 cd till-web && npm run api:types
+
+# the ledger's contract, which the store's client is written against
+mvn -pl till-server -am test -Dtest=OpenApiContractTest -Dtill.openapi.write=true \
+    -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-CI fails if either is stale, because a console compiled against types for an API that no longer
-exists finds out in a browser.
+CI fails if any of them is stale, because a storefront compiled against types for an API that no
+longer exists finds out in a browser.
 
 ## Before you push
 
@@ -141,12 +144,13 @@ Things likely to be pushed back on:
   new place, make it so.
 - Anything in `till-server` that makes a decision. That layer parses a request, runs one command, and
   turns an outcome into a status code.
-- A runtime dependency in `till-web`. It has three — React, its DOM renderer, and a router — and a
-  client library shipped into somebody's page is the wrong place for a fourth.
-- An idempotency key generated inside a React component. It regenerates on every render, and a new
-  key is a new order. Keys are minted in an event handler and passed down; `src/api/idempotency.ts`
-  is the only place that makes them.
-- A hand-written TypeScript type for an API response. They are generated from `openapi.json`.
+- A runtime dependency in `till-web`. It has five — React, its DOM renderer, a router, Redux Toolkit
+  and its React bindings — and every one is shipped to every customer on every visit.
+- An idempotency key generated inside a React component's render. It regenerates on every render,
+  and a new key is a new order. Keys are minted in event handlers, or derived from something stable —
+  checkout's is the attempt plus a fingerprint of the cart; `src/api/idempotency.ts` makes the rest.
+- A hand-written TypeScript type for an API response. They are generated from `openapi/store.json`.
+- Anything in the store that decides whether stock exists. It asks the ledger.
 
 ## What is out of scope
 

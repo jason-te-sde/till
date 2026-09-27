@@ -11,11 +11,36 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **A game store in front of the ledger.** `till-store` is now a backend-for-frontend: a catalogue of
+  thirty-two games with PostgreSQL full-text search, facets and sorting; orders placed by holding
+  stock in the ledger, priced on the server, paid and cancelled through commit and release, and
+  reconciled from the event stream; and the operator console's API behind `/api/ops`, for the
+  identity provider's `admins` group.
+- **Sign-in with OpenID Connect, run on the server.** Authorization code with PKCE, tokens kept in the
+  session in Redis, an `HttpOnly` `SameSite=Lax` cookie in the browser, and CSRF protection by
+  cookie-to-header double submit. Amazon Cognito in production; Keycloak locally, with the same
+  groups claim, so both run one code path.
+- **The storefront.** `till-web` rebuilt as a store on React, Redux Toolkit and RTK Query: a home page
+  with featured games and shelves, browse and search with every filter in the URL, a page per game
+  with live stock, a cart that survives reloads and the trip to the identity provider, a two-step
+  checkout with a visible hold, order history, and the operator console for admins. Cover art is
+  painted per game from twelve SVG motifs seeded by the SKU. Dark and light themes, responsive, and
+  keyboard- and screen-reader-friendly.
+- **An edge proxy.** nginx serves the storefront and is the only public entry point: security headers
+  and a Content-Security-Policy without inline script, per-address rate limits answered as problems,
+  and a five-second catalogue microcache whose staleness the store bounds.
+- **One error shape.** Every failure from the store — the ledger's refusals, validation, the security
+  layer, the framework's own errors and an unexpected exception — is an RFC 9457 problem with a
+  `code`, declared in `openapi/store.json` and checked against real failures of each kind.
+- The compose stack runs the whole platform with health checks — edge, store, ledger, Kafka,
+  PostgreSQL, Redis and Keycloak — and CI builds every image, drives the store in a browser against
+  it, and checks the edge's headers, cache and rate limits.
+
 - **`till-kafka`** — publishes the outbox to Kafka with plain `kafka-clients`. `acks=all` and
   producer idempotence; records keyed by the entity the event is about, so one reservation's
   lifecycle cannot arrive out of order; deduplication key, outbox sequence, type and decision
   instant in headers. A failed batch throws, so the whole batch is offered again.
-- **`till-catalogue`** — the storefront. Owns games, prices and a read model of availability built
+- **`till-catalogue`** (now `till-store`) — the storefront's first version. Owns games, prices and a read model of availability built
   by consuming those events, and reserves by calling till over HTTP with a client token on a
   separate database. Its `available` is a cache with a timestamp: a stale number costs one refused
   checkout and can never cause an oversell.
@@ -43,8 +68,28 @@ explicitly not: it is a testing tool and it will change.
 - The console: an error boundary inside the shell, so a panel that throws leaves the navigation
   usable; polling stops while the tab is hidden and catches up the moment it comes back; a favicon.
 
+### Changed
+
+- `till-catalogue` is now `till-store`, and its tables are prefixed `store_` (`V3__store_prefix.sql`).
+- The ledger no longer serves a browser console. The `-Pweb` profile, `WebUi` and
+  `till.web.cors-origins` are gone; the storefront is served by the edge, and talks only to the store.
+- The ledger's published contract moved from `till-web/openapi.json` to `openapi/ledger.json`, beside
+  the store's.
+
 ### Fixed
 
+- **One customer's retry could be answered with another customer's hold.** The storefront passed
+  browsers' idempotency keys straight into the ledger's global key space, so two customers sending the
+  same string would have had the second handed the first one's reservation. Keys are now a digest of
+  purpose, customer and key.
+- **The session cookie was not `HttpOnly` outside Spring Boot's embedded server.** Boot applies
+  `server.servlet.session.cookie.*` to Spring Session's cookie only there; in any other deployment
+  shape it copies the container's defaults. The flags are set in code now.
+- **A cached catalogue answer could be served indefinitely.** The edge was told to serve stale while
+  refreshing, with no upper bound, and refreshes carrying a CSRF cookie could never be stored. Public
+  responses set no cookie now, and the store bounds staleness itself.
+- **An idempotency key the store accepted could not be stored**: 200 characters allowed, 128 in the
+  column. The limit is 128 everywhere now.
 - **A broker outage would have held the outbox publisher's thread for a minute per batch.**
   `max.block.ms` bounds `send()`'s wait for cluster metadata and defaults to sixty seconds
   independently of the delivery timeout. Derived from the budget now, with a test that asserts it.
