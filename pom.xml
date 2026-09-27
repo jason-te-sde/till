@@ -85,10 +85,6 @@
     <jacoco.plugin.version>0.8.15</jacoco.plugin.version>
     <enforcer.plugin.version>3.6.3</enforcer.plugin.version>
     <shade.plugin.version>3.6.2</shade.plugin.version>
-    <frontend.plugin.version>2.0.2</frontend.plugin.version>
-    <!-- Pinned, and downloaded by the build rather than taken from the machine, so that the bundle
-         in a release is the one this version of the project was tested against. -->
-    <node.version>v24.21.0</node.version>
     <source.plugin.version>3.4.0</source.plugin.version>
     <javadoc.plugin.version>3.12.0</javadoc.plugin.version>
     <gpg.plugin.version>3.2.8</gpg.plugin.version>

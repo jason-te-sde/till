@@ -40,12 +40,6 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: till-web/package-lock.json
-
       # The tag must be the version in the poms. A release tagged v0.2.0 built from poms saying
       # 0.1.0 produces artifacts nobody can match to a tag afterwards. The version is also an output,
       # so the artifact paths below are exact rather than a glob that also matches the sources jar.
@@ -59,11 +53,9 @@ jobs:
           test "$pom" = "$tag"
           echo "version=$pom" >> "$GITHUB_OUTPUT"
 
-      # Not -DskipTests. A release that was never tested is not a release.
-      #
-      # -Pweb as well as -Prelease: without it the released jar has an API and no console, which is
-      # not what the README says you get. The first release shipped exactly that.
-      - run: mvn -B -ntp verify -Prelease -Pweb
+      # Not -DskipTests. A release that was never tested is not a release. The storefront is not in
+      # these jars: it ships as the edge image, built from the Dockerfile's `edge` target.
+      - run: mvn -B -ntp verify -Prelease
 
       - name: attach the jars
         uses: softprops/action-gh-release@v3

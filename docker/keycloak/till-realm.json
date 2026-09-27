@@ -1,0 +1,87 @@
+{
+  "realm": "till",
+  "displayName": "till games",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": true,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 7200,
+  "groups": [
+    { "name": "admins", "path": "/admins" }
+  ],
+  "users": [
+    {
+      "username": "player",
+      "email": "player@till.test",
+      "emailVerified": true,
+      "firstName": "Pat",
+      "lastName": "Player",
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "player", "temporary": false }]
+    },
+    {
+      "username": "operator",
+      "email": "operator@till.test",
+      "emailVerified": true,
+      "firstName": "Olive",
+      "lastName": "Operator",
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "operator", "temporary": false }],
+      "groups": ["/admins"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "till-store",
+      "name": "till games",
+      "description": "The store's backend-for-frontend. Confidential: the secret and the tokens stay on the server.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "till-store-local-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "rootUrl": "http://localhost:8080",
+      "baseUrl": "/",
+      "redirectUris": [
+        "http://localhost:8080/login/oauth2/code/idp",
+        "http://127.0.0.1:8080/login/oauth2/code/idp",
+        "http://localhost:5173/login/oauth2/code/idp",
+        "http://127.0.0.1:5173/login/oauth2/code/idp"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8080/##http://127.0.0.1:8080/##http://localhost:5173/##http://127.0.0.1:5173/"
+      },
+      "defaultClientScopes": ["web-origins", "profile", "roles", "email", "basic"],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "groups, as Cognito names them",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "cognito:groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

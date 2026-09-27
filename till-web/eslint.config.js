@@ -54,6 +54,14 @@ export default tseslint.config(
   },
 
   {
+    // RTK Query spells "this endpoint takes no argument" as a `void` type argument — `build.query<Home,
+    // void>` — which is what lets a component call `useGetHomeQuery()` with nothing. The rule's objection
+    // is to void in value positions; this is the library's own documented idiom, and only this file needs it.
+    files: ['src/api/storeApi.ts'],
+    rules: { '@typescript-eslint/no-invalid-void-type': 'off' },
+  },
+
+  {
     files: ['test/**/*.{ts,tsx}', 'e2e/**/*.ts'],
     rules: {
       // A test asserting on a value it knows the shape of does not need a type guard first.

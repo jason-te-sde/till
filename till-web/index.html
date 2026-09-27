@@ -3,25 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>till</title>
+    <title>till games</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <meta name="description" content="The browser console for till: a shop front and an operator view of the ledger." />
-    <meta name="color-scheme" content="light dark" />
-    <script>
-      // Applied before the first paint, so a dark-themed console does not flash light on load. The
-      // toggle writes this key; everything else about theming is in CSS.
-      try {
-        var stored = localStorage.getItem('till.theme')
-        if (stored === 'light' || stored === 'dark') {
-          document.documentElement.setAttribute('data-theme', stored)
-        }
-      } catch (ignored) {
-        // Private browsing with storage denied. The OS setting still applies.
-      }
-    </script>
+    <meta name="description" content="till games — a game store with live stock, held while you pay. A demonstration of the till inventory ledger." />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0a0c13" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f3f4f8" media="(prefers-color-scheme: light)" />
+    <!-- Blocking on purpose: it must run before the first paint. See the file for why. -->
+    <script src="/theme.js"></script>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>till games needs JavaScript to run.</noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

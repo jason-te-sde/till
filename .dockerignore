@@ -1,0 +1,14 @@
+# The build context is the repository, and most of the repository is not an input to an image.
+# Above all: build output and node_modules from the host. A host's node_modules copied over the
+# container's own `npm ci` replaces Linux binaries with macOS ones, and the web build fails in ways
+# that look nothing like the cause.
+**/target
+**/node_modules
+till-web/dist
+till-web/coverage
+till-web/playwright-report
+till-web/test-results
+.git
+.github
+.idea
+.vscode
