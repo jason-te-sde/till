@@ -331,31 +331,35 @@ jobs:
           fi
           grep -q INSUFFICIENT_STOCK /tmp/err
 
+      # Output is captured before it is searched: `curl | grep -q` under pipefail fails whenever grep
+      # finds its match and exits before curl has finished writing.
       - name: metrics are scrapeable and health is honest
         run: |
           set -euo pipefail
-          curl -sf http://127.0.0.1:9101/actuator/prometheus | grep -q 'till_outcome_total'
-          curl -sf http://127.0.0.1:9101/actuator/health/readiness | grep -q '"status":"UP"'
-          curl -sf http://127.0.0.1:9102/actuator/health/readiness | grep -q '"status":"UP"'
+          grep -q 'till_outcome_total' <<< "$(curl -sf http://127.0.0.1:9101/actuator/prometheus)"
+          grep -q '"status":"UP"' <<< "$(curl -sf http://127.0.0.1:9101/actuator/health/readiness)"
+          grep -q '"status":"UP"' <<< "$(curl -sf http://127.0.0.1:9102/actuator/health/readiness)"
           # The ledger's API port must not serve the management endpoints, and must want a token.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8090/v1/stock/widget)" = 401
 
       - name: the edge serves the store, and only the store
         run: |
           set -euo pipefail
-          curl -sf http://localhost:8080/ | grep -q '<title>till games</title>'
+          grep -q '<title>till games</title>' <<< "$(curl -sf http://localhost:8080/)"
           # A route the SPA draws is the app, with the policy that forbids inline script.
           headers=$(curl -s -D - -o /dev/null http://localhost:8080/games/sunless-orbit)
-          echo "$headers" | grep -q '^HTTP/1.1 200'
-          echo "$headers" | grep -qi "^content-security-policy: default-src 'self'; script-src 'self'"
-          echo "$headers" | grep -qi '^x-frame-options: DENY'
+          grep -q '^HTTP/1.1 200' <<< "$headers"
+          grep -qi "^content-security-policy: default-src 'self'; script-src 'self'" <<< "$headers"
+          grep -qi '^x-frame-options: DENY' <<< "$headers"
           # The API behind it answers as JSON problems, never as pages.
           curl -sf http://localhost:8080/api/me | jq -e '.authenticated == false' > /dev/null
           body=$(curl -s -w '\n%{http_code}' http://localhost:8080/api/orders)
-          test "$(echo "$body" | tail -1)" = 401
-          echo "$body" | head -1 | jq -e '.code == "UNAUTHORIZED"' > /dev/null
-          # Nothing of the ledger is reachable through the edge.
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/stock)" != 200
+          test "$(tail -1 <<< "$body")" = 401
+          head -1 <<< "$body" | jq -e '.code == "UNAUTHORIZED"' > /dev/null
+          # Nothing of the ledger is reachable through the edge, even holding the ledger's own admin
+          # token: a path the storefront does not draw is still the storefront, never the ledger.
+          grep -q '<title>till games</title>' <<< "$(curl -s -H 'Authorization: Bearer demo-admin-token' \
+            http://localhost:8080/v1/stock)"
 
       # The reason Kafka is in this stack at all. If the outbox never reached the broker, or the
       # consumer never started, or the headers drifted, the storefront's availability never moves and
