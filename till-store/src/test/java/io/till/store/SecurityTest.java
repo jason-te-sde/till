@@ -106,14 +106,27 @@ class SecurityTest extends StoreTest {
         }
 
         @Test
-        @DisplayName("is given the CSRF cookie on the first request, before any write needs it")
+        @DisplayName("is given the CSRF cookie with the session, before any write needs it")
         void csrfCookieIsIssued() throws Exception {
             // Readable from script on purpose: the SPA copies it into a header, which a page on another
             // origin cannot do. Issued eagerly, because a deferred token is never written until
             // something reads it — and the SPA's first write would fail for want of a cookie.
-            mvc.perform(get("/api/home"))
+            mvc.perform(get("/api/me"))
                     .andExpect(cookie().exists("XSRF-TOKEN"))
                     .andExpect(cookie().httpOnly("XSRF-TOKEN", false));
+        }
+
+        @Test
+        @DisplayName("is never given a cookie with a response any cache may share")
+        void publicResponsesSetNoCookies() throws Exception {
+            // A shared cache either refuses to store a response that sets a cookie — and, told to
+            // serve stale while it refetches, can then serve one old answer indefinitely — or stores
+            // it and hands one visitor's cookie to the next.
+            for (String path : new String[] {"/api/home", "/api/games", "/api/games/tessera", "/api/genres"}) {
+                mvc.perform(get(path))
+                        .andExpect(header().string("Cache-Control", containsString("public")))
+                        .andExpect(header().doesNotExist("Set-Cookie"));
+            }
         }
     }
 

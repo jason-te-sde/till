@@ -60,7 +60,12 @@ class DemoStock {
         for (int attempt = 1; attempt <= ATTEMPTS; attempt++) {
             try {
                 for (String sku : skus) {
-                    ledger.adjust(LedgerKeys.system("demo-stock", sku), Sku.of(sku), demo.unitsFor(sku));
+                    long units = demo.unitsFor(sku);
+                    // Zero means "leave it unstocked": the ledger refuses an adjustment of nothing, and a
+                    // game it has never heard of is itself a state worth the demonstration showing.
+                    if (units > 0) {
+                        ledger.adjust(LedgerKeys.system("demo-stock", sku), Sku.of(sku), units);
+                    }
                 }
                 LOG.info("demonstration stock in place for {} games", skus.size());
                 return;

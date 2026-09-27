@@ -148,7 +148,8 @@ class SignInTest extends StoreTest {
         @DisplayName("replaces the CSRF token at sign-in, so one captured before it is useless after")
         void csrfTokenRotates() throws Exception {
             Browser browser = new Browser();
-            browser.get("/api/home");
+            // The SPA's first request on any page is the session — which is where the cookie comes from.
+            browser.get("/api/me");
             String before = browser.cookie("XSRF-TOKEN");
             assertNotNull(before, "a first visit is given the CSRF cookie");
 

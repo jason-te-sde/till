@@ -16,8 +16,10 @@ import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequest
 import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestResolver;
 import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfFilter;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 
 /**
@@ -35,8 +37,9 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
  *
  * <p>A cookie the browser attaches automatically is exactly what CSRF exploits, so every state-changing
  * request must also carry the {@code X-XSRF-TOKEN} header, copied from a cookie only a script on this
- * origin can read. {@code csrf.spa()} is Spring Security's configuration for precisely this case, and
- * {@link CsrfCookieFilter} makes sure the cookie exists before the first write needs it.
+ * origin can read. {@link SpaCsrfTokenHandler} reads it the way an SPA sends it, and
+ * {@link CsrfCookieFilter} makes sure the cookie exists before the first write needs it — without ever
+ * setting it on a response a shared cache may store.
  *
  * <h2>Sessions live in Redis</h2>
  *
@@ -56,10 +59,17 @@ class SecurityConfiguration {
             ProblemResponses problems)
             throws Exception {
         RequestMatcher api = PathPatternRequestMatcher.withDefaults().matcher("/api/**");
+        // The catalogue: the same for every visitor, and marked cacheable by any cache in front.
+        PathPatternRequestMatcher.Builder paths = PathPatternRequestMatcher.withDefaults();
+        RequestMatcher catalogue = new OrRequestMatcher(
+                paths.matcher(HttpMethod.GET, "/api/games"),
+                paths.matcher(HttpMethod.GET, "/api/games/*"),
+                paths.matcher(HttpMethod.GET, "/api/home"),
+                paths.matcher(HttpMethod.GET, "/api/genres"));
         http.authorizeHttpRequests(auth -> auth
                         // Browsing is for everybody.
-                        .requestMatchers(HttpMethod.GET, "/api/games", "/api/games/*", "/api/home", "/api/genres", "/api/me")
-                        .permitAll()
+                        .requestMatchers(catalogue).permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/me").permitAll()
                         // The operator console, for the admin group only.
                         .requestMatchers("/api/ops/**").hasRole("ADMIN")
                         // Everything else in the API needs a signed-in customer.
@@ -79,8 +89,11 @@ class SecurityConfiguration {
                 // Our own logout endpoint, which answers JSON: a fetch cannot follow the redirect to the
                 // provider's logout page, so the SPA is told where to navigate instead.
                 .logout(logout -> logout.disable())
-                .csrf(csrf -> csrf.spa())
-                .addFilterAfter(new CsrfCookieFilter(), CsrfFilter.class)
+                .csrf(csrf -> csrf
+                        // Readable from script, so the SPA can copy it into the X-XSRF-TOKEN header.
+                        .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+                        .csrfTokenRequestHandler(new SpaCsrfTokenHandler()))
+                .addFilterAfter(new CsrfCookieFilter(catalogue), CsrfFilter.class)
                 // No saved-request redirects: an API call without a session is answered 401, and where
                 // to return after sign-in is the explicit, checked returnTo instead.
                 .requestCache(cache -> cache.disable())

@@ -31,13 +31,21 @@ import org.springframework.web.bind.annotation.RestController;
  * visitor, so the proxy in front can answer a burst of identical requests from one fetch; and the one
  * part that goes stale quickly, availability, is already allowed to lag — the ledger decides at
  * checkout. Five seconds keeps a store page honest to within one refresh.
+ *
+ * <p>How stale a cache may serve is bounded here, by the origin, rather than left to the cache: while
+ * it refetches, up to thirty seconds; while this service is down, up to five minutes. A cache told
+ * only "serve stale while updating" has no upper bound at all, and one refetch it cannot store is
+ * enough to freeze an entry for as long as the traffic keeps it warm.
  */
 @RestController
 @RequestMapping("/api")
 @Tag(name = "catalogue", description = "Browsing and search. Public.")
 class CatalogueController {
 
-    private static final CacheControl BRIEFLY_PUBLIC = CacheControl.maxAge(Duration.ofSeconds(5)).cachePublic();
+    private static final CacheControl BRIEFLY_PUBLIC = CacheControl.maxAge(Duration.ofSeconds(5))
+            .cachePublic()
+            .staleWhileRevalidate(Duration.ofSeconds(30))
+            .staleIfError(Duration.ofMinutes(5));
     private static final int ROW = 8;
 
     private final Games games;
