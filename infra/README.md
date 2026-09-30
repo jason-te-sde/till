@@ -34,16 +34,20 @@ says otherwise), Terraform 1.10 or later, Docker and jq.
 
 ```sh
 scripts/aws.sh bootstrap   # once: the state bucket and the image registries
-scripts/aws.sh up          # build, push, start, check — about fifteen minutes
+scripts/aws.sh up          # build, push, start, check — about forty minutes
 scripts/aws.sh accounts    # the demonstration accounts, to sign in with
-scripts/aws.sh down        # stop the hourly bill — about ten minutes
+scripts/aws.sh down        # stop the hourly bill — about fifteen minutes
 scripts/aws.sh status      # what is billed by the hour and still there, and since when
 ```
 
 `up` builds the images from the commit that is checked out, and refuses to run with uncommitted
 changes: an image is named after its commit, and one built from a dirty tree would not be what its
-name says. It pushes them, shows Terraform's plan, asks, applies exactly that plan, and then runs the
-checks below. `down` does the same in reverse and finishes with `status`, which asks AWS rather
+name says. It pushes them, shows Terraform's plan, asks, applies exactly that plan, plans again to
+make sure there is nothing left to change, and then runs the checks below.
+
+Nearly all of the forty minutes is CloudFront, one step after another: the VPC origin takes about
+fifteen to deploy, and the distribution that uses it about eighteen more. The database is ready in
+five, and each service is steady in about two once the one before it is. `down` does the same in reverse and finishes with `status`, which asks AWS rather
 than Terraform, so it finds anything a failed apply left behind. `destroy` removes everything,
 including the bootstrap.
 
@@ -65,7 +69,8 @@ The last one is there because the edge's rate limits key on the viewer's address
 from `CloudFront-Viewer-Address` for any connection from inside the VPC. That is safe only if
 CloudFront replaces a `CloudFront-Viewer-Address` a viewer sends, and AWS's documentation does not
 say that it does. So the check sends one, `203.0.113.7:4444`, and reads the edge's access log in
-CloudWatch to see which address it recorded.
+CloudWatch to see which address it recorded. On the first deployment it recorded the real one:
+CloudFront does replace it — and the check goes on asking, because nothing promises it always will.
 
 Signing in itself is done by a person, in a browser, with an account from `scripts/aws.sh accounts`.
 

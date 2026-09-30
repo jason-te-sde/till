@@ -17,7 +17,8 @@
 # $remote_addr is that address — but only for a connection from EDGE_TRUSTED_PROXY, the range the load
 # balancer lives in, which in turn only accepts requests that come through CloudFront. The default,
 # `unix:`, is a kind of connection this server never receives: locally nothing is trusted, and a
-# client that sends the header itself is ignored.
+# client that sends the header itself is ignored. Behind CloudFront a viewer's own is replaced by
+# CloudFront's; AWS does not document that, so `scripts/aws.sh smoke` checks it on every deployment.
 set_real_ip_from ${EDGE_TRUSTED_PROXY};
 real_ip_header CloudFront-Viewer-Address;
 
@@ -34,7 +35,6 @@ log_format edge escape=json
   '{"time":"$time_iso8601","id":"$request_id","client":"$remote_addr","method":"$request_method","uri":"$request_uri",'
   '"status":$status,"bytes":$body_bytes_sent,"seconds":$request_time,'
   '"upstream_seconds":"$upstream_response_time","cache":"$upstream_cache_status"}';
-access_log /var/log/nginx/access.log edge;
 
 server_tokens off;
 
@@ -89,6 +89,11 @@ server {
   listen 8080;
   listen [::]:8080;
   root /usr/share/nginx/html;
+
+  # Here rather than beside the format: an access_log in this block replaces the image's own, in
+  # nginx's `main` format, where one at the top level would be written as well as it — two lines a
+  # request, both paid for at CloudWatch's $0.50 a gigabyte.
+  access_log /var/log/nginx/access.log edge;
 
   include /etc/nginx/snippets/security-headers.conf;
 

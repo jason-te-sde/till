@@ -26,6 +26,14 @@ resource "aws_service_discovery_service" "service" {
     }
   }
 
-  # ECS says which tasks are healthy, from each container's own health check.
+  # ECS says which tasks are healthy, from each container's own health check, so a task that has
+  # started but is not ready yet is not in the answer.
   health_check_custom_config {}
+
+  # The provider does not read that block back — AWS no longer returns the one setting it had — so
+  # without this every plan would replace the service, and replacing it deregisters every running
+  # task: the first redeployment left Kafka with no address until it was restarted.
+  lifecycle {
+    ignore_changes = [health_check_custom_config]
+  }
 }

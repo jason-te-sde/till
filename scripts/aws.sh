@@ -141,12 +141,24 @@ cmd_up() {
   init
   push_images "$tag"
 
-  say "Starting till at $tag: fifteen minutes or so, most of it CloudFront's VPC origin and the database"
+  say "Starting till at $tag: forty minutes or so, nearly all of it CloudFront"
   apply infra "Start it? From here it costs about \$$HOURLY an hour, until scripts/aws.sh down." \
     -var running=true -var "image_tag=$tag" -var "kafka_version=$(kafka_version)"
 
+  # A configuration AWS does not read back the way it was written is one every apply changes
+  # again, and a replacement can take running tasks with it (infra/runtime/discovery.tf). So an
+  # apply is not done until a plan after it has nothing left to do.
+  local converged=0
+  tf plan -input=false -detailed-exitcode -var running=true -var "image_tag=$tag" \
+    -var "kafka_version=$(kafka_version)" > /dev/null || converged=$?
+
   say "Up in $(elapsed "$started"): $(output url)"
   cmd_smoke
+  case $converged in
+    0) ;;
+    2) fail "Terraform still has changes to make after applying, which every apply would make again: scripts/aws.sh plan shows them." ;;
+    *) fail "Terraform could not plan after applying." ;;
+  esac
   echo
   echo "About \$$HOURLY an hour from now on. scripts/aws.sh accounts for the sign-in; scripts/aws.sh down to stop."
 }
@@ -336,9 +348,11 @@ knows_the_viewer() {
   me=$(curl -s https://checkip.amazonaws.com)
   curl -s -o /dev/null -H 'CloudFront-Viewer-Address: 203.0.113.7:4444' "$1/api/genres?probe=$marker"
   for _ in $(seq 1 30); do
+    # The edge's own lines only: anything else that mentions the marker is not JSON.
     client=$(aws logs filter-log-events --log-group-name "$(output edge_log_group)" \
       --start-time $((($(date +%s) - 300) * 1000)) --filter-pattern "\"$marker\"" \
-      --query 'events[0].message' --output text 2> /dev/null | jq -r '.client // empty' 2> /dev/null || true)
+      --query 'events[].message' --output json 2> /dev/null |
+      jq -r '[.[] | fromjson? | .client // empty] | first // empty' 2> /dev/null || true)
     [[ -n $client ]] && break
     sleep 2
   done
