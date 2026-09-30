@@ -102,6 +102,17 @@ variable "demo" {
   type = bool
 }
 
+variable "db_pool" {
+  type = object({
+    store  = number
+    ledger = number
+  })
+}
+
+variable "catalogue_cache" {
+  type = bool
+}
+
 variable "loadtest" {
   description = "Set up for a load test (docs/load-test.md) rather than for customers: no CloudFront, the stand-in provider, the load generator."
   type        = bool

@@ -149,7 +149,8 @@ configured entirely by environment:
 | `STORE_DB_URL`, `STORE_DB_USER`, `STORE_DB_PASSWORD` | the store's own database. Not the ledger's: the store must not be able to reach the ledger's tables |
 | `TILL_URL`, `TILL_CLIENT_TOKEN` | the ledger, and the token checkout reserves with |
 | `TILL_ADMIN_TOKEN` | optional; lets the operator console adjust stock |
-| `STORE_REDIS_HOST`, `STORE_REDIS_PORT` | sessions, and the tokens inside them |
+| `STORE_REDIS_HOST`, `STORE_REDIS_PORT` | sessions, the tokens inside them, and the catalogue's cached answers |
+| `STORE_CATALOGUE_CACHE` | `false` to answer every catalogue read from the database; see below. On by default |
 | `STORE_KAFKA_BROKERS`, `TILL_KAFKA_TOPIC` | the ledger's events. Blank means do not consume: the store still serves, with availability frozen at whatever was last projected |
 | `STORE_OIDC_ISSUER_URI`, `STORE_OIDC_CLIENT_ID`, `STORE_OIDC_CLIENT_SECRET` | the identity provider. Required: the store refuses to start without one |
 | `STORE_OIDC_LOGOUT_URI` | where signing out ends the provider's session too; see below |
@@ -190,6 +191,18 @@ cannot be right for both. The issuer is still checked against every ID token; it
 `X-Forwarded-*` headers — so the proxy in front of the store must set them, and whatever terminates
 TLS must pass `X-Forwarded-Proto: https` on. Get this wrong and the provider refuses the sign-in with a
 redirect-URI mismatch, which is the first thing to check when signing in fails.
+
+**The catalogue is cached in Redis too**, behind the edge's five-second cache: an answer the
+database gave is shared by every instance for as long as it can be trusted. A game, the featured and
+newest rows and the genres for ten minutes (`store.catalogue.cache.stable`); best sellers and
+related games, which move with sales, for a minute (`.sales`); searches, the long tail, for a minute
+(`.searches`); each expiry moved by up to a tenth either way (`.jitter`) so that answers written
+together do not expire together. Keys carry the schema version, so a release that changes the
+catalogue never reads the last one's answers. Availability is never cached, and an order is always
+priced from the database. If Redis is unreachable, catalogue reads go to the database and the store
+says so in its log once a minute; browsing gets slower, not broken. Every minute each store logs a
+`catalogue-reads` line — how many reads came from each source and how long they took — and
+`store_catalogue_reads_seconds` has the same on its Prometheus endpoint.
 
 **Sessions are in Redis**, so any instance can serve any request. The store uses Spring Session's
 non-indexed repository, which needs no keyspace notifications — so it works on ElastiCache, which does

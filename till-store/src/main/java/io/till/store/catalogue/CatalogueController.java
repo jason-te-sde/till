@@ -36,6 +36,9 @@ import org.springframework.web.bind.annotation.RestController;
  * it refetches, up to thirty seconds; while this service is down, up to five minutes. A cache told
  * only "serve stale while updating" has no upper bound at all, and one refetch it cannot store is
  * enough to freeze an entry for as long as the traffic keeps it warm.
+ *
+ * <p>Behind that, the catalogue itself comes through {@link Catalogue} and its cache, shared by every
+ * instance, and availability straight from the projection, so the one part that moves stays live.
  */
 @RestController
 @RequestMapping("/api")
@@ -48,11 +51,11 @@ class CatalogueController {
             .staleIfError(Duration.ofMinutes(5));
     private static final int ROW = 8;
 
-    private final Games games;
+    private final Catalogue games;
     private final Availability availability;
     private final String currency;
 
-    CatalogueController(Games games, Availability availability, StoreProperties properties) {
+    CatalogueController(Catalogue games, Availability availability, StoreProperties properties) {
         this.games = games;
         this.availability = availability;
         this.currency = properties.checkout().currency();

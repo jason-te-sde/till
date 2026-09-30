@@ -18,6 +18,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param auth who signs customers in
  * @param checkout the rules a basket has to satisfy
  * @param demo stock to seed on startup, for the demonstration stack only
+ * @param catalogue how the catalogue's reads are cached
  */
 @ConfigurationProperties(prefix = "store")
 public record StoreProperties(
@@ -25,7 +26,39 @@ public record StoreProperties(
         @DefaultValue Kafka kafka,
         @DefaultValue Auth auth,
         @DefaultValue Checkout checkout,
-        @DefaultValue Demo demo) {
+        @DefaultValue Demo demo,
+        @DefaultValue Catalogue catalogue) {
+
+    /**
+     * The catalogue.
+     *
+     * @param cache its read cache, in the same Valkey as the sessions
+     */
+    public record Catalogue(@DefaultValue Cache cache) {}
+
+    /**
+     * How long each kind of catalogue answer is kept. docs/operations.md has the reasoning.
+     *
+     * @param enabled whether to cache at all; off, every read asks the database
+     * @param stable what changes only with a release: a game, the featured and newest rows, genres
+     * @param sales what moves with sales: best sellers, and the related games ranked by them
+     * @param searches search results and their facets, the long tail
+     * @param jitter how far each expiry is moved, either way, as a fraction of it, so that answers
+     *     written together do not all expire together
+     */
+    public record Cache(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("10m") Duration stable,
+            @DefaultValue("60s") Duration sales,
+            @DefaultValue("60s") Duration searches,
+            @DefaultValue("0.1") double jitter) {
+
+        public Cache {
+            if (jitter < 0 || jitter >= 1) {
+                throw new IllegalArgumentException("store.catalogue.cache.jitter must be in [0, 1), got " + jitter);
+            }
+        }
+    }
 
     /**
      * The ledger.

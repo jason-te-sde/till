@@ -64,6 +64,20 @@ and both are because the load generator speaks plain HTTP inside the VPC:
 Static assets are not fetched. In production CloudFront serves them from its cache for a year, so
 nothing a load test could measure would be serving them.
 
+## What the catalogue cache is worth
+
+A figure of its own, measured the same way every time:
+
+- **Two runs of the protocol against one deployment**, the store's catalogue cache off
+  (`scripts/aws.sh up --loadtest --no-catalogue-cache`) and then on (`scripts/aws.sh up --loadtest`,
+  which changes only the store), with everything else — shoppers, sizes, database — the same.
+- **Average query latency** is the store's own account of its catalogue reads over the steady window:
+  the time from asking for a catalogue answer to having it, from Valkey or from the database, summed
+  and divided by the number of reads. Each store logs it once a minute (`catalogue-reads`), and
+  `scripts/aws.sh loadtest` adds it up for the window and saves it with the result.
+- Both runs report the targets above as well, since the cache is also a change to everything that
+  was waiting for the database behind the catalogue.
+
 ## A run
 
 1. `scripts/aws.sh up --loadtest` deploys with the sizes in
@@ -89,6 +103,8 @@ requests.
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | [30 Sep 2026](../till-loadtest/results/20260930T102728Z.json) | `e378bd9` | edge 2 × 0.5 vCPU, store and ledger 2 × 1 vCPU, db.t4g.micro | 8,000 | 2,855 | 20.8 s | 41.5% | 3.8 | **missed**: throughput, latency, errors |
 | [30 Sep 2026, second](../till-loadtest/results/20260930T114312Z.json) | `e01bbeb` | as above, the edge with its own nginx.conf and 2 × 1 vCPU | 8,000 | 2,497 | 21.1 s | 4.6% | 3.2 | **missed**: throughput, latency, errors |
+| [30 Sep 2026, cache off](../till-loadtest/results/20260930T125908Z.json) | `b314cae` | as above, four stores at 8 connections each; the catalogue cache off | 8,000 | 2,518 | 20.9 s | 4.5% | 0 | **missed**: throughput, latency, errors |
+| [30 Sep 2026, cache on](../till-loadtest/results/20260930T133217Z.json) | `a699e06` | the same, the catalogue cache on | 8,000 | 2,500 | 20.8 s | 4.5% | 0 | **missed**: throughput, latency, errors |
 
 ### 30 September: the first run
 
@@ -128,3 +144,30 @@ And the p99 for placing an order was 30,002 ms: the store's connection pool's th
 The store's sixteen connections were held by catalogue queries a tenth of a second long, and a
 checkout queued behind them until it gave up. A catalogue that asks the database once a minute
 instead of for every miss is the next change.
+
+### 30 September: the catalogue cache, off and on
+
+The comparison [above](#what-the-catalogue-cache-is-worth), run as written: one deployment, the
+store's catalogue cache off and then on, nothing else changed — the commit between the two runs
+added the first run's result and no code.
+
+| | Cache off | Cache on |
+| --- | ---: | ---: |
+| Catalogue reads over the steady window | 24,868 | 25,969 |
+| from Valkey | — | 24,726, at 0.70 ms |
+| from the database | 24,868, at 397.67 ms | 1,243, at 705.24 ms |
+| **Average query latency** | **397.67 ms** | **34.42 ms**, 91% less |
+| Catalogue p99 through the edge | 288.9 ms | 85.3 ms |
+| Search p99 through the edge | 283.9 ms | 85.5 ms |
+
+The cache did what it was for: nineteen in twenty catalogue reads never reached the database, and
+the average read took a tenth of the time. The run's targets did not move — both runs missed all
+three — because the database did not get quieter: it was at 98% CPU in both, and with the catalogue
+off it, the ledger took the lot. Its most expensive statements were marking reservations expired
+(319,118 of them, 42 ms each) and looking for expired holds to reclaim (55,871 times, 110 ms each),
+and no order completed in either steady window.
+
+That is the next thing: the store gives up on a reservation after five seconds, the ledger does not,
+and every checkout the store abandoned became a hold that nobody would pay for and the ledger would
+have to find and expire. The more of them there were, the longer each search for them took, and the
+fewer checkouts finished inside five seconds.

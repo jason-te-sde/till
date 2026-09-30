@@ -89,3 +89,8 @@ image the project does not own.
 - **A catalogue cache in Redis now.** The edge's microcache already turns a thousand identical
   requests a second into one every five seconds, and nothing has been measured that says the
   database needs more. A read cache comes with a measured baseline, or not at all.
+
+  *Later:* the baseline came. The second load test ([`docs/load-test.md`](../load-test.md)) found the
+  catalogue's searches and tag counts taking more than half of the database's CPU at 8,000 shoppers,
+  and a checkout queueing behind them for a connection; `CatalogueCache` is the cache, and the load
+  test measures it against its absence.

@@ -61,6 +61,19 @@ variable "size" {
   }
 }
 
+variable "db_pool" {
+  description = <<-EOT
+    Connections each store and each ledger may hold. All of them together have to stay under what
+    the database allows — about a hundred for a db.t4g.micro — and a few more than its cores is what
+    keeps it busiest.
+  EOT
+  type = object({
+    store  = number
+    ledger = number
+  })
+  default = { store = 16, ledger = 16 }
+}
+
 variable "db_instance_class" {
   description = "The RDS instance class. db.t4g.micro is the smallest PostgreSQL 17 runs on."
   type        = string
@@ -86,6 +99,12 @@ variable "loadtest" {
     condition     = !var.loadtest || var.running
     error_message = "loadtest = true needs running = true: it is a way of running."
   }
+}
+
+variable "catalogue_cache" {
+  description = "Whether the store caches catalogue answers in Valkey. Off only to measure what it is worth (docs/load-test.md)."
+  type        = bool
+  default     = true
 }
 
 variable "demo" {

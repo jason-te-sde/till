@@ -1,0 +1,67 @@
+{
+  "commit": "b314caea1ccf",
+  "exit_code": 99,
+  "store_catalogue_cache": false,
+  "k6": {
+    "window": {
+      "from": "2026-09-30T12:45:27.261Z",
+      "to": "2026-09-30T12:55:27.261Z"
+    },
+    "shoppers": 8000,
+    "concurrent_max": 8000,
+    "steady_seconds": 600,
+    "requests": 1510999,
+    "requests_per_second": 2518.3,
+    "latency_ms": {
+      "p50": 1.4,
+      "p95": 636.9,
+      "p99": 20879.2,
+      "max": 26638.9
+    },
+    "p99_ms_by_class": {
+      "page": 0.8,
+      "session": 300.1,
+      "catalogue": 288.9,
+      "search": 283.9,
+      "signin": 107.7,
+      "order": 22469.9
+    },
+    "unexpected_rate": 0.04490075771062721,
+    "per_second": {
+      "orders_placed": 0,
+      "orders_paid": 0,
+      "orders_cancelled": 0,
+      "refusals": 0,
+      "sign_ins": 2.4
+    },
+    "targets": {
+      "p99_under_1s": false,
+      "errors_under_0_1_percent": false
+    }
+  },
+  "catalogue_reads": {
+    "cache": {
+      "reads": 0,
+      "mean_ms": null
+    },
+    "database": {
+      "reads": 24868,
+      "mean_ms": 397.67
+    },
+    "mean_ms": 397.67,
+    "store_minutes": 36
+  },
+  "cloudwatch": {
+    "window_seconds": 540,
+    "alb_requests_per_second": 2516.7,
+    "alb_target_p99_ms": 20737,
+    "alb_target_5xx": 61292,
+    "alb_own_5xx": 0,
+    "db_cpu_max_percent": 97.6,
+    "edge_cpu_max_percent": 31,
+    "store_cpu_max_percent": 39.8,
+    "ledger_cpu_max_percent": 60.1,
+    "kafka_cpu_max_percent": 27.4
+  },
+  "database_top_statements": null
+}

@@ -2,6 +2,7 @@ package io.till.store;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
 
+import io.till.store.catalogue.CatalogueCache;
 import io.till.store.events.Projector;
 import jakarta.servlet.http.Cookie;
 import java.time.Instant;
@@ -99,6 +100,9 @@ public abstract class StoreTest {
     @Autowired
     protected JdbcClient jdbc;
 
+    @Autowired
+    protected CatalogueCache catalogueCache;
+
     @BeforeEach
     void freshStart() {
         clock.reset(T0);
@@ -106,6 +110,8 @@ public abstract class StoreTest {
         // Everything except the catalogue, which the migrations seeded and no test changes.
         jdbc.sql("truncate store_order_line, store_order, store_sales_daily, store_availability, store_consumed_event")
                 .update();
+        // And the answers cached from the last test's sales, which Valkey would otherwise keep.
+        catalogueCache.clear();
     }
 
     /**

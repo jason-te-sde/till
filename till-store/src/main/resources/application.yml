@@ -14,6 +14,9 @@ spring:
     redis:
       host: ${STORE_REDIS_HOST:127.0.0.1}
       port: ${STORE_REDIS_PORT:6379}
+      # A command unanswered in two seconds is not going to be answered. Lettuce's own default is a
+      # minute, which every request would spend waiting on a Valkey that had gone away.
+      timeout: 2s
   session:
     # Idle timeout. Long enough that nobody is signed out halfway through choosing a game, short
     # enough that a shared machine does not stay signed in overnight.
@@ -81,6 +84,11 @@ store:
     hold-for: ${STORE_HOLD_FOR:15m}
   demo:
     seed-stock: ${STORE_DEMO_SEED_STOCK:false}
+  catalogue:
+    cache:
+      # On unless a load test is measuring what it is worth. The lifetimes are
+      # store.catalogue.cache.{stable,sales,searches} and the spread .jitter; StoreProperties.Cache.
+      enabled: ${STORE_CATALOGUE_CACHE:true}
 
 springdoc:
   api-docs:

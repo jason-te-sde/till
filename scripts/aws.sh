@@ -4,7 +4,8 @@
 #   scripts/aws.sh bootstrap   once per account: the state bucket and the image registries
 #   scripts/aws.sh up          build and push the images, start everything, then run `smoke`
 #   scripts/aws.sh smoke       check that the running deployment behaves
-#   scripts/aws.sh up --loadtest   start it set up for a load test instead (docs/load-test.md)
+#   scripts/aws.sh up --loadtest   start it set up for a load test instead (docs/load-test.md);
+#                  --no-catalogue-cache to measure the store without its catalogue cache
 #   scripts/aws.sh loadtest    one load test run: the protocol's, or --shoppers= --ramp= --hold=
 #   scripts/aws.sh accounts    the demonstration accounts' passwords
 #   scripts/aws.sh status      what is billed by the hour and still there, and since when
@@ -28,9 +29,10 @@ export AWS_REGION="${AWS_REGION:-us-west-2}"
 export AWS_PAGER=""
 
 HOURLY=0.16
-LOADTEST_HOURLY=1.20
+LOADTEST_HOURLY=1.15
 yes=false
 loadtest=false
+catalogue_cache=true
 shoppers=""
 ramp=""
 hold=""
@@ -142,6 +144,9 @@ running_vars() {
   printf '%s\n' -var running=true -var "image_tag=$1" -var "kafka_version=$(kafka_version)"
   if [[ $loadtest == true ]]; then
     printf '%s\n' -var loadtest=true -var-file=loadtest.tfvars
+  fi
+  if [[ $catalogue_cache == false ]]; then
+    printf '%s\n' -var catalogue_cache=false
   fi
 }
 
@@ -350,7 +355,7 @@ TOP_STATEMENTS="select coalesce(jsonb_agg(t order by t.total_ms desc), '[]') fro
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen family subnets group overrides code reason log result file deployed statements cloudwatch
+  local loadgen family subnets group overrides code reason log result file deployed statements cloudwatch reads cached
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
   family=$(jq -r .task_definition <<< "$loadgen")
@@ -379,6 +384,12 @@ cmd_loadtest() {
   result=$(grep '^RESULT ' "$log" | tail -1 | cut -c8-)
   rm -f "$log"
   [[ -n $result ]] || fail "The load generator stopped ($reason, exit $code) without a result."
+  # What the store said about its catalogue reads over the same window, and whether it was caching.
+  reads=$(catalogue_reads "$result") || reads=null
+  jq -e . <<< "$reads" > /dev/null 2>&1 || reads=null
+  cached=$(aws ecs describe-task-definition --task-definition till-store --output text \
+    --query "taskDefinition.containerDefinitions[?name=='store'].environment[] | [?name=='STORE_CATALOGUE_CACHE'].value | [0]")
+
   # The run happened whether or not psql can say what the database did in it.
   statements=$(dbstat "$loadgen" "$TOP_STATEMENTS" | tail -1) || statements=null
   jq -e . <<< "$statements" > /dev/null 2>&1 || statements=null
@@ -390,17 +401,57 @@ cmd_loadtest() {
   file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
   mkdir -p till-loadtest/results
   jq -n --argjson result "$result" --argjson statements "$statements" --argjson cloudwatch "$cloudwatch" \
-    --arg commit "$deployed" --arg code "$code" \
-    '{commit: $commit, exit_code: ($code | tonumber? // $code), k6: $result, cloudwatch: $cloudwatch,
-      database_top_statements: $statements}' > "$file"
+    --argjson reads "$reads" --arg cached "$cached" --arg commit "$deployed" --arg code "$code" \
+    '{commit: $commit, exit_code: ($code | tonumber? // $code), store_catalogue_cache: ($cached == "true"),
+      k6: $result, catalogue_reads: $reads, cloudwatch: $cloudwatch, database_top_statements: $statements}' > "$file"
   say "Server side, over the same window"
   jq -r '(.cloudwatch // {}) | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
+  say "The store's catalogue reads, over the same window (its cache $([[ $cached == true ]] && echo on || echo off))"
+  jq -r '(.catalogue_reads // {}) | "  from the cache     \(.cache.reads // 0) reads, \(.cache.mean_ms // "-") ms each",
+    "  from the database  \(.database.reads // 0) reads, \(.database.mean_ms // "-") ms each",
+    "  on average         \(.mean_ms // "-") ms"' "$file"
   say "What the database spent its time on, over the whole run"
   jq -r '(.database_top_statements // [])[:8][] | "  \(.total_ms) ms  \(.calls) calls  \(.mean_ms) ms each  [\(.db)]  \(.query[:110])"' "$file"
   echo
   echo "Saved to $file."
   # k6 exits 99 when a target was missed; the run still happened, and its numbers are the result.
   [[ $code == 0 ]] || fail "The run missed a target (k6 exit $code): the numbers above are its result."
+}
+
+# The store's catalogue reads over the steady window, from its own once-a-minute account of them
+# (CatalogueCache): how many came from the cache and the database, and how long each took on
+# average. A line covers the minute before it, so the lines counted are those from a minute into
+# the window to its end.
+catalogue_reads() {
+  local result="$1" from to
+  from=$(python3 -c 'import sys, datetime as d
+print(int(d.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp() * 1000) + 60000)' \
+    "$(jq -r .window.from <<< "$result")")
+  to=$(python3 -c 'import sys, datetime as d
+print(int(d.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp() * 1000) + 5000)' \
+    "$(jq -r .window.to <<< "$result")")
+  aws logs filter-log-events --log-group-name /till/store --start-time "$from" --end-time "$to" \
+    --filter-pattern '"catalogue-reads"' --query 'events[].message' --output json |
+    python3 -c '
+import json, re, sys
+totals = {"cache": [0, 0.0], "database": [0, 0.0]}
+lines = 0
+for message in json.load(sys.stdin):
+    found = re.search(r"catalogue-reads (\{.*\})", message)
+    if not found:
+        continue
+    lines += 1
+    minute = json.loads(found.group(1))
+    for source in totals:
+        totals[source][0] += minute[source]["count"]
+        totals[source][1] += minute[source]["total_ms"]
+reads = sum(count for count, _ in totals.values())
+spent = sum(ms for _, ms in totals.values())
+answer = {source: {"reads": count, "mean_ms": round(ms / count, 2) if count else None}
+          for source, (count, ms) in totals.items()}
+answer["mean_ms"] = round(spent / reads, 2) if reads else None
+answer["store_minutes"] = lines
+print(json.dumps(answer))'
 }
 
 # What the load balancer, the database and the containers said about the steady window, from
@@ -574,6 +625,7 @@ for arg in "$@"; do
   case $arg in
     --yes) yes=true ;;
     --loadtest) loadtest=true ;;
+    --no-catalogue-cache) catalogue_cache=false ;;
     --shoppers=*) shoppers=${arg#*=} ;;
     --ramp=*) ramp=${arg#*=} ;;
     --hold=*) hold=${arg#*=} ;;
