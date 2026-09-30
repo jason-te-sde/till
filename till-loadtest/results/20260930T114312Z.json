@@ -1,0 +1,175 @@
+{
+  "commit": "e01bbeb6a7de",
+  "exit_code": 99,
+  "k6": {
+    "window": {
+      "from": "2026-09-30T11:31:03.463Z",
+      "to": "2026-09-30T11:41:03.463Z"
+    },
+    "shoppers": 8000,
+    "concurrent_max": 8000,
+    "steady_seconds": 600,
+    "requests": 1497979,
+    "requests_per_second": 2496.6,
+    "latency_ms": {
+      "p50": 1.4,
+      "p95": 1021.7,
+      "p99": 21086.9,
+      "max": 56673.3
+    },
+    "p99_ms_by_class": {
+      "page": 1.1,
+      "session": 1058.2,
+      "catalogue": 388.6,
+      "search": 406,
+      "signin": 2534,
+      "order": 30001.6
+    },
+    "unexpected_rate": 0.0463564842071817,
+    "per_second": {
+      "orders_placed": 3.2,
+      "orders_paid": 0.9,
+      "orders_cancelled": 0.1,
+      "refusals": 0,
+      "sign_ins": 2.5
+    },
+    "targets": {
+      "p99_under_1s": false,
+      "errors_under_0_1_percent": false
+    }
+  },
+  "cloudwatch": {
+    "window_seconds": 540,
+    "alb_requests_per_second": 2513.4,
+    "alb_target_p99_ms": 20973,
+    "alb_target_5xx": 62255,
+    "alb_own_5xx": 0,
+    "db_cpu_max_percent": 97.7,
+    "edge_cpu_max_percent": 31.3,
+    "store_cpu_max_percent": 92.7,
+    "ledger_cpu_max_percent": 53.7,
+    "kafka_cpu_max_percent": 25.6
+  },
+  "database_top_statements": [
+    {
+      "db": "till",
+      "rows": 106637,
+      "calls": 225365,
+      "query": "update till_stock set on_hand = $1, reserved = $2, version = version + $5, updated_at = now() where sku = $3 and version = $4",
+      "mean_ms": 9.14,
+      "total_ms": 2060656
+    },
+    {
+      "db": "till",
+      "rows": 162573,
+      "calls": 162573,
+      "query": "insert into till_reservation (id, idem_key, state, created_at, expires_at, version) values ($1, $2, $3, $4, $5, 0) on conflict (id) do nothing",
+      "mean_ms": 9.58,
+      "total_ms": 1557050
+    },
+    {
+      "db": "till",
+      "rows": 228864,
+      "calls": 228864,
+      "query": "insert into till_reservation_line (reservation_id, sku, quantity) values ($1, $2, $3)",
+      "mean_ms": 4.92,
+      "total_ms": 1126181
+    },
+    {
+      "db": "store",
+      "rows": 24866,
+      "calls": 19018,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank, count(*) over () as total, ts_rank_cd(g.search, websearch_to_tsquery('english'",
+      "mean_ms": 25.91,
+      "total_ms": 492838
+    },
+    {
+      "db": "till",
+      "rows": 74353,
+      "calls": 74353,
+      "query": "insert into till_outbox (dedupe_key, payload, recorded_at) values ($1, $2, $3) on conflict (dedupe_key) do nothing",
+      "mean_ms": 5.20,
+      "total_ms": 386600
+    },
+    {
+      "db": "store",
+      "rows": 35511,
+      "calls": 9016,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank from store_game g left join (select sku, sum(units) as units from store_sales_d",
+      "mean_ms": 38.57,
+      "total_ms": 347725
+    },
+    {
+      "db": "store",
+      "rows": 77042,
+      "calls": 19018,
+      "query": "select t.tag as value, count(*) as count from store_game g cross join lateral unnest(g.tags) as t(tag) where true and (g.search @@ websearch_to_tsquery('english', $1) or g.title ilike $2 escape '\\') group by t.tag order by count(*) desc, t.",
+      "mean_ms": 10.75,
+      "total_ms": 204445
+    },
+    {
+      "db": "till",
+      "rows": 359140,
+      "calls": 261585,
+      "query": "select sku, on_hand, reserved, version from till_stock where sku = any($1) order by sku collate \"C\"",
+      "mean_ms": 0.68,
+      "total_ms": 177495
+    },
+    {
+      "db": "till",
+      "rows": 74353,
+      "calls": 74353,
+      "query": "insert into till_idempotency (idem_key, fingerprint, outcome, recorded_at) values ($1, $2, $3, $4) on conflict (idem_key) do nothing",
+      "mean_ms": 2.36,
+      "total_ms": 175835
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 261848,
+      "query": "SHOW TRANSACTION ISOLATION LEVEL",
+      "mean_ms": 0.64,
+      "total_ms": 168617
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 261846,
+      "query": "BEGIN READ ONLY",
+      "mean_ms": 0.59,
+      "total_ms": 154246
+    },
+    {
+      "db": "store",
+      "rows": 16321,
+      "calls": 102173,
+      "query": "select id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at from store_order where customer = $1 and idem_key = $2",
+      "mean_ms": 1.47,
+      "total_ms": 150177
+    },
+    {
+      "db": "store",
+      "rows": 21063,
+      "calls": 21063,
+      "query": "insert into store_order_line (order_id, sku, title, unit_price_cents, quantity) values ($1, $2, $3, $4, $5)",
+      "mean_ms": 6.15,
+      "total_ms": 129636
+    },
+    {
+      "db": "store",
+      "rows": 90515,
+      "calls": 90515,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank from store_game g where g.sku = $1",
+      "mean_ms": 1.40,
+      "total_ms": 126761
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 261838,
+      "query": "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED",
+      "mean_ms": 0.46,
+      "total_ms": 121685
+    }
+  ]
+}

@@ -10,7 +10,8 @@
 # run out; what a run measures is two Graviton2 cores, not a credit balance.
 
 size = {
-  edge    = { cpu = 512, memory = 1024, count = 2 }
+  # A whole vCPU each: at half of one the first run's edges were at 99%, compressing every response.
+  edge    = { cpu = 1024, memory = 2048, count = 2 }
   store   = { cpu = 1024, memory = 2048, count = 2 }
   ledger  = { cpu = 1024, memory = 2048, count = 2 }
   kafka   = { cpu = 1024, memory = 4096 }

@@ -300,15 +300,59 @@ PY
 
 # --- a load test run -----------------------------------------------------------------------------
 
+# Runs one task of a family to the end and writes what it logged to a file. Sets the globals
+# `task_exit` and `task_reason`, because a subshell could not.
+task_exit=""
+task_reason=""
+run_once() {
+  local family="$1" group="$2" subnets="$3" overrides="$4" log="$5" container="$6" task status started
+  task=$(aws ecs run-task --cluster till --task-definition "$family" --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={subnets=[$subnets],securityGroups=[$group],assignPublicIp=ENABLED}" \
+    --overrides "$overrides" --query 'tasks[0].taskArn' --output text)
+  [[ -n $task && $task != None ]] || fail "$family did not start."
+  started=$(date +%s)
+  while :; do
+    status=$(aws ecs describe-tasks --cluster till --tasks "$task" --query 'tasks[0].lastStatus' --output text)
+    [[ $status == STOPPED ]] && break
+    printf '\r  %-12s %-14s %s ' "$container" "$status" "$(elapsed "$started")" >&2
+    sleep 10
+  done
+  printf '\r%60s\r' '' >&2
+  task_exit=$(aws ecs describe-tasks --cluster till --tasks "$task" --query 'tasks[0].containers[0].exitCode' --output text)
+  task_reason=$(aws ecs describe-tasks --cluster till --tasks "$task" --query 'tasks[0].stoppedReason' --output text)
+  # awslogs names a stream <prefix>/<container>/<task>, and the prefix is the log group's name.
+  aws logs get-log-events --log-group-name "$(output loadtest_log_group)" --log-stream-name "loadtest/$container/${task##*/}" \
+    --no-start-from-head --limit 1000 --query 'events[].message' --output json 2> /dev/null | jq -r '.[]' > "$log" ||
+    fail "$family stopped ($task_reason, exit $task_exit) and wrote no log."
+}
+
+# One SQL statement against the database, in the load test's psql task; prints what it returned.
+dbstat() {
+  local loadgen="$1" sql="$2" log overrides
+  log=$(mktemp)
+  overrides=$(jq -nc --arg sql "$sql" '{containerOverrides: [{name: "dbstat", environment: [{name: "SQL", value: $sql}]}]}')
+  run_once "$(jq -r .dbstat_task_definition <<< "$loadgen")" "$(jq -r .dbstat_security_group <<< "$loadgen")" \
+    "$(jq -r '.subnets | join(",")' <<< "$loadgen")" "$overrides" "$log" dbstat
+  [[ $task_exit == 0 ]] || fail "psql failed ($task_reason, exit $task_exit): $(tail -3 "$log")"
+  cat "$log"
+  rm -f "$log"
+}
+
+# What the database spent its time on, most first: pg_stat_statements since the reset before the run.
+# jsonb rather than json, whose array comes back one element to a line.
+TOP_STATEMENTS="select coalesce(jsonb_agg(t order by t.total_ms desc), '[]') from (select round(s.total_exec_time)::bigint as total_ms,
+  s.calls, round(s.mean_exec_time::numeric, 2) as mean_ms, s.rows, d.datname as db,
+  left(regexp_replace(s.query, '\s+', ' ', 'g'), 240) as query
+  from pg_stat_statements s join pg_database d on d.oid = s.dbid order by s.total_exec_time desc limit 15) t"
+
 # One run of the load generator (docs/load-test.md). Without options it is the protocol's run; with
 # them, a shorter one to try things with. Its summary is printed, and saved with what CloudWatch says
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen cluster family subnets group overrides task started status code reason log result file deployed
+  local loadgen family subnets group overrides code reason log result file deployed statements cloudwatch
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
-  cluster=$(output cluster)
   family=$(jq -r .task_definition <<< "$loadgen")
   subnets=$(jq -r '.subnets | join(",")' <<< "$loadgen")
   group=$(jq -r .security_group <<< "$loadgen")
@@ -323,39 +367,36 @@ cmd_loadtest() {
       | map(select(.value != "")))}]}')
 
   say "Load test: ${shoppers:-8000} shoppers, ${ramp:-5m} to ramp up, ${hold:-10m} held"
-  task=$(aws ecs run-task --cluster "$cluster" --task-definition "$family" --launch-type FARGATE \
-    --network-configuration "awsvpcConfiguration={subnets=[$subnets],securityGroups=[$group],assignPublicIp=ENABLED}" \
-    --overrides "$overrides" --query 'tasks[0].taskArn' --output text)
-  [[ -n $task && $task != None ]] || fail "The load generator did not start."
-  started=$(date +%s)
-  while :; do
-    status=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" --query 'tasks[0].lastStatus' --output text)
-    [[ $status == STOPPED ]] && break
-    printf '\r  %-14s %s ' "$status" "$(elapsed "$started")"
-    sleep 15
-  done
-  echo
-  code=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" --query 'tasks[0].containers[0].exitCode' --output text)
-  reason=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" --query 'tasks[0].stoppedReason' --output text)
+  # The database's statement statistics from zero, so that what it reports afterwards is this run.
+  dbstat "$loadgen" "create extension if not exists pg_stat_statements; select pg_stat_statements_reset()" > /dev/null
 
-  # awslogs names a stream <prefix>/<container>/<task>, and the prefix is the log group's name.
   log=$(mktemp)
-  aws logs get-log-events --log-group-name "$(output loadtest_log_group)" --log-stream-name "loadtest/loadgen/${task##*/}" \
-    --no-start-from-head --limit 200 --query 'events[].message' --output json 2> /dev/null | jq -r '.[]' > "$log" ||
-    fail "The load generator stopped ($reason, exit $code) and wrote no log."
+  run_once "$family" "$group" "$subnets" "$overrides" "$log" loadgen
+  code=$task_exit
+  reason=$task_reason
   grep -E 'msg="unexpected' "$log" | sed -E 's/.*msg="//; s/" source=.*//' | sort | uniq -c | sort -rn | head -5 || true
   sed -En '/^shoppers +[0-9]+ at once/,/^targets  /p' "$log"
   result=$(grep '^RESULT ' "$log" | tail -1 | cut -c8-)
   rm -f "$log"
   [[ -n $result ]] || fail "The load generator stopped ($reason, exit $code) without a result."
+  # The run happened whether or not psql can say what the database did in it.
+  statements=$(dbstat "$loadgen" "$TOP_STATEMENTS" | tail -1) || statements=null
+  jq -e . <<< "$statements" > /dev/null 2>&1 || statements=null
 
+  # Nothing is written until everything is known, and a CloudWatch that cannot be read costs the
+  # CloudWatch figures only: the run's own result is saved regardless.
+  cloudwatch=$(server_side "$result") || cloudwatch=null
+  jq -e . <<< "$cloudwatch" > /dev/null 2>&1 || cloudwatch=null
   file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
   mkdir -p till-loadtest/results
-  server_side "$result" |
-    jq --argjson result "$result" --arg commit "$deployed" --arg code "$code" \
-      '{commit: $commit, exit_code: ($code | tonumber? // $code), k6: $result, cloudwatch: .}' > "$file"
+  jq -n --argjson result "$result" --argjson statements "$statements" --argjson cloudwatch "$cloudwatch" \
+    --arg commit "$deployed" --arg code "$code" \
+    '{commit: $commit, exit_code: ($code | tonumber? // $code), k6: $result, cloudwatch: $cloudwatch,
+      database_top_statements: $statements}' > "$file"
   say "Server side, over the same window"
-  jq -r '.cloudwatch | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
+  jq -r '(.cloudwatch // {}) | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
+  say "What the database spent its time on, over the whole run"
+  jq -r '(.database_top_statements // [])[:8][] | "  \(.total_ms) ms  \(.calls) calls  \(.mean_ms) ms each  [\(.db)]  \(.query[:110])"' "$file"
   echo
   echo "Saved to $file."
   # k6 exits 99 when a target was missed; the run still happened, and its numbers are the result.

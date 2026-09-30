@@ -39,10 +39,12 @@ log_format edge escape=json
 
 server_tokens off;
 
+# Level 1: on the store's answers — two to twelve kilobytes of JSON — it costs a quarter to a half
+# less CPU than level 5 for 3–11% more bytes. /api/home at level 5 was 57 µs a response; at 1, 25.
 gzip on;
 gzip_vary on;
 gzip_proxied any;
-gzip_comp_level 5;
+gzip_comp_level 1;
 gzip_min_length 1024;
 gzip_types text/plain text/css application/javascript application/json application/problem+json image/svg+xml;
 
@@ -91,10 +93,9 @@ server {
   listen [::]:8080;
   root /usr/share/nginx/html;
 
-  # Here rather than beside the format: an access_log in this block replaces the image's own, in
-  # nginx's `main` format, where one at the top level would be written as well as it — two lines a
-  # request, both paid for at CloudWatch's $0.50 a gigabyte. EDGE_ACCESS_LOG is `off` for a load
-  # test, whose rate would make the log cost more than the edge.
+  # The only access log (../nginx.conf defines none of its own): one line a request, at CloudWatch's
+  # $0.50 a gigabyte. EDGE_ACCESS_LOG is `off` for a load test, whose rate would make the log cost
+  # more than the edge.
   access_log ${EDGE_ACCESS_LOG};
 
   include /etc/nginx/snippets/security-headers.conf;

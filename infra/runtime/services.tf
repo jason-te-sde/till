@@ -357,6 +357,10 @@ resource "aws_ecs_task_definition" "edge" {
       EDGE_ACCESS_LOG = var.loadtest ? "off" : "/var/log/nginx/access.log edge"
     } : { name = name, value = value }]
 
+    # What docker/edge/nginx.conf asks for: a descriptor per connection, and 16,384 connections a
+    # worker.
+    ulimits = [{ name = "nofile", softLimit = 65535, hardLimit = 65535 }]
+
     healthCheck = {
       command     = ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz > /dev/null"]
       interval    = 10
