@@ -350,7 +350,7 @@ TOP_STATEMENTS="select coalesce(jsonb_agg(t order by t.total_ms desc), '[]') fro
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen family subnets group overrides code reason log result file deployed statements
+  local loadgen family subnets group overrides code reason log result file deployed statements cloudwatch
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
   family=$(jq -r .task_definition <<< "$loadgen")
@@ -383,13 +383,18 @@ cmd_loadtest() {
   statements=$(dbstat "$loadgen" "$TOP_STATEMENTS" | tail -1) || statements=null
   jq -e . <<< "$statements" > /dev/null 2>&1 || statements=null
 
+  # Nothing is written until everything is known, and a CloudWatch that cannot be read costs the
+  # CloudWatch figures only: the run's own result is saved regardless.
+  cloudwatch=$(server_side "$result") || cloudwatch=null
+  jq -e . <<< "$cloudwatch" > /dev/null 2>&1 || cloudwatch=null
   file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
   mkdir -p till-loadtest/results
-  server_side "$result" |
-    jq --argjson result "$result" --argjson statements "$statements" --arg commit "$deployed" --arg code "$code" \
-      '{commit: $commit, exit_code: ($code | tonumber? // $code), k6: $result, cloudwatch: ., database_top_statements: $statements}' > "$file"
+  jq -n --argjson result "$result" --argjson statements "$statements" --argjson cloudwatch "$cloudwatch" \
+    --arg commit "$deployed" --arg code "$code" \
+    '{commit: $commit, exit_code: ($code | tonumber? // $code), k6: $result, cloudwatch: $cloudwatch,
+      database_top_statements: $statements}' > "$file"
   say "Server side, over the same window"
-  jq -r '.cloudwatch | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
+  jq -r '(.cloudwatch // {}) | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
   say "What the database spent its time on, over the whole run"
   jq -r '(.database_top_statements // [])[:8][] | "  \(.total_ms) ms  \(.calls) calls  \(.mean_ms) ms each  [\(.db)]  \(.query[:110])"' "$file"
   echo
