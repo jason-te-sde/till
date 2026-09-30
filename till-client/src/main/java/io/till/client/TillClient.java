@@ -169,6 +169,22 @@ public final class TillClient {
     }
 
     /**
+     * Splits a SKU's stock across at least {@code shards} rows, so that holds on it contend less — for
+     * a SKU about to be busy. Needs the admin token. A SKU already in that many rows is left as it is.
+     *
+     * @param key the caller's key for this attempt
+     * @param sku which SKU
+     * @param shards how many rows at least, 1 to 64
+     * @return the level, and how many rows it is kept in now
+     * @throws TillApiException if the service refused
+     */
+    public StockView shard(IdempotencyKey key, Sku sku, int shards) {
+        Map<String, Object> response =
+                post("/v1/stock/" + sku.value() + "/shards", key, Json.write(Map.of("shards", shards)));
+        return StockView.of(response);
+    }
+
+    /**
      * Reads a stock level.
      *
      * @param sku which SKU
@@ -278,15 +294,29 @@ public final class TillClient {
      * @param onHand units physically held
      * @param reserved units spoken for
      * @param available what a new hold may take
+     * @param shards how many rows the stock is kept in; 1 from a service too old to say
      */
-    public record StockView(Sku sku, long onHand, long reserved, long available) {
+    public record StockView(Sku sku, long onHand, long reserved, long available, int shards) {
+
+        /**
+         * A level kept in one row.
+         *
+         * @param sku the SKU
+         * @param onHand units physically held
+         * @param reserved units spoken for
+         * @param available what a new hold may take
+         */
+        public StockView(Sku sku, long onHand, long reserved, long available) {
+            this(sku, onHand, reserved, available, 1);
+        }
 
         static StockView of(Map<String, Object> json) {
             return new StockView(
                     Sku.of(string(json, "sku")),
                     number(json, "onHand"),
                     number(json, "reserved"),
-                    number(json, "available"));
+                    number(json, "available"),
+                    json.get("shards") instanceof Number shards ? shards.intValue() : 1);
         }
     }
 

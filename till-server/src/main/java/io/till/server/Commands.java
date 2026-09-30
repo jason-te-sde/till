@@ -59,6 +59,7 @@ class Commands {
             case Command.Commit ignored -> "commit";
             case Command.Release ignored -> "release";
             case Command.Adjust ignored -> "adjust";
+            case Command.Shard ignored -> "shard";
             case Command.Sweep ignored -> "sweep";
         };
     }
@@ -69,6 +70,7 @@ class Commands {
             case Outcome.Committed ignored -> "committed";
             case Outcome.Released ignored -> "released";
             case Outcome.Adjusted ignored -> "adjusted";
+            case Outcome.Sharded ignored -> "sharded";
             case Outcome.Swept ignored -> "swept";
             // The rejection code, not the word "rejected": an operator wants to know that stock ran
             // out, and aggregating that with "you sent a key twice" loses the only useful signal.

@@ -20,6 +20,7 @@ import java.util.UUID;
  * export TILL_URL=http://localhost:8080 TILL_TOKEN=...
  *
  * tillctl adjust widget 100
+ * tillctl shard widget 16
  * tillctl stock widget
  * tillctl reserve widget:2 gadget:1 --ttl=900
  * tillctl commit <reservation-id>
@@ -110,6 +111,10 @@ public final class Tillctl {
                 require(rest, 2, "adjust <sku> <delta>", err);
                 printStock(out, client.adjust(key, Sku.of(rest.get(0)), Long.parseLong(rest.get(1))));
             }
+            case "shard" -> {
+                require(rest, 2, "shard <sku> <rows>", err);
+                printStock(out, client.shard(key, Sku.of(rest.get(0)), Integer.parseInt(rest.get(1))));
+            }
             case "reserve" -> {
                 if (rest.isEmpty()) {
                     err.println("usage: reserve <sku>:<quantity> [<sku>:<quantity> ...]");
@@ -157,8 +162,9 @@ public final class Tillctl {
 
     private static void printStock(PrintStream out, TillClient.StockView stock) {
         out.printf(
-                "%-24s onHand=%-8d reserved=%-8d available=%d%n",
-                stock.sku(), stock.onHand(), stock.reserved(), stock.available());
+                "%-24s onHand=%-8d reserved=%-8d available=%d%s%n",
+                stock.sku(), stock.onHand(), stock.reserved(), stock.available(),
+                stock.shards() > 1 ? "  in " + stock.shards() + " rows" : "");
     }
 
     private static Line parseLine(String argument) {
@@ -188,6 +194,8 @@ public final class Tillctl {
 
                   stock   <sku>                         read a level
                   adjust  <sku> <delta>                 change on-hand stock (needs the admin token)
+                  shard   <sku> <rows>                  split a busy SKU's stock across more rows, so
+                                                        holds on it contend less (needs the admin token)
                   reserve <sku>:<qty> [...] [--ttl=s]   take a hold
                   commit  <reservation-id>              turn a hold into a sale
                   release <reservation-id>              give a hold back

@@ -44,6 +44,45 @@ class AdminApiTest extends ApiTestBase {
     }
 
     @Test
+    @DisplayName("the admin token splits a SKU, which then reports its rows and goes on selling to the last unit")
+    void splitting() {
+        admin().adjust(IdempotencyKey.of("d1"), Sku.of("widget"), 20);
+        client().reserve(IdempotencyKey.of("c1"), List.of(Line.of("widget", 3)), null);
+
+        TillClient.StockView split = admin().shard(IdempotencyKey.of("s1"), Sku.of("widget"), 8);
+
+        assertEquals(List.of(20L, 3L, 17L, 8), List.of(split.onHand(), split.reserved(), split.available(), split.shards()));
+        assertEquals(8, client().stock(Sku.of("widget")).shards());
+        assertEquals(8, admin().listStock(10, null).items().get(0).shards());
+        assertEquals(8, admin().shard(IdempotencyKey.of("s2"), Sku.of("widget"), 2).shards(), "rows are only ever added");
+
+        for (int i = 0; i < 17; i++) {
+            client().reserve(IdempotencyKey.of("c-" + i), List.of(Line.of("widget", 1)), null);
+        }
+        assertEquals(0, client().stock(Sku.of("widget")).available(), "every unit, from whichever row");
+        TillApiException refused = assertThrows(
+                TillApiException.class,
+                () -> client().reserve(IdempotencyKey.of("c-last"), List.of(Line.of("widget", 1)), null));
+        assertEquals(409, refused.status());
+    }
+
+    @Test
+    @DisplayName("splitting needs the admin token, a SKU that exists, and one to sixty-four rows")
+    void splittingIsGuarded() {
+        admin().adjust(IdempotencyKey.of("d1"), Sku.of("widget"), 5);
+
+        assertEquals(403, assertThrows(TillApiException.class,
+                () -> client().shard(IdempotencyKey.of("s1"), Sku.of("widget"), 4)).status());
+        assertEquals(404, assertThrows(TillApiException.class,
+                () -> admin().shard(IdempotencyKey.of("s2"), Sku.of("ghost"), 4)).status());
+        assertEquals(400, assertThrows(TillApiException.class,
+                () -> admin().shard(IdempotencyKey.of("s3"), Sku.of("widget"), 0)).status());
+        assertEquals(400, assertThrows(TillApiException.class,
+                () -> admin().shard(IdempotencyKey.of("s4"), Sku.of("widget"), 65)).status());
+        assertEquals(1, admin().stock(Sku.of("widget")).shards(), "and none of that split anything");
+    }
+
+    @Test
     @DisplayName("reservations list newest first and filter by state")
     void reservationsList() {
         TillClient till = client();

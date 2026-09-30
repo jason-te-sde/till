@@ -210,6 +210,16 @@
         "required" : [ "expiresAt", "id", "lines" ],
         "type" : "object"
       },
+      "ShardRequest" : {
+        "properties" : {
+          "shards" : {
+            "format" : "int32",
+            "type" : "integer"
+          }
+        },
+        "required" : [ "shards" ],
+        "type" : "object"
+      },
       "Shortfall" : {
         "properties" : {
           "available" : {
@@ -240,11 +250,15 @@
             "format" : "int64",
             "type" : "integer"
           },
+          "shards" : {
+            "format" : "int32",
+            "type" : "integer"
+          },
           "sku" : {
             "type" : "string"
           }
         },
-        "required" : [ "available", "onHand", "reserved", "sku" ],
+        "required" : [ "available", "onHand", "reserved", "shards", "sku" ],
         "type" : "object"
       },
       "StockPage" : {
@@ -914,6 +928,90 @@
           }
         },
         "summary" : "Change on-hand stock directly",
+        "tags" : [ "stock-controller" ]
+      }
+    },
+    "/v1/stock/{sku}/shards" : {
+      "post" : {
+        "operationId" : "shardStock",
+        "parameters" : [ {
+          "in" : "header",
+          "name" : "Idempotency-Key",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "in" : "path",
+          "name" : "sku",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/ShardRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Stock"
+                }
+              }
+            },
+            "description" : "the level, and how many rows it is kept in"
+          },
+          "400" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "fewer than 1 or more than 64 rows"
+          },
+          "401" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "no bearer token, or one this service does not know"
+          },
+          "403" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "this needs the admin token"
+          },
+          "404" : {
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description" : "this SKU has never been stocked"
+          }
+        },
+        "summary" : "Split a SKU's stock across more rows",
         "tags" : [ "stock-controller" ]
       }
     }

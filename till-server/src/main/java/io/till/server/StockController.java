@@ -6,6 +6,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.till.core.Command;
 import io.till.core.IdempotencyKey;
 import io.till.core.LedgerInspector;
+import io.till.core.Outcome;
 import io.till.core.Sku;
 import io.till.core.StockItem;
 import io.till.jdbc.JdbcLedger;
@@ -93,8 +94,41 @@ class StockController {
             @RequestHeader("Idempotency-Key") String key,
             @PathVariable String sku,
             @Valid @RequestBody Api.AdjustRequest request) {
-        return Api.Stock.of(
-                Outcomes.adjusted(
-                        commands.run(new Command.Adjust(IdempotencyKey.of(key), Sku.of(sku), request.delta()))));
+        Outcome.Adjusted adjusted =
+                Outcomes.adjusted(commands.run(new Command.Adjust(IdempotencyKey.of(key), Sku.of(sku), request.delta())));
+        return Api.Stock.of(adjusted, shardsOf(adjusted.sku()));
+    }
+
+    /**
+     * Splits a SKU's stock across more rows, for a SKU about to be busy: a flash sale, a launch.
+     *
+     * <p>Needs the admin token. Holds on one SKU then contend only when they land in the same row,
+     * and the answers stay the SKU's own — a hold is refused only when the whole SKU is short
+     * (docs/design/0009-hot-sku-shards.md). Rows are only ever added: asking for fewer than there
+     * are changes nothing and says how many there are.
+     *
+     * @param key the caller's key for this attempt
+     * @param sku which SKU
+     * @param request how many rows at least
+     * @return the level, and the rows it is kept in now
+     */
+    @PostMapping("/{sku}/shards")
+    @Operation(operationId = "shardStock", summary = "Split a SKU's stock across more rows")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "the level, and how many rows it is kept in"),
+        @ApiResponse(responseCode = "400", description = "fewer than 1 or more than 64 rows"),
+        @ApiResponse(responseCode = "403", description = "this needs the admin token"),
+        @ApiResponse(responseCode = "404", description = "this SKU has never been stocked")
+    })
+    Api.Stock shard(
+            @RequestHeader("Idempotency-Key") String key,
+            @PathVariable String sku,
+            @Valid @RequestBody Api.ShardRequest request) {
+        Outcomes.sharded(commands.run(new Command.Shard(IdempotencyKey.of(key), Sku.of(sku), request.shards())));
+        return get(sku);
+    }
+
+    private int shardsOf(Sku sku) {
+        return ledger.stock(sku).map(StockItem::shards).orElse(1);
     }
 }

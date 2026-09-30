@@ -51,6 +51,14 @@ final class Outcomes {
         };
     }
 
+    static Outcome.Sharded sharded(Outcome outcome) {
+        return switch (outcome) {
+            case Outcome.Sharded sharded -> sharded;
+            case Outcome.Rejected rejected -> throw new RejectedException(rejected);
+            default -> throw unexpected("shard", outcome);
+        };
+    }
+
     private static IllegalStateException unexpected(String command, Outcome outcome) {
         return new IllegalStateException("a " + command + " cannot produce " + outcome);
     }

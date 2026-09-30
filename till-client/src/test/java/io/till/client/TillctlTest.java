@@ -27,6 +27,20 @@ class TillctlTest {
     }
 
     @Test
+    @DisplayName("a split SKU says how many rows it is kept in")
+    void shard() {
+        try (StubTill stub = new StubTill()
+                .always(200, "{\"sku\":\"widget\",\"onHand\":100,\"reserved\":2,\"available\":98,\"shards\":16}")) {
+            assertEquals(0, run(stub, "shard", "widget", "16", "--key=split-widget"));
+
+            assertTrue(stdout().contains("in 16 rows"), stdout());
+            assertEquals("/v1/stock/widget/shards", stub.requests().get(0).path());
+            assertEquals("{\"shards\":16}", stub.requests().get(0).body());
+            assertEquals("split-widget", stub.requests().get(0).idempotencyKey());
+        }
+    }
+
+    @Test
     @DisplayName("a hold prints its id, its deadline and what it holds")
     void reserve() {
         String body =
