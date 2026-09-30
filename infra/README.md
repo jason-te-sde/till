@@ -51,6 +51,20 @@ five, and each service is steady in about two once the one before it is. `down` 
 than Terraform, so it finds anything a failed apply left behind. `destroy` removes everything,
 including the bootstrap.
 
+## The safety net
+
+Every `up` sets a deadline three hours out (`auto_stop_hours`), and at it EventBridge Scheduler sets
+every service's task count to zero — whether or not anybody is left to run `down`. The tasks are
+nearly all of the hourly cost, so what remains until `down` is the load balancer, the database and
+the cache, about $0.05 an hour instead of $0.16, or $0.50 set up for a load test. Another `up`
+brings the tasks back and starts the clock again; `status` says when it will fire. The schedules
+call ECS through a role that can do that and nothing else (`till-auto-stop`).
+
+It exists because on 30 September a load test's deployment ran for seven and a half hours after its
+last run: the session that would have taken it down was interrupted, and by the time it came back
+the credentials that could have done so had expired. About four dollars of nothing; a deadline kept
+inside AWS needs neither.
+
 ## What `up` checks
 
 `scripts/aws.sh smoke` runs these against the deployment, and `up` runs it last:

@@ -14,6 +14,10 @@ output "distribution_id" {
   value = one(aws_cloudfront_distribution.till[*].id)
 }
 
+output "auto_stop_at" {
+  value = "${local.auto_stop}Z"
+}
+
 output "load_balancer" {
   value = aws_lb.edge.dns_name
 }

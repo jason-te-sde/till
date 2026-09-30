@@ -57,4 +57,7 @@ module "runtime" {
   loadtest          = var.loadtest
   catalogue_cache   = var.catalogue_cache
   db_pool           = var.db_pool
+
+  auto_stop_role_arn = aws_iam_role.auto_stop.arn
+  auto_stop_hours    = var.auto_stop_hours
 }

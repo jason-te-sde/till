@@ -1,6 +1,7 @@
-# Two roles. The execution role is ECS's own, for starting a task: pulling its image, writing its
+# Three roles. The execution role is ECS's own, for starting a task: pulling its image, writing its
 # logs, reading its secrets. The task role is what the running containers are; they call no AWS API,
-# so all it can do is let an operator open a shell in one with ECS Exec.
+# so all it can do is let an operator open a shell in one with ECS Exec. The auto-stop role is the
+# safety net's (runtime/auto-stop.tf), and can do one thing: set a till service's task count.
 
 data "aws_iam_policy_document" "ecs_tasks" {
   statement {
@@ -68,4 +69,42 @@ resource "aws_iam_role_policy" "task_exec" {
   name   = "till-exec"
   role   = aws_iam_role.task.id
   policy = data.aws_iam_policy_document.task_exec.json
+}
+
+data "aws_iam_policy_document" "scheduler" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
+resource "aws_iam_role" "auto_stop" {
+  name               = "till-auto-stop"
+  description        = "EventBridge Scheduler scaling till's services to zero when a session outlives its deadline"
+  assume_role_policy = data.aws_iam_policy_document.scheduler.json
+}
+
+data "aws_iam_policy_document" "auto_stop" {
+  statement {
+    actions = ["ecs:UpdateService"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:service/till/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "auto_stop" {
+  name   = "till-scale-to-zero"
+  role   = aws_iam_role.auto_stop.id
+  policy = data.aws_iam_policy_document.auto_stop.json
 }

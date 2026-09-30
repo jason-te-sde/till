@@ -101,6 +101,20 @@ variable "loadtest" {
   }
 }
 
+variable "auto_stop_hours" {
+  description = <<-EOT
+    How long after the last `scripts/aws.sh up` the safety net scales every service to zero
+    (runtime/auto-stop.tf), in case nobody is left to run `down`. Each `up` starts the clock again.
+  EOT
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.auto_stop_hours >= 1 && var.auto_stop_hours <= 24
+    error_message = "auto_stop_hours is between 1 and 24."
+  }
+}
+
 variable "catalogue_cache" {
   description = "Whether the store caches catalogue answers in Valkey. Off only to measure what it is worth (docs/load-test.md)."
   type        = bool
