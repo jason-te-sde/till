@@ -88,6 +88,7 @@ requests.
 | Run | Commit | Set up as | Shoppers | Requests/s | p99 | Errors | Orders/s | Targets |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | [30 Sep 2026](../till-loadtest/results/20260930T102728Z.json) | `e378bd9` | edge 2 × 0.5 vCPU, store and ledger 2 × 1 vCPU, db.t4g.micro | 8,000 | 2,855 | 20.8 s | 41.5% | 3.8 | **missed**: throughput, latency, errors |
+| [30 Sep 2026, second](../till-loadtest/results/20260930T114312Z.json) | `e01bbeb` | as above, the edge with its own nginx.conf and 2 × 1 vCPU | 8,000 | 2,497 | 21.1 s | 4.6% | 3.2 | **missed**: throughput, latency, errors |
 
 ### 30 September: the first run
 
@@ -106,3 +107,24 @@ that CPU on is not known yet — orders were few — and is the next thing to fi
 
 The p50 of 1.6 ms is the edge's catalogue cache answering most requests at once; the p99 of 20.8 s
 is requests waiting for a database connection that did not come free.
+
+### 30 September: the second run
+
+The edge's own `nginx.conf` — 16,384 connections a worker, keep-alive longer than the load
+balancer's — and a whole vCPU each: the load balancer's own 5xx went from 599,384 to none, and the
+edges ran at 31% CPU. Unexpected responses fell from 41.5% to 4.6%, every one of them a checkout.
+
+Throughput fell too, to 2,497 requests a second, because requests that the first run's load
+balancer had refused at once now waited — for the database, still at 98% CPU, and for the store,
+now at 93%.
+
+This run also asked the database what it spent its time on (`pg_stat_statements`, saved with the
+result). **The catalogue**: its searches at 26 and 39 ms each and its tag counts at 11 ms came to
+about 1,045 seconds of execution in a fifteen-minute run — more than half of what two cores can do.
+The ledger's writes took more in total, but at 5 to 9 ms a statement for updates and inserts by key,
+that is time spent waiting for the CPU and for row locks rather than working.
+
+And the p99 for placing an order was 30,002 ms: the store's connection pool's thirty-second wait.
+The store's sixteen connections were held by catalogue queries a tenth of a second long, and a
+checkout queued behind them until it gave up. A catalogue that asks the database once a minute
+instead of for every miss is the next change.
