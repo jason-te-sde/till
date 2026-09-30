@@ -24,3 +24,11 @@ test-results/
 application-local.yml
 application-local.properties
 .env
+
+# Terraform: provider downloads, state, saved plans, and the backend config — which names the
+# account, and is written by infra/bootstrap rather than committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+infra/backend.hcl
