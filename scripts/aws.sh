@@ -334,9 +334,11 @@ cmd_loadtest() {
   code=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" --query 'tasks[0].containers[0].exitCode' --output text)
   reason=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" --query 'tasks[0].stoppedReason' --output text)
 
+  # awslogs names a stream <prefix>/<container>/<task>, and the prefix is the log group's name.
   log=$(mktemp)
-  aws logs get-log-events --log-group-name "$(output loadtest_log_group)" --log-stream-name "loadgen/loadgen/${task##*/}" \
-    --no-start-from-head --limit 200 --query 'events[].message' --output json | jq -r '.[]' > "$log"
+  aws logs get-log-events --log-group-name "$(output loadtest_log_group)" --log-stream-name "loadtest/loadgen/${task##*/}" \
+    --no-start-from-head --limit 200 --query 'events[].message' --output json 2> /dev/null | jq -r '.[]' > "$log" ||
+    fail "The load generator stopped ($reason, exit $code) and wrote no log."
   grep -E 'msg="unexpected' "$log" | sed -E 's/.*msg="//; s/" source=.*//' | sort | uniq -c | sort -rn | head -5 || true
   sed -n '/^shoppers  /,/^targets  /p' "$log"
   result=$(grep '^RESULT ' "$log" | tail -1 | cut -c8-)
