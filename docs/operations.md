@@ -208,8 +208,21 @@ through it.
 | Store down | a `503` problem with `code: STORE_UNAVAILABLE`, rather than nginx's own page |
 | Health | `/healthz` |
 
-Behind a load balancer that terminates TLS, the rate limits key on the balancer's address unless you
-configure nginx's `real_ip` module to trust it — do that, or every customer shares one limit.
+The configuration is a template the image renders when it starts, from three variables:
+
+| Variable | Default (the compose stack) | In AWS |
+| --- | --- | --- |
+| `STORE_UPSTREAM` | `store:8081` | the store's service-discovery name |
+| `EDGE_RESOLVER` | `127.0.0.11`, Docker's DNS | the VPC's resolver. The store's address is re-resolved every ten seconds, so a replaced store task is found without restarting the edge |
+| `EDGE_TRUSTED_PROXY` | `unix:` — trust nobody | the VPC's range, where the load balancer lives |
+
+Behind a load balancer every connection comes from the balancer, and a rate limit keyed on that
+address is one limit shared by every customer. For a connection from `EDGE_TRUSTED_PROXY`, the edge
+takes the client's address from `CloudFront-Viewer-Address` instead; from anywhere else it ignores
+the header, so a client cannot choose its own limit by sending one. The scheme comes from
+`CloudFront-Forwarded-Proto`: CloudFront reaches the balancer over plain HTTP, and the store builds
+the sign-in redirect from the scheme it is told, which the identity provider accepts only as `https`.
+A forged one misdirects nobody's sign-in but the forger's.
 
 ## Tuning
 

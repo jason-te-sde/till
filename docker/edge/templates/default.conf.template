@@ -6,9 +6,32 @@
 #
 # The ledger is not reachable from here at all. The store holds the only token that can call it, and
 # the browser holds no token of any kind.
+#
+# A template: the nginx image fills in STORE_UPSTREAM, EDGE_RESOLVER and EDGE_TRUSTED_PROXY from the
+# environment when it starts. The Dockerfile's defaults are the compose stack's; the AWS task
+# definition sets the service-discovery name, the VPC's resolver and the VPC's address range.
+
+# Who the customer is. Behind CloudFront every connection comes from the load balancer, so the
+# connection's address is the balancer's — the same for every customer, and useless to a rate limit.
+# CloudFront names the viewer in CloudFront-Viewer-Address ("198.51.100.10:46532"), and from here on
+# $remote_addr is that address — but only for a connection from EDGE_TRUSTED_PROXY, the range the load
+# balancer lives in, which in turn only accepts requests that come through CloudFront. The default,
+# `unix:`, is a kind of connection this server never receives: locally nothing is trusted, and a
+# client that sends the header itself is ignored.
+set_real_ip_from ${EDGE_TRUSTED_PROXY};
+real_ip_header CloudFront-Viewer-Address;
+
+# The scheme the viewer used. CloudFront talks to the load balancer over plain HTTP inside AWS, so
+# $scheme here says http even when the customer's browser said https — and the store builds the
+# sign-in redirect from this, which the identity provider refuses unless it is https. Unlike the
+# address, a forged one only misdirects the forger's own sign-in.
+map $http_cloudfront_forwarded_proto $forwarded_proto {
+  https   https;
+  default $scheme;
+}
 
 log_format edge escape=json
-  '{"time":"$time_iso8601","id":"$request_id","method":"$request_method","uri":"$request_uri",'
+  '{"time":"$time_iso8601","id":"$request_id","client":"$remote_addr","method":"$request_method","uri":"$request_uri",'
   '"status":$status,"bytes":$body_bytes_sent,"seconds":$request_time,'
   '"upstream_seconds":"$upstream_response_time","cache":"$upstream_cache_status"}';
 access_log /var/log/nginx/access.log edge;
@@ -23,8 +46,9 @@ gzip_min_length 1024;
 gzip_types text/plain text/css application/javascript application/json application/problem+json image/svg+xml;
 
 # --- rate limits ---------------------------------------------------------------------------------
-# Per client address. Reads are generous — a browse page is several requests — and writes are not:
-# nobody places five orders a second, and something that tries is not a customer.
+# Per client address — the viewer's, not the load balancer's; see above. Reads are generous — a
+# browse page is several requests — and writes are not: nobody places five orders a second, and
+# something that tries is not a customer.
 limit_req_zone $binary_remote_addr zone=reads:10m rate=30r/s;
 map $request_method $write_client {
   default "";
@@ -50,8 +74,13 @@ limit_req_log_level warn;
 # or orders.
 proxy_cache_path /var/cache/nginx/catalogue levels=1:2 keys_zone=catalogue:10m max_size=64m inactive=10m use_temp_path=off;
 
+# Re-resolved as it changes rather than once at start-up: a replaced store container comes back at a
+# new address, and an upstream resolved once would go on sending customers to the old one.
+resolver ${EDGE_RESOLVER} valid=10s ipv6=off;
+
 upstream store {
-  server store:8081;
+  zone store 64k;
+  server ${STORE_UPSTREAM} resolve;
   keepalive 32;
 }
 
