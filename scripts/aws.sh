@@ -344,7 +344,7 @@ cmd_loadtest() {
     --no-start-from-head --limit 200 --query 'events[].message' --output json 2> /dev/null | jq -r '.[]' > "$log" ||
     fail "The load generator stopped ($reason, exit $code) and wrote no log."
   grep -E 'msg="unexpected' "$log" | sed -E 's/.*msg="//; s/" source=.*//' | sort | uniq -c | sort -rn | head -5 || true
-  sed -n '/^shoppers  /,/^targets  /p' "$log"
+  sed -En '/^shoppers +[0-9]+ at once/,/^targets  /p' "$log"
   result=$(grep '^RESULT ' "$log" | tail -1 | cut -c8-)
   rm -f "$log"
   [[ -n $result ]] || fail "The load generator stopped ($reason, exit $code) without a result."
@@ -375,9 +375,14 @@ result, balancer = json.loads(sys.argv[1]), sys.argv[2]
 # The steady window as the load generator measured it, whole minutes of it: CloudWatch's are minutes.
 parse = lambda text: datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
 start, end = parse(result["window"]["from"]), parse(result["window"]["to"])
-start = start.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
-end = end.replace(second=0, microsecond=0)
-length = max(60, int((end - start).total_seconds()))
+whole_start = start.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
+whole_end = end.replace(second=0, microsecond=0)
+if whole_end > whole_start:
+    start, end = whole_start, whole_end
+else:
+    # A window shorter than two minutes has no whole minute inside it: take the minutes it touches.
+    start, end = start.replace(second=0, microsecond=0), whole_end + datetime.timedelta(minutes=1)
+length = int((end - start).total_seconds())
 def stat(id, namespace, metric, dims, stat, period=60):
     return {"Id": id, "ReturnData": True, "MetricStat": {"Metric": {"Namespace": namespace, "MetricName": metric,
             "Dimensions": [{"Name": k, "Value": v} for k, v in dims.items()]}, "Period": period, "Stat": stat}}
