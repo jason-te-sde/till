@@ -9,6 +9,7 @@
 #   scripts/aws.sh down        stop the hourly bill; the images, accounts, secrets and logs stay
 #   scripts/aws.sh destroy     everything this created, the bootstrap included
 #   scripts/aws.sh plan        what `up` would change, changing nothing
+#   scripts/aws.sh terraform … Terraform in infra/, with the same credentials, for anything else
 #
 # bootstrap, up and down show Terraform's plan and ask before applying it; destroy asks. --yes
 # does not ask.
@@ -31,12 +32,16 @@ yes=false
 # would expire partway through a fifteen-minute apply. So Terraform gets a profile of its own whose
 # credentials come from the AWS CLI through credential_process, which the SDK runs again whenever the
 # last ones expire. The file holds that command, never a credential, and goes when this script does.
+#
+# The command tries more than once. A refresh can fail for a while — the first deployment lost ten
+# minutes and two resource waits to one — and a wait that fails leaves its resource tainted, to be
+# destroyed and created again by the next apply.
 TERRAFORM_AWS_CONFIG=$(mktemp)
 trap 'rm -f "$TERRAFORM_AWS_CONFIG"' EXIT
 cat > "$TERRAFORM_AWS_CONFIG" << EOF
 [profile till-terraform]
 region = $AWS_REGION
-credential_process = env AWS_CONFIG_FILE="${AWS_CONFIG_FILE:-$HOME/.aws/config}" aws configure export-credentials --profile "$AWS_PROFILE" --format process
+credential_process = for wait in 0 2 4 8 16 32; do sleep \$wait; env AWS_CONFIG_FILE="${AWS_CONFIG_FILE:-$HOME/.aws/config}" aws configure export-credentials --profile "$AWS_PROFILE" --format process && exit 0; done; exit 1
 EOF
 terraform() { AWS_CONFIG_FILE="$TERRAFORM_AWS_CONFIG" AWS_PROFILE=till-terraform command terraform "$@"; }
 
@@ -350,6 +355,13 @@ done
 
 command="${1:-}"
 [[ $# -gt 0 ]] && shift
+
+if [[ $command == terraform ]]; then
+  init
+  tf "$@"
+  exit
+fi
+
 for arg in "$@"; do
   case $arg in
     --yes) yes=true ;;
