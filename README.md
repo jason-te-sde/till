@@ -454,9 +454,10 @@ reserving a specific unit, scheduled availability, read replicas, and any databa
 [`docs/design/0005-scope.md`](docs/design/0005-scope.md) gives the reasoning and
 [`SECURITY.md`](SECURITY.md) states what the project does and does not defend against.
 
-**Not done yet, and said so.** The platform runs locally and in CI; it has not been deployed to AWS,
-so the Cognito configuration is documented rather than exercised, and there is no load-test figure
-for the services — see [Numbers](#numbers) for why one laptop's number would not be worth printing.
+**Not done yet, and said so.** The platform runs locally and in CI. The AWS deployment is
+[`infra/`](infra/README.md) — Terraform, and a script that checks what it deployed — planned against
+a real account but not yet applied, so the Cognito configuration is documented rather than
+exercised, and there is no load-test figure for the services — see [Numbers](#numbers) for why one laptop's number would not be worth printing.
 A Redis read cache for the catalogue waits on a measured baseline that says the database needs one.
 
 ## Numbers

@@ -401,9 +401,9 @@ jobs:
           # The first answer sets the CSRF cookie, and nginx never caches a response that sets one;
           # with the cookie sent back, the next answers are cacheable and the third is a hit.
           for i in 1 2 3; do
-            curl -s -b /tmp/jar -c /tmp/jar -D - -o /dev/null http://localhost:8080/api/home | grep -i '^x-cache:' || true
+            curl -s -b /tmp/jar -c /tmp/jar -D - -o /dev/null http://localhost:8080/api/home | grep -i '^x-cache-status:' || true
           done | tee /tmp/cache
-          grep -qi 'x-cache: HIT' /tmp/cache
+          grep -qi 'x-cache-status: HIT' /tmp/cache
 
       - name: a flood is refused politely
         run: |
@@ -454,3 +454,28 @@ jobs:
       # dependency that only resolves because it is already on this machine, breaks a clone without
       # breaking the maintainer.
       - run: mvn -B -ntp -Dmaven.repo.local=/tmp/fresh-repo package -DskipTests
+
+  infra:
+    name: the AWS deployment is well-formed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '~1.16'
+          terraform_wrapper: false
+      # No credentials and no backend: this proves the configuration is formatted, consistent and
+      # typed against the provider it locks, not that AWS would accept it. scripts/aws.sh plan does
+      # that, and `up` runs checks against what it deployed.
+      - name: formatted
+        run: terraform fmt -check -recursive -diff infra
+      - name: valid
+        run: |
+          set -euo pipefail
+          for stack in infra infra/bootstrap; do
+            terraform -chdir="$stack" init -backend=false -input=false -lockfile=readonly > /dev/null
+            terraform -chdir="$stack" validate
+          done
+      - name: the scripts pass shellcheck
+        run: shellcheck scripts/*.sh

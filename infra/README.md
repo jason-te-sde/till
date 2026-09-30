@@ -1,0 +1,157 @@
+# till on AWS
+
+The compose stack, on AWS, for as long as it is needed: Fargate for the four services, RDS for
+PostgreSQL, ElastiCache for the sessions, Cognito for Keycloak, and CloudFront in front. Terraform
+describes it; `scripts/aws.sh` builds the images, starts it, checks it, and stops it again.
+
+It is built to be **started for a session and stopped after it**. Running costs about $0.16 an hour;
+stopped, it costs cents a month.
+
+```mermaid
+flowchart LR
+    B["browser"] -->|HTTPS| CF["CloudFront<br/><i>TLS, HSTS, /assets cache</i>"]
+    CF -->|VPC origin| ALB["load balancer<br/><i>internal</i>"]
+    ALB --> E["edge<br/><i>nginx</i>"]
+    E --> S["store"]
+    S --> L["ledger"]
+    L --> DB[("RDS PostgreSQL<br/>till · store")]
+    S --> DB
+    S --> R[("ElastiCache Valkey<br/><i>sessions</i>")]
+    L -. outbox .-> K["Kafka<br/><i>one broker</i>"]
+    K -. events .-> S
+    S <-->|OpenID Connect| C["Cognito"]
+    B -. sign-in .-> C
+```
+
+Everything in the middle runs in one VPC. The load balancer is internal: CloudFront reaches it
+through a [VPC origin][vpc-origins], a network interface CloudFront places in the private subnets, so
+there is no path from the internet to anything here that does not go through CloudFront.
+
+## Using it
+
+Needs the AWS CLI with a profile that can create all of this (`till-deploy` unless `AWS_PROFILE`
+says otherwise), Terraform 1.10 or later, Docker and jq.
+
+```sh
+scripts/aws.sh bootstrap   # once: the state bucket and the image registries
+scripts/aws.sh up          # build, push, start, check — about fifteen minutes
+scripts/aws.sh accounts    # the demonstration accounts, to sign in with
+scripts/aws.sh down        # stop the hourly bill — about ten minutes
+scripts/aws.sh status      # what is billed by the hour and still there, and since when
+```
+
+`up` builds the images from the commit that is checked out, and refuses to run with uncommitted
+changes: an image is named after its commit, and one built from a dirty tree would not be what its
+name says. It pushes them, shows Terraform's plan, asks, applies exactly that plan, and then runs the
+checks below. `down` does the same in reverse and finishes with `status`, which asks AWS rather
+than Terraform, so it finds anything a failed apply left behind. `destroy` removes everything,
+including the bootstrap.
+
+## What `up` checks
+
+`scripts/aws.sh smoke` runs these against the deployment, and `up` runs it last:
+
+| Check | Why it is a check |
+| --- | --- |
+| Plain HTTP is sent to HTTPS | CloudFront's viewer policy |
+| A storefront route answers with the edge's CSP and CloudFront's HSTS | both layers are in the path |
+| A game is in stock | stock is seeded through the ledger as the store starts, and availability is what the store's projection read from Kafka since — so this is the whole event path, ledger to outbox to broker to store |
+| The catalogue is cached at the edge | `X-Cache-Status: HIT` on a repeat |
+| Nothing of the ledger is reachable, even with a token | a path the storefront does not draw is the storefront |
+| Signing in goes to Cognito, which accepts the callback | the store built an `https` redirect URI for this deployment's address, and Cognito's sign-in form — not its error page — answers it |
+| The edge sees the viewer's address, not one the viewer claims | below |
+
+The last one is there because the edge's rate limits key on the viewer's address, which it takes
+from `CloudFront-Viewer-Address` for any connection from inside the VPC. That is safe only if
+CloudFront replaces a `CloudFront-Viewer-Address` a viewer sends, and AWS's documentation does not
+say that it does. So the check sends one, `203.0.113.7:4444`, and reads the edge's access log in
+CloudWatch to see which address it recorded.
+
+Signing in itself is done by a person, in a browser, with an account from `scripts/aws.sh accounts`.
+
+## What it costs
+
+On-demand prices in us-west-2, from the AWS Price List API:
+
+| | Size | Per hour |
+| --- | --- | ---: |
+| Fargate, ARM: edge | 0.25 vCPU, 0.5 GB | $0.0099 |
+| Fargate, ARM: store, ledger, Kafka | 0.5 vCPU, 2 GB each | $0.0699 |
+| Public IPv4, one per task | 4 | $0.0200 |
+| Application Load Balancer | idle | $0.0225 |
+| RDS for PostgreSQL | db.t4g.micro, single-AZ, 20 GB gp3 | $0.0192 |
+| ElastiCache for Valkey | cache.t4g.micro, one node | $0.0128 |
+| **Running** | | **$0.154** |
+
+Round it to $0.16 for what is metered rather than reserved: CloudWatch Logs at $0.50 a GB written,
+load balancer capacity units at $0.008 each, DNS queries. CloudFront's always-free allowance —
+1 TB and 10 million requests a month — covers a session many times over, and so does Cognito's
+10,000 monthly users.
+
+Stopped, what is left is ECR's storage ($0.10 a GB-month, for about a gigabyte of images), the logs'
+($0.03 a GB-month, kept a week) and the state bucket's — cents a month in all. The VPC, its subnets,
+security groups and internet gateway, the Cognito user pool, the Parameter Store parameters and the
+IAM roles cost nothing at rest. Cloud Map's hosted zone is $0.50 a month but is deleted with every
+stop, and a zone deleted within twelve hours of its creation is not billed.
+
+## How it is split
+
+| | Lives | Holds |
+| --- | --- | --- |
+| [`bootstrap/`](bootstrap/main.tf) | once per account, local state | the state bucket, the three image registries |
+| [the root](.) | always, state in S3 | the network, the security groups, Cognito's user pool and its accounts, the secrets, the IAM roles, the log groups |
+| [`runtime/`](runtime) | while `running = true` | CloudFront and its VPC origin, the load balancer, the Cognito app client, RDS, ElastiCache, Cloud Map, the ECS cluster and its services |
+
+`runtime/` is a module the root instantiates with `count = var.running ? 1 : 0`, so stopping is an
+apply rather than a second stack kept in step with the first. `running` defaults to false: an apply
+that forgets to say is one that stops the bill rather than one that starts it.
+
+What is kept across a stop is what would be tedious or pointless to recreate: the images, the
+accounts and their passwords, the ledger's tokens. What goes is everything billed by the hour — and
+the Cognito app client with it, because its callback URL is the CloudFront address, which is new
+with every start.
+
+## Decisions
+
+**No NAT gateway.** The containers run in public subnets with public addresses, and their security
+groups admit nothing from the internet; the addresses are for going out, to ECR, CloudWatch,
+Parameter Store and Cognito. A NAT gateway is $0.045 an hour before it carries a byte — more than
+all of the above but the containers — and VPC endpoints for the same four services would be $0.01
+an hour each per zone. [`network.tf`](network.tf) says the same.
+
+**Kafka is one broker on Fargate, not MSK.** It is the compose stack's broker, a single KRaft node,
+with its log on the task's own disk. That is enough because the ledger's outbox is the durable
+record: a broker that restarts empty is sent everything that has not been published yet. MSK
+Serverless would be $0.75 an hour on its own, five times all of this; provisioned MSK is two brokers
+at the least, $0.09 an hour for the smallest before storage, against $0.023 for this one.
+
+**One zone for everything with state.** The database, the cache and the broker are single-instance,
+so the containers run in the same zone as them rather than paying for every query to cross zones.
+The load balancer is in two, because it has to be.
+
+**CloudFront's own certificate.** There is no domain here, so the store is at
+`https://d….cloudfront.net`, and CloudFront terminates TLS with the certificate that comes with it.
+It reaches the load balancer over plain HTTP inside the VPC, and tells the edge the viewer's scheme
+in `CloudFront-Forwarded-Proto`, from which the store builds an `https` sign-in redirect.
+
+**Secrets in Parameter Store.** SecureString parameters are free and encrypted with the account's
+AWS-managed key; Secrets Manager is $0.40 a secret a month and rotates, which nothing here needs.
+ECS puts them in the containers' environment at start-up, so no task definition contains one.
+
+**Generated passwords for the demonstration accounts.** The compose stack's Keycloak realm is
+published in this repository, passwords included. The Cognito accounts have the same names and
+generated passwords, and sign-up is closed.
+
+## What a production deployment would change
+
+- RDS Multi-AZ with backups, deletion protection and a final snapshot; the store with a database
+  user of its own rather than the master user.
+- MSK, or three brokers with replicated, persistent storage.
+- The containers in private subnets behind NAT gateways or VPC endpoints, one per zone.
+- A domain of its own: an ACM certificate on CloudFront and HTTPS from CloudFront to the load
+  balancer; AWS WAF in front.
+- Autoscaling on the store and the ledger, alarms on the ledger's p99 and its outbox lag
+  ([`docs/operations.md`](../docs/operations.md) says which), and the images built and pushed by CI
+  through OIDC rather than from a laptop.
+
+[vpc-origins]: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-vpc-origins.html

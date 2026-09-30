@@ -135,7 +135,8 @@ server {
     # would otherwise be cached and replayed to every visitor after this one.
     proxy_ignore_headers Set-Cookie;
     proxy_hide_header Set-Cookie;
-    add_header X-Cache $upstream_cache_status always;
+    # Not X-Cache: CloudFront sets that one itself, for its own cache, over whatever the origin said.
+    add_header X-Cache-Status $upstream_cache_status always;
     proxy_pass http://store;
   }
 

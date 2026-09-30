@@ -25,6 +25,9 @@ The edge serves the storefront's files and is the only thing a browser talks to.
 Scale either service by adding processes until its database is the limit. For the ledger that will
 be the case first, because every command is two short transactions against a handful of rows.
 
+On AWS this is [`infra/`](../infra/README.md): Fargate, RDS, ElastiCache, Cognito and CloudFront,
+with the settings below filled in, and a script that starts it, checks it and stops it.
+
 ## Starting the ledger
 
 ```bash
@@ -204,7 +207,7 @@ through it.
 | --- | --- |
 | Security headers | set here, for everything, including a Content-Security-Policy that forbids inline script |
 | Rate limits | per client address: 30 reads a second with a burst of 60, 5 writes a second with a burst of 10, 2 sign-in starts a second. A refusal is a `429` problem with `code: RATE_LIMITED` and a `Retry-After` |
-| Catalogue cache | `/api/home`, `/api/games` and `/api/genres`, for as long as the store says: five seconds, stale for up to thirty while refetching, and up to five minutes while the store is down. `X-Cache` on every response says which |
+| Catalogue cache | `/api/home`, `/api/games` and `/api/genres`, for as long as the store says: five seconds, stale for up to thirty while refetching, and up to five minutes while the store is down. `X-Cache-Status` on every response says which |
 | Store down | a `503` problem with `code: STORE_UNAVAILABLE`, rather than nginx's own page |
 | Health | `/healthz` |
 
