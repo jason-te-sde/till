@@ -105,7 +105,9 @@ stop, and a zone deleted within twelve hours of its creation is not billed.
 load test runs: no CloudFront, so the load generator reaches the load balancer from inside the VPC
 and the start takes fifteen minutes rather than forty; the store signing in against the stand-in
 provider rather than Cognito; the edge's access log off; and the sizes in
-[`loadtest.tfvars`](loadtest.tfvars) — two of each service and a `db.m7g.large`.
+[`loadtest.tfvars`](loadtest.tfvars) — two of each service. The database stays a `db.t4g.micro`:
+it is the largest a free-plan account may create, which refuses anything bigger with
+`FreeTierRestrictionError`.
 `scripts/aws.sh loadtest` then runs the load generator once and saves the result.
 
 | | Size | Per hour |
@@ -114,11 +116,11 @@ provider rather than Cognito; the edge's access log off; and the sizes in
 | Fargate, ARM: the load generator, while a run lasts | 8 vCPU, 16 GB | $0.316 |
 | Public IPv4, one per task | 9 | $0.045 |
 | Application Load Balancer, and its capacity units under 3,500 requests a second | about 27 | $0.24 |
-| RDS for PostgreSQL | db.m7g.large, single-AZ | $0.171 |
+| RDS for PostgreSQL | db.t4g.micro, single-AZ, and its unlimited-mode CPU beyond the baseline | about $0.13 |
 | ElastiCache for Valkey | cache.t4g.micro | $0.013 |
-| **During a run** | | **about $1.05** |
+| **During a run** | | **about $1.00** |
 
-Between runs it is about half that. A session — start, a minute's trial, the protocol's run, stop —
+Between runs it is about $0.35 an hour. A session — start, a minute's trial, the protocol's run, stop —
 comes to well under a dollar.
 
 ## How it is split

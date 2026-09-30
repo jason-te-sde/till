@@ -67,8 +67,9 @@ nothing a load test could measure would be serving them.
 ## A run
 
 1. `scripts/aws.sh up --loadtest` deploys with the sizes in
-   [`infra/loadtest.tfvars`](../infra/loadtest.tfvars) — two of each service, a
-   non-burstable database — and adds the stand-in provider and the load generator.
+   [`infra/loadtest.tfvars`](../infra/loadtest.tfvars) — two of each service, and the largest
+   database the account's AWS plan allows, a `db.t4g.micro` — and adds the stand-in provider and
+   the load generator.
 2. `scripts/aws.sh loadtest --shoppers=100 --ramp=20s --hold=1m` first: a minute that proves the
    path works before the run that costs a quarter of an hour.
 3. `scripts/aws.sh loadtest`: from none to 8,000 virtual users over five minutes, held for ten —
