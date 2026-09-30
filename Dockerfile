@@ -13,6 +13,7 @@ COPY till-client/pom.xml till-client/
 COPY till-kafka/pom.xml till-kafka/
 COPY till-server/pom.xml till-server/
 COPY till-store/pom.xml till-store/
+COPY till-loadtest/pom.xml till-loadtest/
 # This project's own modules are excluded: they are not built yet, and asking Maven to resolve them
 # from a repository would fail. Everything else is fetched here so the layer can be cached.
 RUN mvn -B -ntp -q dependency:go-offline -DexcludeGroupIds=io.github.jason-te-sde
@@ -24,6 +25,7 @@ COPY till-client till-client
 COPY till-kafka till-kafka
 COPY till-server till-server
 COPY till-store till-store
+COPY till-loadtest till-loadtest
 
 # Tests are not run here. They need a database, a broker and Docker, and an image build is the wrong
 # place to discover that any is missing. CI runs every suite before it builds this.
@@ -45,11 +47,13 @@ RUN npm run build
 FROM nginxinc/nginx-unprivileged:1.30-alpine AS edge
 # The configuration is a template the image renders at start-up; only these variables are
 # substituted, so nginx's own $variables pass through untouched. The defaults are the compose
-# stack's: the store's service name, Docker's DNS resolver, and no proxy trusted to name the client.
+# stack's: the store's service name, Docker's DNS resolver, no proxy trusted to name the client, and
+# the access log on.
 ENV STORE_UPSTREAM=store:8081 \
     EDGE_RESOLVER=127.0.0.11 \
     EDGE_TRUSTED_PROXY=unix: \
-    NGINX_ENVSUBST_FILTER="^(STORE_UPSTREAM|EDGE_RESOLVER|EDGE_TRUSTED_PROXY)$"
+    EDGE_ACCESS_LOG="/var/log/nginx/access.log edge" \
+    NGINX_ENVSUBST_FILTER="^(STORE_UPSTREAM|EDGE_RESOLVER|EDGE_TRUSTED_PROXY|EDGE_ACCESS_LOG)$"
 USER root
 RUN rm -f /etc/nginx/conf.d/default.conf
 USER 101
@@ -59,6 +63,20 @@ COPY --from=web /web/dist /usr/share/nginx/html
 EXPOSE 8080
 HEALTHCHECK --interval=5s --timeout=3s --retries=12 \
     CMD wget -qO- http://127.0.0.1:8080/healthz > /dev/null || exit 1
+
+# The load test: k6, the scenario its shoppers follow, and the stand-in OpenID provider they sign in
+# with. `k6 run /loadtest/k6/shopper.js` is the load generator and `java -jar
+# /loadtest/till-loadtest.jar` the provider. Deployed only for a load test, never as part of the store.
+FROM grafana/k6:2.3.0 AS k6
+
+FROM eclipse-temurin:21-jre AS loadtest
+COPY --from=k6 /usr/bin/k6 /usr/bin/k6
+RUN groupadd --system --gid 10001 till && useradd --system --uid 10001 --gid till till
+USER till:till
+WORKDIR /loadtest
+COPY --from=build /src/till-loadtest/target/till-loadtest-*.jar /loadtest/till-loadtest.jar
+COPY till-loadtest/k6 /loadtest/k6
+ENTRYPOINT ["k6"]
 
 FROM eclipse-temurin:21-jre AS runtime
 

@@ -99,6 +99,30 @@ security groups and internet gateway, the Cognito user pool, the Parameter Store
 IAM roles cost nothing at rest. Cloud Map's hosted zone is $0.50 a month but is deleted with every
 stop, and a zone deleted within twelve hours of its creation is not billed.
 
+## Set up for a load test
+
+`scripts/aws.sh up --loadtest` runs it the way [`docs/load-test.md`](../docs/load-test.md) says a
+load test runs: no CloudFront, so the load generator reaches the load balancer from inside the VPC
+and the start takes fifteen minutes rather than forty; the store signing in against the stand-in
+provider rather than Cognito; the edge's access log off; and the sizes in
+[`loadtest.tfvars`](loadtest.tfvars) — two of each service. The database stays a `db.t4g.micro`:
+it is the largest a free-plan account may create, which refuses anything bigger with
+`FreeTierRestrictionError`.
+`scripts/aws.sh loadtest` then runs the load generator once and saves the result.
+
+| | Size | Per hour |
+| --- | --- | ---: |
+| Fargate, ARM: edge ×2, store ×2, ledger ×2, Kafka, the stand-in provider | 6.5 vCPU, 15 GB | $0.264 |
+| Fargate, ARM: the load generator, while a run lasts | 8 vCPU, 16 GB | $0.316 |
+| Public IPv4, one per task | 9 | $0.045 |
+| Application Load Balancer, and its capacity units under 3,500 requests a second | about 27 | $0.24 |
+| RDS for PostgreSQL | db.t4g.micro, single-AZ, and its unlimited-mode CPU beyond the baseline: $0.075 a vCPU-hour | up to $0.15 |
+| ElastiCache for Valkey | cache.t4g.micro | $0.013 |
+| **During a run** | | **about $1.00** |
+
+Between runs it is about $0.35 an hour. A session — start, a minute's trial, the protocol's run, stop —
+comes to well under a dollar.
+
 ## How it is split
 
 | | Lives | Holds |

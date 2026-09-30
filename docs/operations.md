@@ -211,13 +211,14 @@ through it.
 | Store down | a `503` problem with `code: STORE_UNAVAILABLE`, rather than nginx's own page |
 | Health | `/healthz` |
 
-The configuration is a template the image renders when it starts, from three variables:
+The configuration is a template the image renders when it starts, from four variables:
 
 | Variable | Default (the compose stack) | In AWS |
 | --- | --- | --- |
 | `STORE_UPSTREAM` | `store:8081` | the store's service-discovery name |
 | `EDGE_RESOLVER` | `127.0.0.11`, Docker's DNS | the VPC's resolver. The store's address is re-resolved every ten seconds, so a replaced store task is found without restarting the edge |
 | `EDGE_TRUSTED_PROXY` | `unix:` — trust nobody | the VPC's range, where the load balancer lives |
+| `EDGE_ACCESS_LOG` | `/var/log/nginx/access.log edge` | the same, or `off` for a load test |
 
 Behind a load balancer every connection comes from the balancer, and a rate limit keyed on that
 address is one limit shared by every customer. For a connection from `EDGE_TRUSTED_PROXY`, the edge

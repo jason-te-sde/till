@@ -1,0 +1,80 @@
+# The compose stack set up the way the load test runs on AWS, so the scenario can be tried on a
+# laptop before it costs anything:
+#
+#   docker compose -f docker-compose.yml -f till-loadtest/compose.yml up -d --build --wait
+#   docker compose -f docker-compose.yml -f till-loadtest/compose.yml run --rm k6
+#
+# Three things change. The store signs in against the stand-in provider instead of Keycloak. Every
+# game is stocked beyond what any run can buy, so a checkout is never refused for want of stock. And
+# the edge believes the address each virtual user sends, as it believes CloudFront's on AWS — here it
+# believes anyone's, because nothing but the load generator talks to it.
+#
+# A laptop's number says nothing about the platform's (docs/load-test.md); this is for finding out
+# that the scenario works, at a few dozen shoppers.
+
+services:
+  idp:
+    build:
+      context: .
+      target: loadtest
+    entrypoint: ["java", "-jar", "/loadtest/till-loadtest.jar"]
+    environment:
+      STANDIN_ISSUER: http://idp:8090
+      STANDIN_CLIENT_ID: till-store
+      STANDIN_CLIENT_SECRET: stand-in-secret
+    healthcheck:
+      # The image has no curl or wget; bash can open a socket on its own. bash by name: CMD-SHELL's
+      # /bin/sh is dash here, which cannot.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8090 &&
+          printf 'GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '^ok' <&3
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  store:
+    depends_on:
+      idp:
+        condition: service_healthy
+    environment:
+      STORE_OIDC_ISSUER_URI: http://idp:8090
+      STORE_OIDC_CLIENT_ID: till-store
+      STORE_OIDC_CLIENT_SECRET: stand-in-secret
+      STORE_OIDC_AUTHORIZATION_URI: http://idp:8090/authorize
+      STORE_OIDC_TOKEN_URI: http://idp:8090/token
+      STORE_OIDC_JWK_SET_URI: http://idp:8090/certs
+      # Signing out ends the store's session only; the stand-in has no session of its own to end.
+      STORE_OIDC_LOGOUT_URI: ""
+      # Replaces the compose file's handful of nearly-sold-out games as well.
+      SPRING_APPLICATION_JSON: '{"store":{"demo":{"default-stock":1000000000}}}'
+
+  edge:
+    environment:
+      EDGE_TRUSTED_PROXY: 0.0.0.0/0
+      EDGE_ACCESS_LOG: "off"
+
+  k6:
+    build:
+      context: .
+      target: loadtest
+    profiles: ["loadtest"]
+    depends_on:
+      edge:
+        condition: service_healthy
+    command: ["run", "/loadtest/k6/shopper.js"]
+    # The scenario from the working tree rather than the one baked into the image, so a change to it
+    # is tried by running again rather than by rebuilding.
+    volumes:
+      - ./till-loadtest/k6:/loadtest/k6:ro
+    environment:
+      BASE_URL: http://edge:8080
+      SHOPPERS: ${SHOPPERS:-40}
+      RAMP: ${RAMP:-20s}
+      HOLD: ${HOLD:-60s}
+      RAMP_DOWN: ${RAMP_DOWN:-10s}
+      CHECKOUT_SHARE: ${CHECKOUT_SHARE:-0.1}

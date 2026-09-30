@@ -57,6 +57,7 @@ variable "images" {
     edge     = string
     kafka    = string
     postgres = string
+    loadtest = string
   })
 }
 
@@ -99,4 +100,9 @@ variable "cache_node_type" {
 
 variable "demo" {
   type = bool
+}
+
+variable "loadtest" {
+  description = "Set up for a load test (docs/load-test.md) rather than for customers: no CloudFront, the stand-in provider, the load generator."
+  type        = bool
 }

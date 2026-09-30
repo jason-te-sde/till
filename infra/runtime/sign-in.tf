@@ -1,11 +1,14 @@
 # The store's Cognito app client. Created with each start, because the callback URL is the CloudFront
-# address and that is new each time; the user pool it belongs to is not.
+# address and that is new each time; the user pool it belongs to is not. Not created for a load test,
+# whose shoppers sign in with the stand-in provider (loadtest.tf).
 
 locals {
-  base_url = "https://${aws_cloudfront_distribution.till.domain_name}"
+  base_url = var.loadtest ? null : "https://${aws_cloudfront_distribution.till[0].domain_name}"
 }
 
 resource "aws_cognito_user_pool_client" "store" {
+  count = var.loadtest ? 0 : 1
+
   name         = "till-store"
   user_pool_id = var.user_pool.id
 
@@ -26,8 +29,10 @@ resource "aws_cognito_user_pool_client" "store" {
 }
 
 resource "aws_ssm_parameter" "oidc_client_secret" {
+  count = var.loadtest ? 0 : 1
+
   name        = "/till/store/oidc-client-secret"
   description = "The store's Cognito app client secret"
   type        = "SecureString"
-  value       = aws_cognito_user_pool_client.store.client_secret
+  value       = aws_cognito_user_pool_client.store[0].client_secret
 }

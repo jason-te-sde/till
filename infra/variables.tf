@@ -73,6 +73,21 @@ variable "cache_node_type" {
   default     = "cache.t4g.micro"
 }
 
+variable "loadtest" {
+  description = <<-EOT
+    Set the running half up for a load test (docs/load-test.md) instead of for customers: no
+    CloudFront, sign-in against the stand-in provider, and the load generator's task definition.
+    scripts/aws.sh up --loadtest sets it, with the sizes in loadtest.tfvars.
+  EOT
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.loadtest || var.running
+    error_message = "loadtest = true needs running = true: it is a way of running."
+  }
+}
+
 variable "demo" {
   description = "Stock every game when the store starts, as the compose stack does. A real store must not."
   type        = bool

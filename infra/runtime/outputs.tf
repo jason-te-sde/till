@@ -11,5 +11,18 @@ output "services" {
 }
 
 output "distribution_id" {
-  value = aws_cloudfront_distribution.till.id
+  value = one(aws_cloudfront_distribution.till[*].id)
+}
+
+output "load_balancer" {
+  value = aws_lb.edge.dns_name
+}
+
+# What scripts/aws.sh loadtest needs to start a run.
+output "loadgen" {
+  value = var.loadtest ? {
+    task_definition = aws_ecs_task_definition.loadgen[0].family
+    subnets         = var.task_subnet_ids
+    security_group  = aws_security_group.loadtest["loadgen"].id
+  } : null
 }

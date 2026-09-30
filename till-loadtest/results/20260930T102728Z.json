@@ -1,0 +1,53 @@
+{
+  "commit": "e378bd9ad430",
+  "exit_code": 99,
+  "k6": {
+    "window": {
+      "from": "2026-09-30T10:16:12.566Z",
+      "to": "2026-09-30T10:26:12.566Z"
+    },
+    "shoppers": 8000,
+    "concurrent_max": 8000,
+    "steady_seconds": 600,
+    "requests": 1712850,
+    "requests_per_second": 2854.8,
+    "latency_ms": {
+      "p50": 1.6,
+      "p95": 249.4,
+      "p99": 20800.9,
+      "max": 45191.6
+    },
+    "p99_ms_by_class": {
+      "page": 2.4,
+      "session": 535.7,
+      "catalogue": 586.5,
+      "search": 572,
+      "signin": 895,
+      "order": 21936.9
+    },
+    "unexpected_rate": 0.4154908083761922,
+    "per_second": {
+      "orders_placed": 3.8,
+      "orders_paid": 0.9,
+      "orders_cancelled": 0.1,
+      "refusals": 0,
+      "sign_ins": 3.3
+    },
+    "targets": {
+      "p99_under_1s": false,
+      "errors_under_0_1_percent": false
+    }
+  },
+  "cloudwatch": {
+    "window_seconds": 540,
+    "alb_requests_per_second": 2858.2,
+    "alb_target_p99_ms": 19750,
+    "alb_target_5xx": 42344,
+    "alb_own_5xx": 599384,
+    "db_cpu_max_percent": 97.70833333333333,
+    "edge_cpu_max_percent": 99.07548522949219,
+    "store_cpu_max_percent": 69.89034271240234,
+    "ledger_cpu_max_percent": 34.51887893676758,
+    "kafka_cpu_max_percent": 27.411645889282227
+  }
+}
