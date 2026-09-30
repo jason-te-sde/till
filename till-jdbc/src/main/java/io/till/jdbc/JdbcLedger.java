@@ -24,6 +24,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -69,6 +70,9 @@ import javax.sql.DataSource;
  * <p>Requires the schema in {@code db/migration/V1__till_schema.sql}; see {@link JdbcSchema}.
  */
 public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retention {
+
+    /** A snapshot's transaction: one instant, and nothing written from it. */
+    private static final String SNAPSHOT_TRANSACTION = "set transaction isolation level repeatable read, read only";
 
     private static final String SELECT_RECORD =
             "select idem_key, fingerprint, outcome, recorded_at from till_idempotency where idem_key = ?";
@@ -200,15 +204,24 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         this.dataSource = dataSource;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The transaction sets its own isolation, as its first statement, rather than the connection's
+     * being changed around it. Changing the connection costs a statement to ask what it was, one to
+     * set it, and one to put it back afterwards, each a transaction of its own; the fourth load test
+     * spent more of the database's commits on those than on everything else together
+     * (docs/load-test.md).
+     */
     @Override
     public Snapshot load(Command command, Instant now, int reclaimLimit) {
         try (Connection connection = dataSource.getConnection()) {
             boolean autoCommit = connection.getAutoCommit();
-            int isolation = connection.getTransactionIsolation();
             connection.setAutoCommit(false);
-            connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
-            connection.setReadOnly(true);
             try {
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute(SNAPSHOT_TRANSACTION);
+                }
                 Snapshot snapshot = readSnapshot(connection, command, now, reclaimLimit);
                 connection.commit();
                 return snapshot;
@@ -216,8 +229,6 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 connection.rollback();
                 throw e;
             } finally {
-                connection.setReadOnly(false);
-                connection.setTransactionIsolation(isolation);
                 connection.setAutoCommit(autoCommit);
             }
         } catch (SQLException e) {
