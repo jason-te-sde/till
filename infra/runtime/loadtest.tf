@@ -1,6 +1,7 @@
 # What a load test adds (docs/load-test.md), and only while `loadtest` is true: the stand-in OpenID
-# provider its shoppers sign in with, running as a service, and the load generator's task definition,
-# which scripts/aws.sh loadtest runs once per run rather than keeping up.
+# provider its shoppers sign in with, running as a service; the load generator's task definition,
+# which scripts/aws.sh loadtest runs once per run rather than keeping up; and a one-off psql task that
+# asks the database what it spent its time on.
 
 locals {
   standin        = "http://idp.${local.namespace}:8090"
@@ -36,6 +37,7 @@ resource "aws_security_group" "loadtest" {
   for_each = var.loadtest ? {
     idp     = "The load test stand-in OpenID provider"
     loadgen = "The load test load generator"
+    dbstat  = "The load test psql task that reads pg_stat_statements"
   } : {}
 
   name        = "till-${each.key}"
@@ -50,6 +52,7 @@ resource "aws_vpc_security_group_ingress_rule" "loadtest" {
     idp_from_store   = { to = aws_security_group.loadtest["idp"].id, from = var.security_groups.store, port = 8090 }
     idp_from_loadgen = { to = aws_security_group.loadtest["idp"].id, from = aws_security_group.loadtest["loadgen"].id, port = 8090 }
     alb_from_loadgen = { to = var.security_groups.alb, from = aws_security_group.loadtest["loadgen"].id, port = 80 }
+    db_from_dbstat   = { to = var.security_groups.db, from = aws_security_group.loadtest["dbstat"].id, port = 5432 }
   } : {}
 
   security_group_id            = each.value.to
@@ -206,6 +209,48 @@ resource "aws_ecs_task_definition" "loadgen" {
 
     # A connection or two per shopper, eight thousand shoppers.
     ulimits = [{ name = "nofile", softLimit = 65535, hardLimit = 65535 }]
+
+    logConfiguration = local.logs.loadtest
+  }])
+}
+
+# --- what the database spent its time on ----------------------------------------------------------
+
+# One psql statement per task, the statement in SQL: scripts/aws.sh loadtest resets
+# pg_stat_statements before a run and reads the most expensive statements after it. RDS preloads
+# the module; the extension is created on first use.
+resource "aws_ecs_task_definition" "dbstat" {
+  count = var.loadtest ? 1 : 0
+
+  family                   = "till-dbstat"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = var.execution_role_arn
+  task_role_arn            = var.task_role_arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+
+  container_definitions = jsonencode([{
+    name      = "dbstat"
+    image     = var.images.postgres
+    essential = true
+    # Unaligned and tuples only: what it prints is the statement's one value, which is JSON.
+    command = ["sh", "-c", "psql -X -q -v ON_ERROR_STOP=1 -P pager=off -A -t -c \"$SQL\""]
+
+    environment = [for name, value in {
+      PGHOST            = aws_db_instance.till.address
+      PGUSER            = "till"
+      PGDATABASE        = "till"
+      PGSSLMODE         = "require"
+      PGCONNECT_TIMEOUT = "10"
+      SQL               = "select 1"
+    } : { name = name, value = value }]
+    secrets = [{ name = "PGPASSWORD", valueFrom = var.secrets.db_password }]
 
     logConfiguration = local.logs.loadtest
   }])

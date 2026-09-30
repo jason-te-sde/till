@@ -57,6 +57,7 @@ ENV STORE_UPSTREAM=store:8081 \
 USER root
 RUN rm -f /etc/nginx/conf.d/default.conf
 USER 101
+COPY docker/edge/nginx.conf /etc/nginx/nginx.conf
 COPY docker/edge/templates /etc/nginx/templates
 COPY docker/edge/snippets /etc/nginx/snippets
 COPY --from=web /web/dist /usr/share/nginx/html

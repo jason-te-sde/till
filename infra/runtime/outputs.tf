@@ -21,8 +21,10 @@ output "load_balancer" {
 # What scripts/aws.sh loadtest needs to start a run.
 output "loadgen" {
   value = var.loadtest ? {
-    task_definition = aws_ecs_task_definition.loadgen[0].family
-    subnets         = var.task_subnet_ids
-    security_group  = aws_security_group.loadtest["loadgen"].id
+    task_definition        = aws_ecs_task_definition.loadgen[0].family
+    subnets                = var.task_subnet_ids
+    security_group         = aws_security_group.loadtest["loadgen"].id
+    dbstat_task_definition = aws_ecs_task_definition.dbstat[0].family
+    dbstat_security_group  = aws_security_group.loadtest["dbstat"].id
   } : null
 }
