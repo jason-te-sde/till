@@ -1,7 +1,12 @@
 package io.till.core;
 
+import java.util.List;
+
 /**
  * The stock level of one SKU: what is physically there, and how much of it is spoken for.
+ *
+ * <p>What the ledger reports, and the sum of the rows it keeps: a SKU's stock is kept in one or more
+ * {@link StockShard}s (ADR 9), and this is them added up.
  *
  * <p>Three numbers, two of them stored:
  *
@@ -22,9 +27,11 @@ package io.till.core;
  * @param sku which SKU
  * @param onHand units physically held, never negative
  * @param reserved units spoken for, never negative and never more than {@code onHand}
- * @param version optimistic concurrency token, or {@link #ABSENT} when the row does not exist yet
+ * @param version optimistic concurrency token, or {@link #ABSENT} when the row does not exist yet; for
+ *     a SKU in several shards, the sum of theirs, which moves on every write to any of them
+ * @param shards how many rows the stock is kept in: 0 for a SKU with none, 1 for one never split
  */
-public record StockItem(Sku sku, long onHand, long reserved, long version) {
+public record StockItem(Sku sku, long onHand, long reserved, long version, int shards) {
 
     /**
      * The version of a SKU that has no row yet.
@@ -52,6 +59,21 @@ public record StockItem(Sku sku, long onHand, long reserved, long version) {
         if (version < ABSENT) {
             throw new IllegalArgumentException("version must not be below " + ABSENT + ", got " + version);
         }
+        if (shards < 0) {
+            throw new IllegalArgumentException("shards must not be negative, got " + shards + " for " + sku);
+        }
+    }
+
+    /**
+     * A SKU kept in one row, as every SKU is until it is split.
+     *
+     * @param sku which SKU
+     * @param onHand units physically held
+     * @param reserved units spoken for
+     * @param version the row's version, or {@link #ABSENT}
+     */
+    public StockItem(Sku sku, long onHand, long reserved, long version) {
+        this(sku, onHand, reserved, version, version == ABSENT ? 0 : 1);
     }
 
     /**
@@ -61,7 +83,32 @@ public record StockItem(Sku sku, long onHand, long reserved, long version) {
      * @return an absent item at zero
      */
     public static StockItem empty(Sku sku) {
-        return new StockItem(sku, 0, 0, ABSENT);
+        return new StockItem(sku, 0, 0, ABSENT, 0);
+    }
+
+    /**
+     * A SKU's level from its shards.
+     *
+     * @param sku which SKU
+     * @param shards its shards, all of them; none for a SKU with no row
+     * @return their sum, or {@link #empty} if there are none
+     */
+    public static StockItem of(Sku sku, List<StockShard> shards) {
+        if (shards.isEmpty()) {
+            return empty(sku);
+        }
+        long onHand = 0;
+        long reserved = 0;
+        long version = 0;
+        for (StockShard shard : shards) {
+            if (!shard.sku().equals(sku)) {
+                throw new IllegalArgumentException("shard " + shard + " is not a shard of " + sku);
+            }
+            onHand += shard.onHand();
+            reserved += shard.reserved();
+            version += Math.max(0, shard.version());
+        }
+        return new StockItem(sku, onHand, reserved, version, shards.size());
     }
 
     /**
@@ -89,7 +136,7 @@ public record StockItem(Sku sku, long onHand, long reserved, long version) {
      * @return the new level, at the same version
      */
     public StockItem withReservedDelta(long delta) {
-        return new StockItem(sku, onHand, reserved + delta, version);
+        return new StockItem(sku, onHand, reserved + delta, version, shards);
     }
 
     /**
@@ -100,7 +147,7 @@ public record StockItem(Sku sku, long onHand, long reserved, long version) {
      * @return the new level, at the same version
      */
     public StockItem withCommitDelta(long delta) {
-        return new StockItem(sku, onHand + delta, reserved + delta, version);
+        return new StockItem(sku, onHand + delta, reserved + delta, version, shards);
     }
 
     /**
@@ -110,11 +157,12 @@ public record StockItem(Sku sku, long onHand, long reserved, long version) {
      * @return the new level, at the same version
      */
     public StockItem withOnHandDelta(long delta) {
-        return new StockItem(sku, onHand + delta, reserved, version);
+        return new StockItem(sku, onHand + delta, reserved, version, shards);
     }
 
     @Override
     public String toString() {
-        return sku + "[onHand=" + onHand + " reserved=" + reserved + " available=" + available() + " v" + version + "]";
+        return sku + "[onHand=" + onHand + " reserved=" + reserved + " available=" + available() + " v" + version
+                + (shards > 1 ? " in " + shards + " shards" : "") + "]";
     }
 }

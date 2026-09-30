@@ -22,6 +22,13 @@ public sealed interface Command {
     Duration MAX_TTL = Duration.ofDays(30);
 
     /**
+     * Most rows one SKU's stock may be split across (ADR 9). A snapshot reads every shard of a SKU in
+     * scope, so each one is a cost on every command on it; sixty-four is far past the point where one
+     * more stops dividing the contention.
+     */
+    int MAX_SHARDS = 64;
+
+    /**
      * The caller's key for this attempt, if it has one.
      *
      * @return empty only for {@link Sweep}, which no caller issues
@@ -232,6 +239,53 @@ public sealed interface Command {
         @Override
         public String fingerprint() {
             return Command.digest("adjust|" + sku + "|" + delta);
+        }
+    }
+
+    /**
+     * Split a SKU's stock across at least {@code shards} rows, so that commands on it contend less
+     * (ADR 9).
+     *
+     * <p>An operator's decision about a SKU they expect to be busy, made before the sale rather than
+     * during it: splitting writes every shard the SKU has, and spreads its unreserved on-hand evenly
+     * over them. A SKU already in that many shards is left as it is. Shards are only ever added, so
+     * asking twice is asking once.
+     *
+     * @param key the caller's key for this attempt
+     * @param sku which SKU; it must exist
+     * @param shards how many rows at least, from 1 to {@link #MAX_SHARDS}
+     */
+    record Shard(IdempotencyKey key, Sku sku, int shards) implements Command {
+
+        public Shard {
+            requireKey(key);
+            if (sku == null) {
+                throw new IllegalArgumentException("sku must not be null");
+            }
+            if (shards < 1 || shards > MAX_SHARDS) {
+                throw new IllegalArgumentException(
+                        "a SKU is kept in 1 to " + MAX_SHARDS + " shards, got " + shards + " for " + sku);
+            }
+        }
+
+        @Override
+        public Optional<IdempotencyKey> idempotencyKey() {
+            return Optional.of(key);
+        }
+
+        @Override
+        public Optional<ReservationId> targetReservation() {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Sku> declaredSkus() {
+            return List.of(sku);
+        }
+
+        @Override
+        public String fingerprint() {
+            return Command.digest("shard|" + sku + "|" + shards);
         }
     }
 

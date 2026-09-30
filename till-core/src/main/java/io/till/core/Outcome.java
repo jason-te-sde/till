@@ -76,6 +76,14 @@ public sealed interface Outcome {
     }
 
     /**
+     * A SKU's stock is split across this many rows.
+     *
+     * @param sku which SKU
+     * @param shards how many shards it has now: what was asked for, or more if it already had more
+     */
+    record Sharded(Sku sku, int shards) implements Outcome {}
+
+    /**
      * Expired holds were written off.
      *
      * @param reclaimed how many reservations moved to {@link ReservationState#EXPIRED}

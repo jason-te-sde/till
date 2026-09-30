@@ -64,7 +64,8 @@ class InMemoryLedgerTest {
                         T0,
                         Till.DEFAULT_RECLAIM_LIMIT);
 
-        assertEquals(Optional.of(StockItem.empty(sku("ghost"))), Optional.ofNullable(snapshot.stock().get(sku("ghost"))));
+        assertEquals(Optional.of(List.of()), Optional.ofNullable(snapshot.stock().get(sku("ghost"))), "present, with no shards");
+        assertEquals(StockItem.empty(sku("ghost")), snapshot.require(sku("ghost")));
         assertFalse(snapshot.require(sku("ghost")).exists());
     }
 

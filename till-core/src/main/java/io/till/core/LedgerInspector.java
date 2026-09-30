@@ -78,6 +78,13 @@ public interface LedgerInspector {
     List<StockItem> allStock();
 
     /**
+     * Every shard of every SKU, in SKU and then shard order: the rows the levels above add up.
+     *
+     * @return a consistent copy
+     */
+    List<StockShard> allShards();
+
+    /**
      * Every reservation, in id order.
      *
      * @return a consistent copy
