@@ -146,6 +146,12 @@ stock rows go first, because they are the rows most likely to have moved: every 
 writes its row. Finding that out before inserting the reservation saves the inserts a conflict would
 roll back.
 
+A busy SKU's stock can be **split across rows** ([ADR 9](design/0009-hot-sku-shards.md)).
+`till_stock` is keyed by SKU and shard, a snapshot reads every shard of a SKU in scope, and a decision
+writes only the shards it changed — so two holds on one SKU conflict only when they took their units
+from the same row. The rows go in SKU and then shard order, the same order in every transaction, so
+two of them never wait for each other in a cycle.
+
 `false` is not an error. It is the ordinary outcome of two callers reaching the same row, and the loop
 answers it by loading again. A **check constraint violation** is not treated that way and raises
 instead, because that means the application tried to write a level the database knows is impossible,

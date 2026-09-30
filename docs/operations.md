@@ -259,9 +259,20 @@ A forged one misdirects nobody's sign-in but the forger's.
 
 **Contention on a single SKU is the case worth thinking about.** A thousand callers on one row will
 produce retries; that is the design working, and the levers are `max-attempts` (how long a caller
-will try) and a bounded pool (how many can try at once). If a flash sale genuinely needs more than
-one row's worth of write throughput, the answer is to split the stock across several SKUs and let the
-caller pick, which till supports by having no opinion about what a SKU means.
+will try) and a bounded pool (how many can try at once). When a SKU needs more than one row's worth
+of write throughput — a launch, a flash sale — **split it** before the sale:
+
+```bash
+tillctl shard <sku> 16 --key=split-<sku>     # or POST /v1/stock/<sku>/shards {"shards": 16}, admin token
+```
+
+Its stock is then kept in sixteen rows, a hold takes its units from the row its id points at, and two
+holds contend only when they land in the same one; every answer is still the SKU's, so a hold is
+refused only when the whole SKU is short ([ADR 9](design/0009-hot-sku-shards.md)). In the contention
+benchmark sixteen rows took the decisions that conflicted from 54% to 7%. Two costs: every command on
+the SKU reads all of its rows, and rows are only ever added — so split what will be busy, not
+everything. Splitting writes every row the SKU has, which is why it belongs before the sale rather
+than in the middle of it.
 
 ## Retention
 
@@ -363,7 +374,7 @@ There is one migration so far, so this is advice rather than experience.
 
 | Symptom | Look at |
 | --- | --- |
-| 503s with `"code":"CONTENTION"` | contention, not an outage. `till_outcome_total{outcome="exhausted"}`, then how many callers are on one SKU. Raise `till.max-attempts` |
+| 503s with `"code":"CONTENTION"` | contention, not an outage. `till_outcome_total{outcome="exhausted"}`, then how many callers are on one SKU. Split that SKU (`tillctl shard <sku> 16`), or raise `till.max-attempts` |
 | 503 `"Ledger unavailable"` | the database. The readiness probe will already be failing |
 | 422 `IDEMPOTENCY_KEY_REUSED` | a client is reusing a key for a different body. Usually a key derived from something not unique per request — a cart id rather than a checkout attempt |
 | `available` lower than it should be | expired holds not yet written off. Check `till_sweeper_failures_total`; the next command short of stock on those SKUs will reclaim them anyway |

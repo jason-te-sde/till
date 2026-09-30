@@ -443,6 +443,7 @@ because the alternative is a client that retried a timeout being told "out of st
 | Reclaim on demand | a command that would be short of stock writes off the expired holds standing in its way, scoped to its SKUs, and decides again; one with stock to spare leaves them to the sweeper |
 | Idempotency | keyed by the caller, with a fingerprint that ignores the server-minted id and the line order |
 | Optimistic concurrency | a version per row, no locks, no backoff, bounded attempts |
+| Hot-SKU shards | a busy SKU's stock split across up to 64 rows, so two holds on it contend only in the same row; answers stay the SKU's, and a hold is refused only when the whole SKU is short. Sixteen rows: 7% of decisions conflicting where one row had 54% |
 | Transactional outbox | events in the same transaction as the change, delivered at least once, with stable deduplication keys |
 | Kafka, and an idempotent reader | `acks=all` with producer idempotence, records keyed by entity so one reservation's lifecycle stays ordered, and an inbox on the consumer so a redelivery moves nothing |
 | Oversell impossible at the database | `check (reserved >= 0 and on_hand >= 0 and reserved <= on_hand)` |
@@ -461,9 +462,10 @@ reserving a specific unit, scheduled availability, read replicas, and any databa
 **Not done yet, and said so.** The platform runs locally, in CI and on AWS:
 [`infra/`](infra/README.md) is the deployment — Terraform, and a script that checks what it
 deployed — and it was deployed and checked on 30 September 2026. A sign-in through Cognito has not
-yet been completed end to end, only up to Cognito accepting the store's redirect, and there is no
-load-test figure for the services — see [Numbers](#numbers) for why one laptop's number would not be worth printing.
-The catalogue's Redis read cache came after a load test measured the database needing one.
+yet been completed end to end, only up to Cognito accepting the store's redirect. The load test has
+been run on AWS and has not yet met its targets: [`docs/load-test.md`](docs/load-test.md) records every
+run, what it found and what changed because of it — the edge's connections, the catalogue's Redis read
+cache, writing off expired holds when they are needed, the checkout's waste, and hot-SKU shards.
 
 ## Numbers
 
@@ -505,12 +507,15 @@ conflicts would have tested the happy path four million times, and would go on p
 concurrency control was deleted. Every chaos test here asserts the run was hostile — conflicts,
 replays, injected crashes, lost answers, expiries and refusals all have to have happened.
 
-There is no throughput figure for the services, on purpose. Measuring them on one laptop against one
-PostgreSQL would say more about the laptop than about till; that number comes from a written load-test
-protocol run against a deployed stack, or not at all. [`docs/load-test.md`](docs/load-test.md) is the
-protocol — 8,000 concurrent shoppers, 3,000 requests a second, a p99 under a second — and
-[`till-loadtest`](till-loadtest) the scenario and the stand-in sign-in it runs with. No run is
-recorded yet.
+There is no throughput figure for the services here, on purpose. Measuring them on one laptop against
+one PostgreSQL would say more about the laptop than about till; that number comes from a written
+load-test protocol run against a deployed stack, or not at all. [`docs/load-test.md`](docs/load-test.md)
+is the protocol — 8,000 concurrent shoppers, 3,000 requests a second, a p99 under a second — and its
+results, and [`till-loadtest`](till-loadtest) the scenario and the stand-in sign-in it runs with.
+
+What a laptop can measure is a *ratio*, and the contention benchmark does: the same checkouts on the
+same PostgreSQL, with one change between runs. Its numbers are in
+[ADR 9](docs/design/0009-hot-sku-shards.md), where they decided how busy SKUs are stored.
 
 ## How it is tested
 
