@@ -121,7 +121,9 @@ the read and the write, so a caller that thinks for a second blocks nobody.
 **No backoff.** A conflict means the row moved, which means somebody else's transaction committed,
 which means progress was made. Sleeping would only add latency to a system that is making progress.
 Where backoff belongs is in the caller that catches `ConflictException`; `TillClient` has it, and it
-retries with the same idempotency key, which is the only reason retrying is safe.
+retries with the same idempotency key, which is the only reason retrying is safe — inside a deadline
+that covers every attempt, so that its caller hears within a bounded time. The store's is five
+seconds: before it had one, a ledger too busy to answer cost a checkout four five-second attempts.
 
 **Truncated to microseconds** because that is the resolution PostgreSQL stores. An instant that loses
 precision on the way to disk comes back different, and a recorded outcome that no longer equals the
@@ -134,10 +136,15 @@ one that was returned is not a recorded outcome.
 Reading happens in a **read-only repeatable-read** transaction. A snapshot has to be one instant: at
 read committed, the four statements it takes to assemble one would each see a different instant —
 each row correct, the set of them describing a state that never existed. No version check catches
-that, because every row individually is at the version it was read at.
+that, because every row individually is at the version it was read at. The transaction says so
+itself, with `SET TRANSACTION` as its first statement; changing the connection around it instead
+cost three statements a load, each a transaction of its own.
 
 Writing happens at **read committed**, with every statement carrying the version it expects. If the
-row moved, the update matches no row, the transaction rolls back, and `apply` returns `false`.
+row moved, the update matches no row, the transaction rolls back, and `apply` returns `false`. The
+stock rows go first, because they are the rows most likely to have moved: every command on a SKU
+writes its row. Finding that out before inserting the reservation saves the inserts a conflict would
+roll back.
 
 `false` is not an error. It is the ordinary outcome of two callers reaching the same row, and the loop
 answers it by loading again. A **check constraint violation** is not treated that way and raises
