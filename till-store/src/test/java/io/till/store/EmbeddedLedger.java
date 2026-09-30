@@ -165,7 +165,7 @@ public final class EmbeddedLedger implements Holds, OperatorLedger {
         String next = page.size() == limit && !page.isEmpty() ? page.get(page.size() - 1).sku().value() : null;
         return new TillClient.StockPage(
                 page.stream()
-                        .map(s -> new TillClient.StockView(s.sku(), s.onHand(), s.reserved(), s.available()))
+                        .map(s -> new TillClient.StockView(s.sku(), s.onHand(), s.reserved(), s.available(), s.shards()))
                         .toList(),
                 next);
     }
@@ -197,7 +197,19 @@ public final class EmbeddedLedger implements Holds, OperatorLedger {
             throw new LedgerRejection(rejected);
         }
         Outcome.Adjusted adjusted = (Outcome.Adjusted) outcome;
-        return new TillClient.StockView(adjusted.sku(), adjusted.onHand(), adjusted.reserved(), adjusted.available());
+        return new TillClient.StockView(adjusted.sku(), adjusted.onHand(), adjusted.reserved(), adjusted.available(),
+                ledger.stock(sku).map(StockItem::shards).orElse(1));
+    }
+
+    @Override
+    public TillClient.StockView shard(IdempotencyKey key, Sku sku, int shards) {
+        checkAvailable();
+        Outcome outcome = till.shard(key, sku, shards);
+        if (outcome instanceof Outcome.Rejected rejected) {
+            throw new LedgerRejection(rejected);
+        }
+        StockItem level = ledger.stock(sku).orElseThrow();
+        return new TillClient.StockView(level.sku(), level.onHand(), level.reserved(), level.available(), level.shards());
     }
 
     private void checkAvailable() {

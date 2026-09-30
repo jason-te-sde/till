@@ -91,6 +91,9 @@ store:
     hold-for: ${STORE_HOLD_FOR:15m}
   demo:
     seed-stock: ${STORE_DEMO_SEED_STOCK:false}
+    # How many rows the ledger keeps each game's stock in once it is stocked: 1 leaves it as it is.
+    # A load test splits every game, as an operator would a game about to be busy.
+    shards: ${STORE_DEMO_SHARDS:1}
   catalogue:
     cache:
       # On unless a load test is measuring what it is worth. The lifetimes are

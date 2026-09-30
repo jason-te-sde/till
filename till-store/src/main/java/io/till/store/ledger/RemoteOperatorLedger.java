@@ -37,4 +37,9 @@ public final class RemoteOperatorLedger implements OperatorLedger {
     public TillClient.StockView adjust(IdempotencyKey key, Sku sku, long delta) {
         return LedgerErrors.valueOf("adjusting " + sku, () -> client.adjust(key, sku, delta));
     }
+
+    @Override
+    public TillClient.StockView shard(IdempotencyKey key, Sku sku, int shards) {
+        return LedgerErrors.valueOf("splitting " + sku, () -> client.shard(key, sku, shards));
+    }
 }

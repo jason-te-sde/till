@@ -5,7 +5,8 @@
 #   scripts/aws.sh up          build and push the images, start everything, then run `smoke`
 #   scripts/aws.sh smoke       check that the running deployment behaves
 #   scripts/aws.sh up --loadtest   start it set up for a load test instead (docs/load-test.md);
-#                  --no-catalogue-cache to measure the store without its catalogue cache
+#                  --no-catalogue-cache to measure the store without its catalogue cache,
+#                  --shards=N to keep each game's stock in N rows instead of the load test's 16
 #   scripts/aws.sh loadtest    one load test run: the protocol's, or --shoppers= --ramp= --hold=
 #   scripts/aws.sh accounts    the demonstration accounts' passwords
 #   scripts/aws.sh status      what is billed by the hour and still there, and since when
@@ -33,6 +34,7 @@ LOADTEST_HOURLY=1.15
 yes=false
 loadtest=false
 catalogue_cache=true
+shards=""
 shoppers=""
 ramp=""
 hold=""
@@ -147,6 +149,9 @@ running_vars() {
   fi
   if [[ $catalogue_cache == false ]]; then
     printf '%s\n' -var catalogue_cache=false
+  fi
+  if [[ -n $shards ]]; then
+    printf '%s\n' -var "stock_shards=$shards"
   fi
 }
 
@@ -370,7 +375,7 @@ RESERVATIONS="select coalesce(jsonb_object_agg(state, n), '{}') from (select sta
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached
+  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached split
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
   family=$(jq -r .task_definition <<< "$loadgen")
@@ -407,6 +412,8 @@ cmd_loadtest() {
   jq -e . <<< "$reads" > /dev/null 2>&1 || reads=null
   cached=$(aws ecs describe-task-definition --task-definition till-store --output text \
     --query "taskDefinition.containerDefinitions[?name=='store'].environment[] | [?name=='STORE_CATALOGUE_CACHE'].value | [0]")
+  split=$(aws ecs describe-task-definition --task-definition till-store --output text \
+    --query "taskDefinition.containerDefinitions[?name=='store'].environment[] | [?name=='STORE_DEMO_SHARDS'].value | [0]")
 
   # The run happened whether or not psql can say what the database did in it.
   after=$(dbstat "$loadgen" "select jsonb_build_object('statements', ($TOP_STATEMENTS),
@@ -420,8 +427,9 @@ cmd_loadtest() {
   file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
   mkdir -p till-loadtest/results
   jq -n --argjson result "$result" --argjson before "$before" --argjson after "$after" --argjson cloudwatch "$cloudwatch" \
-    --argjson reads "$reads" --arg cached "$cached" --arg commit "$deployed" --arg code "$code" \
+    --argjson reads "$reads" --arg cached "$cached" --arg split "$split" --arg commit "$deployed" --arg code "$code" \
     '{commit: $commit, exit_code: ($code | tonumber? // $code), store_catalogue_cache: ($cached == "true"),
+      stock_shards: ($split | tonumber? // null),
       k6: $result, catalogue_reads: $reads, cloudwatch: $cloudwatch,
       database_top_statements: ($after.statements // null),
       database_transactions: (if $before == null or $after == null then null else
@@ -652,6 +660,7 @@ for arg in "$@"; do
     --yes) yes=true ;;
     --loadtest) loadtest=true ;;
     --no-catalogue-cache) catalogue_cache=false ;;
+    --shards=*) shards=${arg#*=} ;;
     --shoppers=*) shoppers=${arg#*=} ;;
     --ramp=*) ramp=${arg#*=} ;;
     --hold=*) hold=${arg#*=} ;;

@@ -53,4 +53,13 @@ public interface OperatorLedger {
      * @throws LedgerRejection if the ledger refused
      */
     TillClient.StockView adjust(IdempotencyKey key, Sku sku, long delta);
+
+    /**
+     * @param key namespaced to whoever asked; see {@link LedgerKeys}
+     * @param sku which game
+     * @param shards how many rows its stock should be kept in at least
+     * @return the level afterwards, and how many rows it is in
+     * @throws LedgerRejection if the ledger refused
+     */
+    TillClient.StockView shard(IdempotencyKey key, Sku sku, int shards);
 }

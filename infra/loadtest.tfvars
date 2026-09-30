@@ -25,3 +25,9 @@ db_instance_class = "db.t4g.micro"
 # Four stores at eight connections and two ledgers at sixteen are the 64 the second run had, under the
 # hundred or so a db.t4g.micro allows.
 db_pool = { store = 8, ledger = 16 }
+
+# Every game's stock in sixteen rows, as an operator would split a game about to be busy: in the
+# fourth run, with one row each, 53% of the ledger's stock updates found the row had moved. The
+# contention benchmark put sixteen at a seventh of the conflicts of one (docs/design/0009-hot-sku-shards.md).
+# `scripts/aws.sh up --loadtest --shards=1` measures without.
+stock_shards = 16

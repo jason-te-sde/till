@@ -64,6 +64,11 @@ and both are because the load generator speaks plain HTTP inside the VPC:
 Static assets are not fetched. In production CloudFront serves them from its cache for a year, so
 nothing a load test could measure would be serving them.
 
+**Every game's stock is split sixteen ways** ([ADR 9](design/0009-hot-sku-shards.md)) as the store
+stocks it, the way an operator would split a game about to be busy: every game is busy here, with
+8,000 shoppers over thirty-two of them. `scripts/aws.sh up --loadtest --shards=1` measures with one
+row each, as the first runs had.
+
 ## What the catalogue cache is worth
 
 A figure of its own, measured the same way every time:
