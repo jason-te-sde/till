@@ -406,11 +406,11 @@ PY
           alb_target_p99_ms: (((.alb_target_p99 // [])[0] // null) | if . == null then null else . * 1000 | round end),
           alb_target_5xx: ((.alb_target_5xx // []) | add // 0),
           alb_own_5xx: ((.alb_own_5xx // []) | add // 0),
-          db_cpu_max_percent: ((.db_cpu_max // []) | max // null),
-          edge_cpu_max_percent: ((.edge_cpu_max // []) | max // null),
-          store_cpu_max_percent: ((.store_cpu_max // []) | max // null),
-          ledger_cpu_max_percent: ((.ledger_cpu_max // []) | max // null),
-          kafka_cpu_max_percent: ((.kafka_cpu_max // []) | max // null)
+          db_cpu_max_percent: ((.db_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
+          edge_cpu_max_percent: ((.edge_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
+          store_cpu_max_percent: ((.store_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
+          ledger_cpu_max_percent: ((.ledger_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
+          kafka_cpu_max_percent: ((.kafka_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end)
         }'
   rm -f "${TMPDIR:-/tmp}/till-metrics.json"
 }

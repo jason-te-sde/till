@@ -116,7 +116,7 @@ it is the largest a free-plan account may create, which refuses anything bigger 
 | Fargate, ARM: the load generator, while a run lasts | 8 vCPU, 16 GB | $0.316 |
 | Public IPv4, one per task | 9 | $0.045 |
 | Application Load Balancer, and its capacity units under 3,500 requests a second | about 27 | $0.24 |
-| RDS for PostgreSQL | db.t4g.micro, single-AZ, and its unlimited-mode CPU beyond the baseline | about $0.13 |
+| RDS for PostgreSQL | db.t4g.micro, single-AZ, and its unlimited-mode CPU beyond the baseline: $0.075 a vCPU-hour | up to $0.15 |
 | ElastiCache for Valkey | cache.t4g.micro | $0.013 |
 | **During a run** | | **about $1.00** |
 

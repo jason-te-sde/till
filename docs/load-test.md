@@ -85,4 +85,24 @@ requests.
 
 ## Results
 
-None yet.
+| Run | Commit | Set up as | Shoppers | Requests/s | p99 | Errors | Orders/s | Targets |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| [30 Sep 2026](../till-loadtest/results/20260930T102728Z.json) | `e378bd9` | edge 2 × 0.5 vCPU, store and ledger 2 × 1 vCPU, db.t4g.micro | 8,000 | 2,855 | 20.8 s | 41.5% | 3.8 | **missed**: throughput, latency, errors |
+
+### 30 September: the first run
+
+It held 8,000 shoppers and missed every other target, and the load balancer's own count (2,858
+requests a second) agrees with the load generator's. Two things gave way.
+
+**The edge ran out of connections.** nginx allows 1,024 per worker process by default, and said
+`worker_connections are not enough` thousands of times; every connection it dropped, the load
+balancer answered itself — 599,384 of its own 5xx in nine minutes. Its CPU was at 99% too: half a
+vCPU each, compressing every response.
+
+**The database was at 98% CPU for the whole window**, with all 64 pooled connections busy and 90 MB
+of its gigabyte free. The ledger's queries timed out, the store answered checkouts with 503s, and
+orders fell to 3.8 a second against the 150 the scenario asks for. What the database was spending
+that CPU on is not known yet — orders were few — and is the next thing to find out.
+
+The p50 of 1.6 ms is the edge's catalogue cache answering most requests at once; the p99 of 20.8 s
+is requests waiting for a database connection that did not come free.
