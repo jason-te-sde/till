@@ -459,7 +459,7 @@ reserving a specific unit, scheduled availability, read replicas, and any databa
 deployed — and it was deployed and checked on 30 September 2026. A sign-in through Cognito has not
 yet been completed end to end, only up to Cognito accepting the store's redirect, and there is no
 load-test figure for the services — see [Numbers](#numbers) for why one laptop's number would not be worth printing.
-A Redis read cache for the catalogue waits on a measured baseline that says the database needs one.
+The catalogue's Redis read cache came after a load test measured the database needing one.
 
 ## Numbers
 

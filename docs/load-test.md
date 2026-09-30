@@ -64,6 +64,20 @@ and both are because the load generator speaks plain HTTP inside the VPC:
 Static assets are not fetched. In production CloudFront serves them from its cache for a year, so
 nothing a load test could measure would be serving them.
 
+## What the catalogue cache is worth
+
+A figure of its own, measured the same way every time:
+
+- **Two runs of the protocol against one deployment**, the store's catalogue cache off
+  (`scripts/aws.sh up --loadtest --no-catalogue-cache`) and then on (`scripts/aws.sh up --loadtest`,
+  which changes only the store), with everything else — shoppers, sizes, database — the same.
+- **Average query latency** is the store's own account of its catalogue reads over the steady window:
+  the time from asking for a catalogue answer to having it, from Valkey or from the database, summed
+  and divided by the number of reads. Each store logs it once a minute (`catalogue-reads`), and
+  `scripts/aws.sh loadtest` adds it up for the window and saves it with the result.
+- Both runs report the targets above as well, since the cache is also a change to everything that
+  was waiting for the database behind the catalogue.
+
 ## A run
 
 1. `scripts/aws.sh up --loadtest` deploys with the sizes in

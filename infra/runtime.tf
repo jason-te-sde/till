@@ -55,4 +55,6 @@ module "runtime" {
   cache_node_type   = var.cache_node_type
   demo              = var.demo
   loadtest          = var.loadtest
+  catalogue_cache   = var.catalogue_cache
+  db_pool           = var.db_pool
 }

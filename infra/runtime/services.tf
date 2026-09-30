@@ -173,6 +173,7 @@ resource "aws_ecs_task_definition" "ledger" {
       # RDS for PostgreSQL 17 refuses a connection without TLS.
       TILL_DB_URL        = "${local.jdbc}/till?sslmode=require"
       TILL_DB_USER       = "till"
+      TILL_DB_POOL       = tostring(var.db_pool.ledger)
       TILL_KAFKA_BROKERS = local.kafka_brokers
     } : { name = name, value = value }]
 
@@ -268,6 +269,7 @@ resource "aws_ecs_task_definition" "store" {
       environment = [for name, value in merge(local.identity, {
         STORE_DB_URL  = "${local.jdbc}/store?sslmode=require"
         STORE_DB_USER = "till"
+        STORE_DB_POOL = tostring(var.db_pool.store)
 
         STORE_REDIS_HOST = aws_elasticache_replication_group.sessions.primary_endpoint_address
         # Spring Boot's own property, as an environment variable: the cache only speaks TLS.
@@ -277,6 +279,7 @@ resource "aws_ecs_task_definition" "store" {
         TILL_URL            = local.ledger_url
 
         STORE_DEMO_SEED_STOCK = tostring(var.demo || var.loadtest)
+        STORE_CATALOGUE_CACHE = tostring(var.catalogue_cache)
       }) : { name = name, value = value }]
 
       secrets = [for name, arn in {
