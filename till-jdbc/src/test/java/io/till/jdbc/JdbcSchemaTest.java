@@ -4,7 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -48,10 +52,23 @@ class JdbcSchemaTest {
         assertFalse(statements.isEmpty());
         for (String statement : statements) {
             assertTrue(
-                    statement.startsWith("create"),
-                    "a statement that is not a create: " + statement.lines().findFirst().orElse(""));
+                    statement.startsWith("create") || statement.startsWith("alter"),
+                    "a statement that is not a create or an alter: " + statement.lines().findFirst().orElse(""));
             assertFalse(statement.contains("--"), "a comment survived into: " + statement);
         }
+    }
+
+    @Test
+    @DisplayName("every migration Flyway would apply is applied here too, in the same order")
+    void everyMigration() throws Exception {
+        List<String> files;
+        try (Stream<Path> listing = Files.list(Path.of("src/main/resources/db/migration"))) {
+            files = listing.map(path -> "db/migration/" + path.getFileName())
+                    .filter(name -> name.matches("db/migration/V\\d+__.*\\.sql"))
+                    .sorted(Comparator.comparingInt(name -> Integer.parseInt(name.replaceAll("db/migration/V(\\d+)__.*", "$1"))))
+                    .toList();
+        }
+        assertEquals(files, JdbcSchema.RESOURCES);
     }
 
     @Test

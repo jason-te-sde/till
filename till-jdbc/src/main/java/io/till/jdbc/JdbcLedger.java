@@ -1,5 +1,6 @@
 package io.till.jdbc;
 
+import io.till.core.Allocation;
 import io.till.core.Codec;
 import io.till.core.Command;
 import io.till.core.Decision;
@@ -19,6 +20,7 @@ import io.till.core.ReservationState;
 import io.till.core.Sku;
 import io.till.core.Snapshot;
 import io.till.core.StockItem;
+import io.till.core.StockShard;
 import java.sql.Array;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -67,7 +69,7 @@ import javax.sql.DataSource;
  *
  * <p>Instances hold nothing but the {@link DataSource} and are safe to share between threads.
  *
- * <p>Requires the schema in {@code db/migration/V1__till_schema.sql}; see {@link JdbcSchema}.
+ * <p>Requires the schema in {@code db/migration}, every file of it; see {@link JdbcSchema}.
  */
 public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retention {
 
@@ -80,13 +82,15 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     private static final String SELECT_RESERVATION =
             "select id, idem_key, state, created_at, expires_at, version from till_reservation where id = ?";
 
+    /** A hold's lines: one row per shard of a SKU it took units from. */
     private static final String SELECT_LINES =
-            "select reservation_id, sku, quantity from till_reservation_line "
-                    + "where reservation_id = any(?) order by reservation_id, sku";
+            "select reservation_id, sku, shard, quantity from till_reservation_line "
+                    + "where reservation_id = any(?) order by reservation_id, sku, shard";
 
+    /** Every shard of each SKU in scope, because a refusal has to see the whole SKU (ADR 9). */
     private static final String SELECT_STOCK =
-            "select sku, on_hand, reserved, version from till_stock where sku = any(?) "
-                    + "order by sku collate \"C\"";
+            "select sku, shard, on_hand, reserved, version from till_stock where sku = any(?) "
+                    + "order by sku collate \"C\", shard";
 
     /**
      * Ordering is {@code collate "C"} throughout, which is code point order and therefore the order
@@ -106,19 +110,19 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                     + "where state = 'HELD' and expires_at <= ? order by id collate \"C\" limit ?";
 
     private static final String INSERT_STOCK =
-            "insert into till_stock (sku, on_hand, reserved, version) values (?, ?, ?, 0) "
-                    + "on conflict (sku) do nothing";
+            "insert into till_stock (sku, shard, on_hand, reserved, version) values (?, ?, ?, ?, 0) "
+                    + "on conflict (sku, shard) do nothing";
 
     private static final String UPDATE_STOCK =
             "update till_stock set on_hand = ?, reserved = ?, version = version + 1, updated_at = now() "
-                    + "where sku = ? and version = ?";
+                    + "where sku = ? and shard = ? and version = ?";
 
     private static final String INSERT_RESERVATION =
             "insert into till_reservation (id, idem_key, state, created_at, expires_at, version) "
                     + "values (?, ?, ?, ?, ?, 0) on conflict (id) do nothing";
 
     private static final String INSERT_LINE =
-            "insert into till_reservation_line (reservation_id, sku, quantity) values (?, ?, ?)";
+            "insert into till_reservation_line (reservation_id, sku, shard, quantity) values (?, ?, ?, ?)";
 
     private static final String UPDATE_RESERVATION =
             "update till_reservation set state = ?, version = version + 1 where id = ? and version = ?";
@@ -138,9 +142,18 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     private static final String MARK_PUBLISHED =
             "update till_outbox set published_at = ? where sequence = any(?) and published_at is null";
 
+    /** A SKU's level is its shards added up; the version too, so it moves when any of them does. */
+    private static final String LEVELS =
+            "select sku, sum(on_hand) as on_hand, sum(reserved) as reserved, sum(version) as version, "
+                    + "count(*) as shards from till_stock ";
+
     private static final String LIST_STOCK =
-            "select sku, on_hand, reserved, version from till_stock "
-                    + "where sku collate \"C\" > coalesce(?, '') order by sku collate \"C\" limit ?";
+            LEVELS + "where sku collate \"C\" > coalesce(?, '') group by sku order by sku collate \"C\" limit ?";
+
+    private static final String ALL_STOCK = LEVELS + "group by sku order by sku collate \"C\"";
+
+    private static final String ALL_SHARDS =
+            "select sku, shard, on_hand, reserved, version from till_stock order by sku collate \"C\", shard";
 
     /**
      * Newest first, with the id breaking ties so that two holds created in the same microsecond come
@@ -261,10 +274,10 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         reclaimable.forEach(reservation -> scope.addAll(reservation.skus()));
         builder.reclaimable(reclaimable);
 
-        Map<Sku, StockItem> levels = readStock(connection, scope);
+        Map<Sku, List<StockShard>> levels = readStock(connection, scope);
         for (Sku sku : scope) {
-            StockItem item = levels.get(sku);
-            builder.stock(item != null ? item : StockItem.empty(sku));
+            builder.absent(sku);
+            levels.getOrDefault(sku, List.of()).forEach(builder::shard);
         }
         return builder.build();
     }
@@ -297,7 +310,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 row = readRow(rows);
             }
         }
-        Map<ReservationId, List<Line>> lines = readLines(connection, List.of(id));
+        Map<ReservationId, List<Allocation>> lines = readLines(connection, List.of(id));
         return Optional.of(row.toReservation(requireLines(lines, id)));
     }
 
@@ -337,7 +350,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         if (rows.isEmpty()) {
             return List.of();
         }
-        Map<ReservationId, List<Line>> lines =
+        Map<ReservationId, List<Allocation>> lines =
                 readLines(connection, rows.stream().map(row -> ReservationId.of(row.id)).toList());
         List<Reservation> reservations = new ArrayList<>(rows.size());
         for (Row row : rows) {
@@ -346,23 +359,24 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         return reservations;
     }
 
-    private Map<ReservationId, List<Line>> readLines(Connection connection, List<ReservationId> ids)
+    /** Each hold's allocations: what it took, from which shard of which SKU. */
+    private Map<ReservationId, List<Allocation>> readLines(Connection connection, List<ReservationId> ids)
             throws SQLException {
-        Map<ReservationId, List<Line>> lines = new LinkedHashMap<>();
+        Map<ReservationId, List<Allocation>> lines = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(SELECT_LINES)) {
             statement.setArray(1, idArray(connection, ids));
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
                     lines.computeIfAbsent(ReservationId.of(rows.getString("reservation_id")), ignored -> new ArrayList<>())
-                            .add(new Line(Sku.of(rows.getString("sku")), rows.getLong("quantity")));
+                            .add(new Allocation(Sku.of(rows.getString("sku")), rows.getInt("shard"), rows.getLong("quantity")));
                 }
             }
         }
         return lines;
     }
 
-    private static List<Line> requireLines(Map<ReservationId, List<Line>> lines, ReservationId id) {
-        List<Line> found = lines.get(id);
+    private static List<Allocation> requireLines(Map<ReservationId, List<Allocation>> lines, ReservationId id) {
+        List<Allocation> found = lines.get(id);
         if (found == null || found.isEmpty()) {
             // The foreign key makes orphaned lines impossible; a reservation with none means
             // somebody wrote the header without them, which is not a state to paper over.
@@ -371,8 +385,8 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         return found;
     }
 
-    private Map<Sku, StockItem> readStock(Connection connection, Set<Sku> skus) throws SQLException {
-        Map<Sku, StockItem> levels = new LinkedHashMap<>();
+    private Map<Sku, List<StockShard>> readStock(Connection connection, Set<Sku> skus) throws SQLException {
+        Map<Sku, List<StockShard>> levels = new LinkedHashMap<>();
         if (skus.isEmpty()) {
             return levels;
         }
@@ -380,11 +394,8 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
             statement.setArray(1, skuArray(connection, skus));
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
-                    Sku sku = Sku.of(rows.getString("sku"));
-                    levels.put(
-                            sku,
-                            new StockItem(
-                                    sku, rows.getLong("on_hand"), rows.getLong("reserved"), rows.getLong("version")));
+                    StockShard shard = readShard(rows);
+                    levels.computeIfAbsent(shard.sku(), ignored -> new ArrayList<>()).add(shard);
                 }
             }
         }
@@ -446,8 +457,9 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         if (mutation.isInsert()) {
             try (PreparedStatement statement = connection.prepareStatement(INSERT_STOCK)) {
                 statement.setString(1, mutation.sku().value());
-                statement.setLong(2, mutation.onHand());
-                statement.setLong(3, mutation.reserved());
+                statement.setInt(2, mutation.shard());
+                statement.setLong(3, mutation.onHand());
+                statement.setLong(4, mutation.reserved());
                 return statement.executeUpdate() == 1;
             }
         }
@@ -455,7 +467,8 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
             statement.setLong(1, mutation.onHand());
             statement.setLong(2, mutation.reserved());
             statement.setString(3, mutation.sku().value());
-            statement.setLong(4, mutation.expectedVersion());
+            statement.setInt(4, mutation.shard());
+            statement.setLong(5, mutation.expectedVersion());
             return statement.executeUpdate() == 1;
         }
     }
@@ -472,10 +485,11 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
             }
         }
         try (PreparedStatement statement = connection.prepareStatement(INSERT_LINE)) {
-            for (Line line : reservation.lines()) {
+            for (Allocation allocation : reservation.allocations()) {
                 statement.setString(1, reservation.id().value());
-                statement.setString(2, line.sku().value());
-                statement.setLong(3, line.quantity());
+                statement.setString(2, allocation.sku().value());
+                statement.setInt(3, allocation.shard());
+                statement.setLong(4, allocation.quantity());
                 statement.addBatch();
             }
             statement.executeBatch();
@@ -607,7 +621,8 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     @Override
     public Optional<StockItem> stock(Sku sku) {
         try (Connection connection = dataSource.getConnection()) {
-            return Optional.ofNullable(readStock(connection, Set.of(sku)).get(sku));
+            List<StockShard> shards = readStock(connection, Set.of(sku)).get(sku);
+            return shards == null ? Optional.empty() : Optional.of(StockItem.of(sku, shards));
         } catch (SQLException e) {
             throw new LedgerException("reading stock for " + sku, e);
         }
@@ -666,13 +681,26 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     @Override
     public List<StockItem> allStock() {
         try (Connection connection = dataSource.getConnection();
-                PreparedStatement statement =
-                        connection.prepareStatement(
-                                "select sku, on_hand, reserved, version from till_stock order by sku collate \"C\"");
+                PreparedStatement statement = connection.prepareStatement(ALL_STOCK);
                 ResultSet rows = statement.executeQuery()) {
             return readStockRows(rows);
         } catch (SQLException e) {
             throw new LedgerException("scanning stock", e);
+        }
+    }
+
+    @Override
+    public List<StockShard> allShards() {
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(ALL_SHARDS);
+                ResultSet rows = statement.executeQuery()) {
+            List<StockShard> shards = new ArrayList<>();
+            while (rows.next()) {
+                shards.add(readShard(rows));
+            }
+            return shards;
+        } catch (SQLException e) {
+            throw new LedgerException("scanning stock shards", e);
         }
     }
 
@@ -726,7 +754,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         if (rows.isEmpty()) {
             return List.of();
         }
-        Map<ReservationId, List<Line>> lines =
+        Map<ReservationId, List<Allocation>> lines =
                 readLines(connection, rows.stream().map(row -> ReservationId.of(row.id)).toList());
         List<Reservation> reservations = new ArrayList<>(rows.size());
         for (Row row : rows) {
@@ -735,6 +763,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         return reservations;
     }
 
+    /** Levels, from {@link #LEVELS}: one row per SKU, its shards added up. */
     private static List<StockItem> readStockRows(ResultSet rows) throws SQLException {
         List<StockItem> items = new ArrayList<>();
         while (rows.next()) {
@@ -743,9 +772,19 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                             Sku.of(rows.getString("sku")),
                             rows.getLong("on_hand"),
                             rows.getLong("reserved"),
-                            rows.getLong("version")));
+                            rows.getLong("version"),
+                            rows.getInt("shards")));
         }
         return items;
+    }
+
+    private static StockShard readShard(ResultSet rows) throws SQLException {
+        return new StockShard(
+                Sku.of(rows.getString("sku")),
+                rows.getInt("shard"),
+                rows.getLong("on_hand"),
+                rows.getLong("reserved"),
+                rows.getLong("version"));
     }
 
     private static Array skuArray(Connection connection, Set<Sku> skus) throws SQLException {
@@ -777,11 +816,17 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     /** A reservation header, before its lines have been fetched. */
     private record Row(String id, String key, String state, Instant createdAt, Instant expiresAt, long version) {
 
-        private Reservation toReservation(List<Line> lines) {
+        /** The header with its allocations, and the lines they add up to. */
+        private Reservation toReservation(List<Allocation> allocations) {
+            Map<Sku, Long> perSku = new LinkedHashMap<>();
+            allocations.forEach(allocation -> perSku.merge(allocation.sku(), allocation.quantity(), Math::addExact));
+            List<Line> lines = new ArrayList<>();
+            perSku.forEach((sku, quantity) -> lines.add(new Line(sku, quantity)));
             return new Reservation(
                     ReservationId.of(id),
                     IdempotencyKey.of(key),
                     lines,
+                    allocations,
                     ReservationState.valueOf(state),
                     createdAt,
                     expiresAt,

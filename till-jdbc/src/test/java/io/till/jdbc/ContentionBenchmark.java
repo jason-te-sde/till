@@ -55,7 +55,8 @@ import org.junit.jupiter.api.parallel.ResourceLock;
  * <p>Each caller checks out one unit of a SKU chosen at random — a reservation, then its commit or,
  * one time in ten, its release — as the load test's shoppers do, with stock enough that nobody is
  * refused. {@code -Dbench.callers}, {@code bench.pool}, {@code bench.skus}, {@code bench.seconds} and
- * {@code bench.warmup} change the shape.
+ * {@code bench.warmup} change the shape, and {@code bench.shards} splits every SKU that many ways
+ * before the run (ADR 9).
  */
 @EnabledIfSystemProperty(named = "till.benchmark", matches = "true")
 @ResourceLock("till-database")
@@ -71,6 +72,7 @@ class ContentionBenchmark {
         int skuCount = Integer.getInteger("bench.skus", 32);
         int seconds = Integer.getInteger("bench.seconds", 30);
         int warmup = Integer.getInteger("bench.warmup", 5);
+        int shards = Integer.getInteger("bench.shards", 1);
 
         PostgresFixture.dataSource();
         PostgresFixture.reset();
@@ -88,6 +90,9 @@ class ContentionBenchmark {
                 Sku sku = Sku.of("game-" + i);
                 skus.add(sku);
                 till.adjust(IdempotencyKey.of("stock-" + i), sku, 100_000_000);
+                if (shards > 1) {
+                    till.shard(IdempotencyKey.of("split-" + i), sku, shards);
+                }
             }
 
             AtomicLong serial = new AtomicLong();
@@ -148,8 +153,8 @@ class ContentionBenchmark {
             long[] all = latencies.stream().flatMapToLong(f -> Arrays.stream(join(f))).sorted().toArray();
             double perSecond = checkouts.sum() / (double) seconds;
             double commands = ledger.decided.sum();
-            System.out.printf(Locale.ROOT, "%nContention: %d callers, %d connections, %d SKUs, %d s measured after %d s%n",
-                    callers, poolSize, skuCount, seconds, warmup);
+            System.out.printf(Locale.ROOT, "%nContention: %d callers, %d connections, %d SKUs in %d shards each, %d s measured after %d s%n",
+                    callers, poolSize, skuCount, shards, seconds, warmup);
             System.out.printf(Locale.ROOT, "  checkouts           %,d (%.1f a second)%n", checkouts.sum(), perSecond);
             System.out.printf(Locale.ROOT, "  checkout latency    p50 %.1f ms, p99 %.1f ms%n", percentile(all, 0.50), percentile(all, 0.99));
             System.out.printf(Locale.ROOT, "  gave up (conflicts) %,d%n", exhausted.sum());
