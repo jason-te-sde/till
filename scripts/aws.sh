@@ -174,7 +174,10 @@ cmd_up() {
   else
     say "Starting till at $tag: forty minutes or so, nearly all of it CloudFront"
   fi
-  apply infra "Start it? From here it costs about \$$hourly an hour, until scripts/aws.sh down." "${vars[@]}"
+  # A new deadline for the safety net with every up (infra/runtime/auto-stop.tf); the plan after the
+  # apply leaves it alone, so it is not a change that never settles.
+  apply infra "Start it? From here it costs about \$$hourly an hour, until scripts/aws.sh down." "${vars[@]}" \
+    -replace='module.runtime[0].time_offset.auto_stop'
 
   # A configuration AWS does not read back the way it was written is one every apply changes
   # again, and a replacement can take running tasks with it (infra/runtime/discovery.tf). So an
@@ -194,6 +197,7 @@ cmd_up() {
     *) fail "Terraform could not plan after applying." ;;
   esac
   echo
+  echo "The safety net scales every service to zero at $(output auto_stop_at) unless up runs again before then."
   if [[ $loadtest == true ]]; then
     echo "About \$$hourly an hour from now on. scripts/aws.sh loadtest --shoppers=100 --ramp=20s --hold=1m to try it;"
     echo "scripts/aws.sh loadtest for the protocol's run; scripts/aws.sh down to stop."
@@ -280,6 +284,8 @@ cmd_status() {
     --query "Namespaces[?Name=='till.internal'].Name"
   probe "ECS services, running" ecs describe-services --cluster till --services kafka ledger store edge idp --output text \
     --query "services[?status=='ACTIVE'].join(':', [serviceName, to_string(runningCount)])"
+  probe "safety net" scheduler get-schedule --name till-stop-store --output text \
+    --query "join('', ['scales to zero at ', ScheduleExpression, ' UTC'])"
   probe "load generator tasks" ecs list-tasks --cluster till --family till-loadgen --output text \
     --query "length(taskArns) > \`0\` && to_string(length(taskArns)) || ''"
 

@@ -102,6 +102,15 @@ variable "demo" {
   type = bool
 }
 
+variable "auto_stop_role_arn" {
+  description = "The role EventBridge Scheduler scales the services to zero with (roles.tf)."
+  type        = string
+}
+
+variable "auto_stop_hours" {
+  type = number
+}
+
 variable "db_pool" {
   type = object({
     store  = number

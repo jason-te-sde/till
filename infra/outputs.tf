@@ -23,6 +23,11 @@ output "distribution_id" {
   value       = one(module.runtime[*].distribution_id)
 }
 
+output "auto_stop_at" {
+  description = "When the safety net scales every service to zero, unless `scripts/aws.sh up` runs again first."
+  value       = one(module.runtime[*].auto_stop_at)
+}
+
 output "load_balancer" {
   description = "The internal load balancer, while it is running: where a load test's shoppers arrive."
   value       = one(module.runtime[*].load_balancer)
