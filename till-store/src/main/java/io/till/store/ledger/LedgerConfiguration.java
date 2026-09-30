@@ -32,6 +32,7 @@ class LedgerConfiguration {
         return TillClient.builder(till.baseUrl())
                 .token(token.isBlank() ? null : token)
                 .timeout(till.timeout())
+                .deadline(till.deadline())
                 .build();
     }
 }

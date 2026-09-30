@@ -42,6 +42,13 @@ import org.slf4j.LoggerFactory;
  * <p>Backoff lives here rather than in the service, because a service that slept would be holding a
  * thread and a connection while it did.
  *
+ * <p><b>A deadline bounds the whole call.</b> Without one, a service that has stopped answering costs
+ * every attempt its full timeout, and the backoffs between them: four attempts at five seconds is a
+ * customer waiting twenty, which is what the fourth load test's slowest checkouts were
+ * (docs/load-test.md). With one, each attempt is given only what is left of it, a backoff that would
+ * outlast it is not waited, and the call gives up when it runs out. So a quick 503 is still retried,
+ * and a slow answer is not waited for twice.
+ *
  * <p>When the attempts run out, what is thrown depends on what happened. A 503 on the last attempt
  * becomes a {@link TillApiException} carrying that status, because the service answered and the
  * caller should be told what it said. Only a request that never got an answer at all becomes an
@@ -61,6 +68,7 @@ public final class TillClient {
     private final URI base;
     private final String token;
     private final Duration timeout;
+    private final Duration deadline;
     private final int maxAttempts;
     private final Duration backoff;
     private final Random jitter;
@@ -74,6 +82,7 @@ public final class TillClient {
         this.base = builder.base;
         this.token = builder.token;
         this.timeout = builder.timeout;
+        this.deadline = builder.deadline;
         this.maxAttempts = builder.maxAttempts;
         this.backoff = builder.backoff;
         this.jitter = new Random();
@@ -311,47 +320,72 @@ public final class TillClient {
     }
 
     private Map<String, Object> post(String path, IdempotencyKey key, String body) {
+        URI uri = base.resolve(path);
         HttpRequest.Builder request =
-                HttpRequest.newBuilder(base.resolve(path))
-                        .timeout(timeout)
+                HttpRequest.newBuilder(uri)
                         .header("Idempotency-Key", key.value())
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(body));
-        return send(request);
+        return send(uri, request);
     }
 
     private Map<String, Object> get(String path) {
-        return send(HttpRequest.newBuilder(base.resolve(path)).timeout(timeout).GET());
+        URI uri = base.resolve(path);
+        return send(uri, HttpRequest.newBuilder(uri).GET());
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> send(HttpRequest.Builder builder) {
+    private Map<String, Object> send(URI uri, HttpRequest.Builder builder) {
         if (token != null) {
             builder.header("Authorization", "Bearer " + token);
         }
-        HttpRequest request = builder.build();
+        long started = System.nanoTime();
 
+        // What the last attempt got: an answer telling it to retry, or no answer at all.
+        HttpResponse<String> toldToRetry = null;
         IOException lastFailure = null;
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            if (attempt > 1) {
-                sleep(attempt);
+        int attempt = 0;
+        while (attempt < maxAttempts) {
+            if (attempt > 0) {
+                Duration pause = pause(attempt + 1);
+                if (deadline != null && pause.compareTo(left(started)) >= 0) {
+                    // Waiting would use up the rest of the deadline, and the caller is better off
+                    // hearing now what the last attempt was told.
+                    break;
+                }
+                sleep(pause);
             }
+            Duration budget = timeout;
+            if (deadline != null) {
+                Duration left = left(started);
+                if (left.isZero()) {
+                    break;
+                }
+                if (left.compareTo(budget) < 0) {
+                    budget = left;
+                }
+            }
+            attempt++;
+            HttpRequest request = builder.timeout(budget).build();
             HttpResponse<String> response;
             try {
                 response = http.send(request, HttpResponse.BodyHandlers.ofString());
             } catch (IOException e) {
                 // The request may have arrived, been applied, and had its answer lost. Retrying is
                 // safe only because the idempotency key goes with it.
-                LOG.debug("attempt {} of {} to {} failed", attempt, maxAttempts, request.uri(), e);
+                LOG.debug("attempt {} of {} to {} failed", attempt, maxAttempts, uri, e);
+                toldToRetry = null;
                 lastFailure = e;
                 continue;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new IllegalStateException("interrupted calling " + request.uri(), e);
+                throw new IllegalStateException("interrupted calling " + uri, e);
             }
 
-            if (response.statusCode() == 503 && attempt < maxAttempts) {
-                LOG.debug("attempt {} of {} to {} was told to retry", attempt, maxAttempts, request.uri());
+            if (response.statusCode() == 503) {
+                LOG.debug("attempt {} of {} to {} was told to retry", attempt, maxAttempts, uri);
+                toldToRetry = response;
+                lastFailure = null;
                 continue;
             }
             if (response.statusCode() >= 400) {
@@ -362,13 +396,23 @@ public final class TillClient {
             }
             Object parsed = Json.parse(response.body());
             if (!(parsed instanceof Map)) {
-                throw new IllegalStateException("expected a JSON object from " + request.uri() + ", got: " + parsed);
+                throw new IllegalStateException("expected a JSON object from " + uri + ", got: " + parsed);
             }
             return (Map<String, Object>) parsed;
         }
+        if (toldToRetry != null) {
+            throw problem(toldToRetry);
+        }
+        String within = deadline == null ? "" : " in " + Duration.ofNanos(System.nanoTime() - started).toMillis() + " ms";
         throw new UncheckedIOException(
-                "gave up calling " + request.uri() + " after " + maxAttempts + " attempts",
-                lastFailure != null ? lastFailure : new IOException("the service kept asking for a retry"));
+                "gave up calling " + uri + " after " + attempt + (attempt == 1 ? " attempt" : " attempts") + within,
+                lastFailure != null ? lastFailure : new IOException("the deadline passed before an attempt could be made"));
+    }
+
+    /** What is left of the deadline; never negative. */
+    private Duration left(long started) {
+        Duration left = deadline.minusNanos(System.nanoTime() - started);
+        return left.isNegative() ? Duration.ZERO : left;
     }
 
     @SuppressWarnings("unchecked")
@@ -401,11 +445,15 @@ public final class TillClient {
         return new TillApiException(response.statusCode(), code, detail, shortfalls);
     }
 
-    private void sleep(int attempt) {
+    /** The wait before an attempt: the backoff, doubled for each attempt after the second, with jitter. */
+    private Duration pause(int attempt) {
         long millis = backoff.toMillis() * (1L << (attempt - 2));
-        long withJitter = millis / 2 + jitter.nextLong(Math.max(1, millis));
+        return Duration.ofMillis(millis / 2 + jitter.nextLong(Math.max(1, millis)));
+    }
+
+    private static void sleep(Duration pause) {
         try {
-            Thread.sleep(withJitter);
+            Thread.sleep(pause);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("interrupted while backing off", e);
@@ -467,6 +515,7 @@ public final class TillClient {
         private final URI base;
         private String token;
         private Duration timeout = Duration.ofSeconds(10);
+        private Duration deadline;
         private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
         private Duration backoff = Duration.ofMillis(100);
 
@@ -489,13 +538,31 @@ public final class TillClient {
         }
 
         /**
-         * Sets the connect and request timeout.
+         * Sets the connect and request timeout of one attempt.
          *
          * @param value the timeout
          * @return this builder
          */
         public Builder timeout(Duration value) {
             this.timeout = value;
+            return this;
+        }
+
+        /**
+         * Sets the longest a call may take in all: every attempt, and every wait between them.
+         *
+         * <p>Each attempt is given the smaller of its timeout and what is left, a backoff that would
+         * outlast what is left is not waited, and the call gives up when nothing is. Without one, a
+         * call can take {@code maxAttempts} timeouts and the backoffs between them.
+         *
+         * @param value the deadline, or null for none
+         * @return this builder
+         */
+        public Builder deadline(Duration value) {
+            if (value != null && (value.isZero() || value.isNegative())) {
+                throw new IllegalArgumentException("a deadline must be positive, got " + value);
+            }
+            this.deadline = value;
             return this;
         }
 
