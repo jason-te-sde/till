@@ -140,6 +140,90 @@ class TillTest {
     }
 
     @Test
+    @DisplayName("a command with stock to spare leaves the expired holds to the sweeper")
+    void plentyLeavesExpiredHoldsAlone() {
+        InMemoryLedger ledger = new InMemoryLedger();
+        SteppingClock clock = new SteppingClock(T0);
+        RecordingLedger recording = new RecordingLedger(ledger);
+        Till till = Till.builder(recording).clock(clock).build();
+        seed(ledger, 10);
+        till.reserve(key("k1"), rid("abandoned"), List.of(line("widget", 3)), TTL);
+        clock.advance(TTL.plusSeconds(1));
+        recording.limits.clear();
+
+        Outcome outcome = till.reserve(key("k2"), rid("r2"), List.of(line("widget", 3)), TTL);
+
+        assertInstanceOf(Outcome.Reserved.class, outcome);
+        assertEquals(List.of(0), recording.limits, "one load, without the expired holds");
+        assertEquals(ReservationState.HELD, ledger.reservation(rid("abandoned")).orElseThrow().state(), "left for the sweeper");
+    }
+
+    @Test
+    @DisplayName("a command short of stock writes off the expired holds in its way, and succeeds")
+    void shortfallReclaims() {
+        InMemoryLedger ledger = new InMemoryLedger();
+        SteppingClock clock = new SteppingClock(T0);
+        RecordingLedger recording = new RecordingLedger(ledger);
+        Till till = Till.builder(recording).clock(clock).build();
+        seed(ledger, 10);
+        till.reserve(key("k1"), rid("abandoned"), List.of(line("widget", 10)), TTL);
+        clock.advance(TTL.plusSeconds(1));
+        recording.limits.clear();
+
+        Outcome outcome = till.reserve(key("k2"), rid("r2"), List.of(line("widget", 4)), TTL);
+
+        assertInstanceOf(Outcome.Reserved.class, outcome, "never refused while an expired hold was in the way");
+        assertEquals(List.of(0, Till.DEFAULT_RECLAIM_LIMIT), recording.limits, "a lean load, then one with the expired holds");
+        assertEquals(ReservationState.EXPIRED, ledger.reservation(rid("abandoned")).orElseThrow().state());
+        assertEquals(4, ledger.stock(sku("widget")).orElseThrow().reserved());
+    }
+
+    @Test
+    @DisplayName("a shortfall the expired holds cannot make up is still refused")
+    void shortfallBeyondTheExpiredHolds() {
+        InMemoryLedger ledger = new InMemoryLedger();
+        SteppingClock clock = new SteppingClock(T0);
+        Till till = Till.builder(ledger).clock(clock).build();
+        seed(ledger, 10);
+        till.reserve(key("k1"), rid("abandoned"), List.of(line("widget", 3)), TTL);
+        clock.advance(TTL.plusSeconds(1));
+
+        Outcome outcome = till.reserve(key("k2"), rid("r2"), List.of(line("widget", 11)), TTL);
+
+        Outcome.Rejected rejected = assertInstanceOf(Outcome.Rejected.class, outcome);
+        assertEquals(RejectionCode.INSUFFICIENT_STOCK, rejected.code());
+    }
+
+    @Test
+    @DisplayName("a sweep brings as many expired holds as it may write off, whatever a passing command's limit")
+    void sweepUsesItsOwnLimit() {
+        InMemoryLedger ledger = new InMemoryLedger();
+        SteppingClock clock = new SteppingClock(T0);
+        Till till = Till.builder(ledger).clock(clock).reclaimLimit(2).build();
+        seed(ledger, 100);
+        for (int i = 0; i < 5; i++) {
+            till.reserve(key("k" + i), rid("abandoned-" + i), List.of(line("widget", 1)), TTL);
+        }
+        clock.advance(TTL.plusSeconds(1));
+
+        assertEquals(5, till.sweep(10), "all five, not the two a passing command would write off");
+        assertEquals(0, Till.builder(ledger).clock(clock).reclaimLimit(0).build().sweep(10), "and none left over");
+    }
+
+    @Test
+    @DisplayName("with reclaiming turned off, a sweep still sweeps")
+    void sweepWithReclaimingOff() {
+        InMemoryLedger ledger = new InMemoryLedger();
+        SteppingClock clock = new SteppingClock(T0);
+        Till till = Till.builder(ledger).clock(clock).reclaimLimit(0).build();
+        seed(ledger, 10);
+        till.reserve(key("k1"), rid("abandoned"), List.of(line("widget", 3)), TTL);
+        clock.advance(TTL.plusSeconds(1));
+
+        assertEquals(1, till.sweep(10));
+    }
+
+    @Test
     @DisplayName("a bad configuration is refused when the till is built, not when it is used")
     void refusesBadConfiguration() {
         assertThrows(IllegalArgumentException.class, () -> Till.builder(new InMemoryLedger()).maxAttempts(0).build());
@@ -201,6 +285,27 @@ class TillTest {
         @Override
         public boolean apply(Decision decision) {
             return attempts.incrementAndGet() > refusals && delegate.apply(decision);
+        }
+    }
+
+    /** Records the reclaim limit of every load, so a test can see which snapshot a decision had. */
+    private static final class RecordingLedger implements Ledger {
+        private final Ledger delegate;
+        private final List<Integer> limits = new java.util.ArrayList<>();
+
+        private RecordingLedger(Ledger delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Snapshot load(Command command, Instant now, int reclaimLimit) {
+            limits.add(reclaimLimit);
+            return delegate.load(command, now, reclaimLimit);
+        }
+
+        @Override
+        public boolean apply(Decision decision) {
+            return delegate.apply(decision);
         }
     }
 

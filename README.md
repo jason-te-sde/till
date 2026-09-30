@@ -338,12 +338,16 @@ sequenceDiagram
     participant D as PostgreSQL
 
     C->>T: reserve(key, lines, ttl)
-    T->>D: read: record? reservation? expired holds? stock
+    T->>D: read: record? reservation? stock
     Note over D: one read-only repeatable-read transaction,<br/>because a snapshot has to be one instant
     D-->>T: Snapshot
     T->>K: decide(snapshot, command, now)
-    Note over K: reclaim expired holds, check availability,<br/>all lines or none
+    Note over K: check availability, all lines or none
     K-->>T: Decision
+    opt short of stock
+        T->>D: read again, with the expired holds in the way
+        T->>K: decide again: write them off, check availability
+    end
     T->>D: one transaction: stock, reservation, events, record
     Note over D: every statement carries the version it expects.<br/>If one moved, nothing is written
     D-->>T: applied
@@ -436,7 +440,7 @@ because the alternative is a client that retried a timeout being told "out of st
 | Holds with a deadline | all-or-nothing across SKUs, with every shortfall reported rather than the first |
 | Commit, release, expire | committing lowers on-hand and reserved; releasing and expiring lower only reserved |
 | Deadlines over stored state | a hold past its deadline is expired whether or not anything wrote that down, so the sweeper is an optimisation and never a requirement |
-| Reclaim on demand | every command writes off the expired holds standing in its way, scoped to the SKUs it is about |
+| Reclaim on demand | a command that would be short of stock writes off the expired holds standing in its way, scoped to its SKUs, and decides again; one with stock to spare leaves them to the sweeper |
 | Idempotency | keyed by the caller, with a fingerprint that ignores the server-minted id and the line order |
 | Optimistic concurrency | a version per row, no locks, no backoff, bounded attempts |
 | Transactional outbox | events in the same transaction as the change, delivered at least once, with stable deduplication keys |
@@ -468,11 +472,11 @@ produced it.
 
 | | |
 | --- | --- |
-| Tests | **530** — 451 Java (one of them the soak, off by default), 74 storefront, 5 end-to-end against the whole stack |
+| Tests | **551** — 472 Java (one of them the soak, off by default), 74 storefront, 5 end-to-end against the whole stack |
 | Coverage | **88.2% / 79.1%** lines / branches on the Java, **87.4% / 77.8%** on the storefront |
 | `mvn verify`, whole reactor | **about a minute**, including the store's PostgreSQL, Redis and Kafka containers |
-| Simulation throughput | **79,416 steps/s** |
-| Soak | 10,000 seeds, **30,216,914 invariant checks**, 4,812,844 conflicts, 4,301,575 answers, **381s**, zero violations |
+| Simulation throughput | **82,895 steps/s** |
+| Soak | 10,000 seeds, **30,237,034 invariant checks**, 4,868,127 conflicts, 4,086,731 answers, **365s**, zero violations |
 | Real threads, real PostgreSQL | 200 callers, 20 units, **exactly 20 sales** |
 | The whole stack, from `up` to healthy | **about 25 s** once the images are built |
 | Sign in, hold, pay | **8 s** end to end in a real browser, including Keycloak's login page |

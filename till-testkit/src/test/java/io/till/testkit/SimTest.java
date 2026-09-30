@@ -62,6 +62,7 @@ class SimTest {
         assertTrue(report.sweeps() > 5, "the sweeper never ran: " + report.summary());
         assertTrue(report.committed() > 5, "nothing was ever sold: " + report.summary());
         assertTrue(report.outOfStock() > 0, "the SKUs never ran out: " + report.summary());
+        assertTrue(report.reloads() > 0, "no command ever came up short with expired holds in its way: " + report.summary());
     }
 
     @Test

@@ -103,15 +103,16 @@ throwing that away would mean discovering it again on the next command.
 ```java
 for (int attempt = 1; attempt <= maxAttempts; attempt++) {
     Instant now = clock.instant().truncatedTo(MICROS);
-    Snapshot snapshot = ledger.load(command, now, reclaimLimit);
-    Decision decision = Kernel.decide(snapshot, command, now);
+    Decision decision = Kernel.decide(ledger.load(command, now, 0), command, now);
+    if (decision.outcome() is Rejected(INSUFFICIENT_STOCK))                 // short: only now
+        decision = Kernel.decide(ledger.load(command, now, reclaimLimit), command, now);
     if (!decision.writes()) return decision.outcome();   // a replay, or an empty sweep
     if (ledger.apply(decision)) return decision.outcome();
 }
 throw new ConflictException(command, maxAttempts);
 ```
 
-Four lines, and each of them is load-bearing.
+Each line is load-bearing. The second load is the newest: see below.
 
 **Optimistic, not locked.** The contended case in a flash sale is thousands of callers on one SKU,
 and a row lock turns that into a queue whose length is everyone's latency. Nothing is held between
@@ -172,8 +173,9 @@ A hold past its deadline is expired **whether or not anything has written that d
 answer to "may this commit?" depend on whether a background job happened to have run, which is not a
 property a caller can reason about and not one a test can reproduce.
 
-So `Reservation.effectiveState(now)` is the truth and the stored state is a cache of it. Every command
-writes off the expired holds standing in its way as it passes, which means:
+So `Reservation.effectiveState(now)` is the truth and the stored state is a cache of it. A command
+that would be short of stock writes off the expired holds standing in its way and decides again,
+which means:
 
 - The sweeper returns stock to `available` sooner. It never makes a wrong answer right.
 - Turning the sweeper off makes stock come back later, never never.
@@ -181,6 +183,14 @@ writes off the expired holds standing in its way as it passes, which means:
 
 The reclaim is scoped to the SKUs the command is about. Writing off an unrelated hold would touch a
 row the command has no reason to touch and turn an unrelated caller's commit into a conflict.
+
+Until the load tests, every command wrote them off, short or not. At eight thousand shoppers that
+was where the database's time went: the commands on one SKU all loaded the same expired holds, all
+tried to write them off, and all but one lost the race and started again, once per attempt
+([`docs/load-test.md`](load-test.md)). Now a command with stock to spare is decided on a snapshot
+without them — they could not change its answer — and leaves them to the sweeper, which drains a
+backlog in one run. Only a shortfall loads them. The simulator takes the same two steps, with other
+callers free to move between them, and counts how often the second one happened.
 
 ## Threads
 

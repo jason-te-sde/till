@@ -43,7 +43,7 @@ public final class Till {
     /** Attempts before a command gives up, unless configured otherwise. */
     public static final int DEFAULT_MAX_ATTEMPTS = 8;
 
-    /** Expired holds a command will write off while it is passing, unless configured otherwise. */
+    /** Expired holds a command short of stock will write off first, unless configured otherwise. */
     public static final int DEFAULT_RECLAIM_LIMIT = 32;
 
     private final Ledger ledger;
@@ -102,8 +102,7 @@ public final class Till {
             // different. A deadline that moves by 400 nanoseconds between writing and reading is
             // harmless; a recorded outcome that no longer equals the one that was returned is not.
             Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
-            Snapshot snapshot = ledger.load(command, now, reclaimLimit);
-            Decision decision = Kernel.decide(snapshot, command, now);
+            Decision decision = decide(command, now);
 
             // A replay, or a sweep that found nothing. There is nothing to write, so there is
             // nothing to conflict on and no transaction worth opening.
@@ -116,6 +115,39 @@ public final class Till {
             LOG.debug("conflict applying {} on attempt {} of {}", command, attempt, maxAttempts);
         }
         throw new ConflictException(command, maxAttempts);
+    }
+
+    /**
+     * Decides without the expired holds first, and again with them only if they could change the
+     * answer.
+     *
+     * <p>A hold whose deadline has passed still counts against its stock until something writes it
+     * off, and a reservation refused for want of stock while one does would be wrong — so the kernel
+     * writes off whatever expired holds the snapshot brings, before every command. Bringing them to
+     * every command was the expensive part. Under load the commands on one SKU all found the same
+     * expired holds, all tried to write them off, and all but one lost the race and started again:
+     * the first load tests spent most of the database's time on exactly that.
+     *
+     * <p>So a command is decided on a snapshot without them. When that decision is anything but a
+     * refusal for want of stock, the expired holds could not have changed it, and it stands; they
+     * are left to the sweeper. Only a shortfall loads them and decides again — the one case they can
+     * change, and a rare one while there is stock to sell.
+     */
+    private Decision decide(Command command, Instant now) {
+        if (command instanceof Command.Sweep sweep) {
+            // As many as the sweep may write off: its own limit, not a passing command's. Loading
+            // the passing command's limit capped every sweep at 32 whatever its batch, and at none
+            // with reclaiming turned off — which is when it is the only thing left doing it.
+            return Kernel.decide(ledger.load(command, now, sweep.limit()), command, now);
+        }
+        if (reclaimLimit == 0) {
+            return Kernel.decide(ledger.load(command, now, 0), command, now);
+        }
+        Decision lean = Kernel.decide(ledger.load(command, now, 0), command, now);
+        if (lean.outcome() instanceof Outcome.Rejected rejected && rejected.code() == RejectionCode.INSUFFICIENT_STOCK) {
+            return Kernel.decide(ledger.load(command, now, reclaimLimit), command, now);
+        }
+        return lean;
     }
 
     /**
@@ -224,11 +256,12 @@ public final class Till {
         }
 
         /**
-         * Sets how many expired holds a passing command will write off.
+         * Sets how many expired holds a command that would otherwise be short of stock writes off
+         * first. A command with stock to spare writes off none: see {@code decide}.
          *
-         * <p>Higher returns stock to {@code available} faster under load and makes each decision
-         * touch more rows, which makes conflicts more likely. Zero turns the behaviour off and
-         * leaves reclaiming entirely to {@link Till#sweep}.
+         * <p>Higher lets a short command find more of the stock that expired holds are sitting on,
+         * and makes that decision touch more rows. Zero turns the behaviour off and leaves
+         * reclaiming entirely to {@link Till#sweep}.
          *
          * @param value at least 0
          * @return this builder

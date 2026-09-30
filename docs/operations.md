@@ -246,14 +246,16 @@ A forged one misdirects nobody's sign-in but the forger's.
 | Setting | Default | What raising it costs |
 | --- | --- | --- |
 | `till.max-attempts` | 8 | tail latency under contention, in exchange for fewer 503s |
-| `till.reclaim-limit` | 32 | each decision touches more rows, so conflicts get likelier, in exchange for expired stock coming back sooner |
+| `till.reclaim-limit` | 32 | how many expired holds a command short of stock writes off before deciding again. A command with stock to spare writes off none; `0` leaves them all to the sweeper |
 | `till.default-ttl` | 15m | nothing technical; a longer hold is a customer holding stock somebody else would have bought |
 | `till.max-ttl` | 24h | the same, with less of a bound |
 | `till.sweeper.interval` | 5s | almost nothing. The sweep is cheap and indexed |
 | `till.sweeper.batch` | 200 | a longer transaction per sweep, and more conflicts with live traffic |
+| `till.sweeper.passes` | 10 | batches a run while each comes back full. The sweeper is what writes off abandoned holds now, so it has to keep up: 2,000 every five seconds here |
 | `till.outbox.interval` | 1s | how stale the downstream view is allowed to be |
 | `till.outbox.batch` | 200 | a larger batch to redeliver when a publish fails |
 | `spring.datasource.hikari.maximum-pool-size` | 16 | PostgreSQL sessions. The useful shape of overload is a queue in front of the pool, not a thousand sessions fighting over the same rows |
+| `spring.datasource.hikari.connection-timeout` | 2000 ms | how long a command may queue for a connection before it is refused. Longer than the caller waits (the store: five seconds) is work done for nobody — in a load test, holds nobody would pay for |
 
 **Contention on a single SKU is the case worth thinking about.** A thousand callers on one row will
 produce retries; that is the design working, and the levers are `max-attempts` (how long a caller
@@ -364,7 +366,7 @@ There is one migration so far, so this is advice rather than experience.
 | 503s with `"code":"CONTENTION"` | contention, not an outage. `till_outcome_total{outcome="exhausted"}`, then how many callers are on one SKU. Raise `till.max-attempts` |
 | 503 `"Ledger unavailable"` | the database. The readiness probe will already be failing |
 | 422 `IDEMPOTENCY_KEY_REUSED` | a client is reusing a key for a different body. Usually a key derived from something not unique per request — a cart id rather than a checkout attempt |
-| `available` lower than it should be | expired holds not yet written off. Check `till_sweeper_failures_total`; the next command touching those SKUs will reclaim them anyway |
+| `available` lower than it should be | expired holds not yet written off. Check `till_sweeper_failures_total`; the next command short of stock on those SKUs will reclaim them anyway |
 | Refuses to start, "refusing to listen on" | no token and a reachable address. Set `till.auth.client-token` |
 | Signing in lands back on the store with "Sign-in didn't complete" | the provider refused. In order: the redirect URI registered at the provider matches `https://<host>/login/oauth2/code/idp` exactly; the proxy passes `X-Forwarded-Proto` and `-Host`; the issuer the store is configured with is the one in the tokens; the store's clock is right |
 | 403 with `"code":"CSRF"` | a write without a matching `X-XSRF-TOKEN`. Almost always a tab left open across a session that has since ended; a reload fixes it |

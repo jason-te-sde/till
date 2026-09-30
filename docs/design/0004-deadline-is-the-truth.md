@@ -38,6 +38,12 @@ to touch and turn an unrelated caller's commit into a conflict.
 The sweeper therefore **returns stock to `available` sooner and never makes a wrong answer right**.
 Turning it off makes stock come back later, never never.
 
+*Later:* "every command" became "every command that would otherwise be short". The load tests
+found commands with stock to spare all racing to write off the same expired holds, which could not
+have changed their answers; such a command is now decided without them, and a shortfall loads them
+and decides again. The guarantee above — never refused while an expired hold sits on the stock — is
+the same ([`architecture.md`](../architecture.md), "Deadlines, and why the sweeper is optional").
+
 ## Consequences
 
 Correctness does not depend on a scheduler. That is the whole point, and it also means the sweeper

@@ -16,6 +16,10 @@ spring:
       # a queue in front of the pool rather than a thousand sessions fighting over the same rows.
       maximum-pool-size: ${TILL_DB_POOL:16}
       pool-name: till
+      # How long a command waits for a connection before it is refused. Hikari's default is thirty
+      # seconds; the store gives up on the ledger after five, and a command still queued after that
+      # is a hold nobody will pay for (docs/load-test.md). Milliseconds.
+      connection-timeout: ${TILL_DB_CONNECTION_TIMEOUT:2000}
   flyway:
     enabled: true
     # Ships inside till-jdbc, so the schema and the code that expects it are versioned together.
@@ -81,6 +85,9 @@ till:
     enabled: true
     interval: 5s
     batch: 200
+    # Batches a run while each comes back full. Commands with stock to spare leave expired holds to
+    # this, so it has to keep up with abandoned checkouts: up to 2,000 every five seconds here.
+    passes: 10
   outbox:
     enabled: true
     interval: 1s
