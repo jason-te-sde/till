@@ -479,3 +479,51 @@ jobs:
           done
       - name: the scripts pass shellcheck
         run: shellcheck scripts/*.sh
+      - name: the load test's scenario parses
+        run: docker run --rm -v "$PWD/till-loadtest/k6:/k6:ro" grafana/k6:2.3.0 inspect /k6/shopper.js > /dev/null
+
+  loadtest:
+    name: the load test runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+
+      - name: build the images
+        uses: docker/bake-action@v6
+        with:
+          source: .
+          files: |
+            docker-compose.yml
+            till-loadtest/compose.yml
+          load: true
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
+
+      - name: bring the stack up the way the load test runs it
+        run: docker compose -f docker-compose.yml -f till-loadtest/compose.yml up -d --wait
+
+      # Not a measurement: a runner's number says nothing about the platform's (docs/load-test.md).
+      # What it proves is that the scenario still works from end to end — signing in against the
+      # stand-in, ordering, paying — with every response the expected one. Half the shoppers check
+      # out, so that a thirty-second run is sure to sign some in.
+      - name: a short run
+        env:
+          SHOPPERS: "20"
+          RAMP: 10s
+          HOLD: 30s
+          RAMP_DOWN: 5s
+          CHECKOUT_SHARE: "0.5"
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml -f till-loadtest/compose.yml run --rm k6 | tee /tmp/k6.log
+          result=$(grep '^RESULT ' /tmp/k6.log | cut -c8-)
+          test -n "$result"
+          jq -e '.unexpected_rate == 0 and .per_second.sign_ins > 0 and .per_second.orders_placed > 0
+                 and .per_second.orders_paid > 0' <<< "$result" > /dev/null
+
+      - name: tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f till-loadtest/compose.yml down -v

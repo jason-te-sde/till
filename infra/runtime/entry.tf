@@ -4,6 +4,10 @@
 # reaches the load balancer over the VPC origin: a network interface CloudFront places in the private
 # subnets, so the load balancer has no public address and no path from the internet but this one.
 # That is what lets the edge believe CloudFront-Viewer-Address from anything in the VPC's range.
+#
+# For a load test there is no CloudFront at all (docs/load-test.md): the load generator reaches the
+# load balancer from inside the VPC, and leaving out the VPC origin and the distribution also leaves
+# out half an hour of every start.
 
 resource "aws_lb" "edge" {
   name               = "till"
@@ -49,6 +53,8 @@ resource "aws_lb_listener" "edge" {
 }
 
 resource "aws_cloudfront_vpc_origin" "edge" {
+  count = var.loadtest ? 0 : 1
+
   vpc_origin_endpoint_config {
     name                   = "till-edge"
     arn                    = aws_lb.edge.arn
@@ -80,6 +86,8 @@ data "aws_cloudfront_origin_request_policy" "all_viewer" {
 # The one header the edge cannot set for itself: it answers plain HTTP, and only CloudFront knows the
 # viewer is on HTTPS. The edge sets every other security header.
 resource "aws_cloudfront_response_headers_policy" "hsts" {
+  count = var.loadtest ? 0 : 1
+
   name    = "till-hsts"
   comment = "Strict-Transport-Security; the edge sets the rest"
 
@@ -94,6 +102,8 @@ resource "aws_cloudfront_response_headers_policy" "hsts" {
 }
 
 resource "aws_cloudfront_distribution" "till" {
+  count = var.loadtest ? 0 : 1
+
   enabled         = true
   comment         = "till"
   http_version    = "http2and3"
@@ -105,7 +115,7 @@ resource "aws_cloudfront_distribution" "till" {
     domain_name = aws_lb.edge.dns_name
 
     vpc_origin_config {
-      vpc_origin_id            = aws_cloudfront_vpc_origin.edge.id
+      vpc_origin_id            = aws_cloudfront_vpc_origin.edge[0].id
       origin_read_timeout      = 30
       origin_keepalive_timeout = 5
     }
@@ -120,7 +130,7 @@ resource "aws_cloudfront_distribution" "till" {
     cached_methods             = ["GET", "HEAD"]
     cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
     origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer.id
-    response_headers_policy_id = aws_cloudfront_response_headers_policy.hsts.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.hsts[0].id
   }
 
   # The storefront's bundles, whose names change with their content: cached at CloudFront for as
@@ -132,7 +142,7 @@ resource "aws_cloudfront_distribution" "till" {
     allowed_methods            = ["GET", "HEAD"]
     cached_methods             = ["GET", "HEAD"]
     cache_policy_id            = data.aws_cloudfront_cache_policy.optimized.id
-    response_headers_policy_id = aws_cloudfront_response_headers_policy.hsts.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.hsts[0].id
     compress                   = true
   }
 

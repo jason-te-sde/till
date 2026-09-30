@@ -29,9 +29,10 @@ module "runtime" {
   log_groups         = { for name, group in aws_cloudwatch_log_group.service : name => group.name }
 
   images = {
-    runtime = "${local.registry}/till/runtime:${var.image_tag}"
-    edge    = "${local.registry}/till/edge:${var.image_tag}"
-    kafka   = "${local.registry}/till/kafka:${var.kafka_version}"
+    runtime  = "${local.registry}/till/runtime:${var.image_tag}"
+    edge     = "${local.registry}/till/edge:${var.image_tag}"
+    kafka    = "${local.registry}/till/kafka:${var.kafka_version}"
+    loadtest = "${local.registry}/till/loadtest:${var.image_tag}"
     # For one psql command before the store starts. Docker's official image, from ECR's public
     # mirror of it rather than Docker Hub.
     postgres = "public.ecr.aws/docker/library/postgres:17-alpine"
@@ -53,4 +54,5 @@ module "runtime" {
   db_instance_class = var.db_instance_class
   cache_node_type   = var.cache_node_type
   demo              = var.demo
+  loadtest          = var.loadtest
 }

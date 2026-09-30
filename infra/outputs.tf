@@ -23,6 +23,21 @@ output "distribution_id" {
   value       = one(module.runtime[*].distribution_id)
 }
 
+output "load_balancer" {
+  description = "The internal load balancer, while it is running: where a load test's shoppers arrive."
+  value       = one(module.runtime[*].load_balancer)
+}
+
+output "loadgen" {
+  description = "How to start a load test run, while running for one."
+  value       = one(module.runtime[*].loadgen)
+}
+
+output "loadtest_log_group" {
+  description = "Where the load generator and the stand-in provider write."
+  value       = aws_cloudwatch_log_group.service["loadtest"].name
+}
+
 output "edge_log_group" {
   description = "Where the edge's access log goes."
   value       = aws_cloudwatch_log_group.service["edge"].name

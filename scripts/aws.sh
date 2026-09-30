@@ -4,6 +4,8 @@
 #   scripts/aws.sh bootstrap   once per account: the state bucket and the image registries
 #   scripts/aws.sh up          build and push the images, start everything, then run `smoke`
 #   scripts/aws.sh smoke       check that the running deployment behaves
+#   scripts/aws.sh up --loadtest   start it set up for a load test instead (docs/load-test.md)
+#   scripts/aws.sh loadtest    one load test run: the protocol's, or --shoppers= --ramp= --hold=
 #   scripts/aws.sh accounts    the demonstration accounts' passwords
 #   scripts/aws.sh status      what is billed by the hour and still there, and since when
 #   scripts/aws.sh down        stop the hourly bill; the images, accounts, secrets and logs stay
@@ -26,7 +28,12 @@ export AWS_REGION="${AWS_REGION:-us-west-2}"
 export AWS_PAGER=""
 
 HOURLY=0.16
+LOADTEST_HOURLY=1.20
 yes=false
+loadtest=false
+shoppers=""
+ramp=""
+hold=""
 
 # Terraform's AWS SDK cannot use the sessions `aws login` keeps, and credentials handed to it once
 # would expire partway through a fifteen-minute apply. So Terraform gets a profile of its own whose
@@ -98,8 +105,11 @@ push_images() {
   say "Pushing the images for $tag"
   aws ecr get-login-password | docker login --username AWS --password-stdin "$registry" > /dev/null
 
+  local targets="runtime edge"
+  [[ $loadtest == true ]] && targets="runtime edge loadtest"
+
   # ARM64 whatever builds them: that is what the task definitions ask Fargate for.
-  for target in runtime edge; do
+  for target in $targets; do
     if pushed "till/$target" "$tag"; then
       echo "till/$target:$tag is already there"
     else
@@ -127,40 +137,64 @@ cmd_bootstrap() {
   apply infra/bootstrap "Create the state bucket and the registries?" -var "region=$AWS_REGION"
 }
 
+# The variables every plan and apply of the running half passes.
+running_vars() {
+  printf '%s\n' -var running=true -var "image_tag=$1" -var "kafka_version=$(kafka_version)"
+  if [[ $loadtest == true ]]; then
+    printf '%s\n' -var loadtest=true -var-file=loadtest.tfvars
+  fi
+}
+
 cmd_plan() {
   init
-  tf plan -input=false -var running=true -var "image_tag=$(commit)" -var "kafka_version=$(kafka_version)"
+  local vars=()
+  while read -r line; do vars+=("$line"); done < <(running_vars "$(commit)")
+  tf plan -input=false "${vars[@]}"
 }
 
 cmd_up() {
   [[ -z $(git status --porcelain) ]] ||
     fail "The working tree has changes. The images are named after the commit they are built from: commit or stash first."
-  local tag started
+  local tag started hourly=$HOURLY line
   tag=$(commit)
   started=$(date +%s)
+  [[ $loadtest == true ]] && hourly=$LOADTEST_HOURLY
   init
   push_images "$tag"
 
-  say "Starting till at $tag: forty minutes or so, nearly all of it CloudFront"
-  apply infra "Start it? From here it costs about \$$HOURLY an hour, until scripts/aws.sh down." \
-    -var running=true -var "image_tag=$tag" -var "kafka_version=$(kafka_version)"
+  local vars=()
+  while read -r line; do vars+=("$line"); done < <(running_vars "$tag")
+  if [[ $loadtest == true ]]; then
+    say "Starting till at $tag for a load test: fifteen minutes or so, most of it the database"
+  else
+    say "Starting till at $tag: forty minutes or so, nearly all of it CloudFront"
+  fi
+  apply infra "Start it? From here it costs about \$$hourly an hour, until scripts/aws.sh down." "${vars[@]}"
 
   # A configuration AWS does not read back the way it was written is one every apply changes
   # again, and a replacement can take running tasks with it (infra/runtime/discovery.tf). So an
   # apply is not done until a plan after it has nothing left to do.
   local converged=0
-  tf plan -input=false -detailed-exitcode -var running=true -var "image_tag=$tag" \
-    -var "kafka_version=$(kafka_version)" > /dev/null || converged=$?
+  tf plan -input=false -detailed-exitcode "${vars[@]}" > /dev/null || converged=$?
 
-  say "Up in $(elapsed "$started"): $(output url)"
-  cmd_smoke
+  if [[ $loadtest == true ]]; then
+    say "Up in $(elapsed "$started"), set up for a load test at $(output load_balancer)"
+  else
+    say "Up in $(elapsed "$started"): $(output url)"
+    cmd_smoke
+  fi
   case $converged in
     0) ;;
     2) fail "Terraform still has changes to make after applying, which every apply would make again: scripts/aws.sh plan shows them." ;;
     *) fail "Terraform could not plan after applying." ;;
   esac
   echo
-  echo "About \$$HOURLY an hour from now on. scripts/aws.sh accounts for the sign-in; scripts/aws.sh down to stop."
+  if [[ $loadtest == true ]]; then
+    echo "About \$$hourly an hour from now on. scripts/aws.sh loadtest --shoppers=100 --ramp=20s --hold=1m to try it;"
+    echo "scripts/aws.sh loadtest for the protocol's run; scripts/aws.sh down to stop."
+  else
+    echo "About \$$hourly an hour from now on. scripts/aws.sh accounts for the sign-in; scripts/aws.sh down to stop."
+  fi
 }
 
 cmd_down() {
@@ -239,8 +273,10 @@ cmd_status() {
     --query 'ReplicationGroups[0].[CacheNodeType, Status]'
   probe "service discovery" servicediscovery list-namespaces --output text \
     --query "Namespaces[?Name=='till.internal'].Name"
-  probe "ECS services, running" ecs describe-services --cluster till --services kafka ledger store edge --output text \
+  probe "ECS services, running" ecs describe-services --cluster till --services kafka ledger store edge idp --output text \
     --query "services[?status=='ACTIVE'].join(':', [serviceName, to_string(runningCount)])"
+  probe "load generator tasks" ecs list-tasks --cluster till --family till-loadgen --output text \
+    --query "length(taskArns) > \`0\` && to_string(length(taskArns)) || ''"
 
   if [[ $unsure == true ]]; then
     echo "  and some of it could not be asked about: see above"
@@ -260,6 +296,112 @@ hours = (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds()
 print(f"  up for {hours:.1f}h: about ${hours * float(sys.argv[2]):.2f} so far")
 PY
   fi
+}
+
+# --- a load test run -----------------------------------------------------------------------------
+
+# One run of the load generator (docs/load-test.md). Without options it is the protocol's run; with
+# them, a shorter one to try things with. Its summary is printed, and saved with what CloudWatch says
+# about the same window to till-loadtest/results/, which is where a result has to be to count.
+cmd_loadtest() {
+  init
+  local loadgen cluster family subnets group overrides task started status code reason log result file
+  loadgen=$(tf output -json loadgen)
+  [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
+  cluster=$(output cluster)
+  family=$(jq -r .task_definition <<< "$loadgen")
+  subnets=$(jq -r '.subnets | join(",")' <<< "$loadgen")
+  group=$(jq -r .security_group <<< "$loadgen")
+  # Only what was asked for is overridden: the task definition holds the protocol's run.
+  overrides=$(jq -nc --arg shoppers "$shoppers" --arg ramp "$ramp" --arg hold "$hold" '{containerOverrides: [{
+    name: "loadgen",
+    environment: ([{name: "SHOPPERS", value: $shoppers}, {name: "RAMP", value: $ramp}, {name: "HOLD", value: $hold}]
+      | map(select(.value != "")))}]}')
+
+  say "Load test: ${shoppers:-8000} shoppers, ${ramp:-5m} to ramp up, ${hold:-10m} held"
+  task=$(aws ecs run-task --cluster "$cluster" --task-definition "$family" --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={subnets=[$subnets],securityGroups=[$group],assignPublicIp=ENABLED}" \
+    --overrides "$overrides" --query 'tasks[0].taskArn' --output text)
+  [[ -n $task && $task != None ]] || fail "The load generator did not start."
+  started=$(date +%s)
+  while :; do
+    status=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" --query 'tasks[0].lastStatus' --output text)
+    [[ $status == STOPPED ]] && break
+    printf '\r  %-14s %s ' "$status" "$(elapsed "$started")"
+    sleep 15
+  done
+  echo
+  code=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" --query 'tasks[0].containers[0].exitCode' --output text)
+  reason=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" --query 'tasks[0].stoppedReason' --output text)
+
+  log=$(mktemp)
+  aws logs get-log-events --log-group-name "$(output loadtest_log_group)" --log-stream-name "loadgen/loadgen/${task##*/}" \
+    --no-start-from-head --limit 200 --query 'events[].message' --output json | jq -r '.[]' > "$log"
+  grep -E 'msg="unexpected' "$log" | sed -E 's/.*msg="//; s/" source=.*//' | sort | uniq -c | sort -rn | head -5 || true
+  sed -n '/^shoppers  /,/^targets  /p' "$log"
+  result=$(grep '^RESULT ' "$log" | tail -1 | cut -c8-)
+  rm -f "$log"
+  [[ -n $result ]] || fail "The load generator stopped ($reason, exit $code) without a result."
+
+  file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
+  mkdir -p till-loadtest/results
+  server_side "$result" |
+    jq --argjson result "$result" --arg commit "$(commit)" --arg code "$code" \
+      '{commit: $commit, exit_code: ($code | tonumber? // $code), k6: $result, cloudwatch: .}' > "$file"
+  say "Server side, over the same window"
+  jq -r '.cloudwatch | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
+  echo
+  echo "Saved to $file."
+  # k6 exits 99 when a target was missed; the run still happened, and its numbers are the result.
+  [[ $code == 0 ]] || fail "The run missed a target (k6 exit $code): the numbers above are its result."
+}
+
+# What the load balancer, the database and the containers said about the steady window, from
+# CloudWatch, as a check on the load generator's own figures.
+server_side() {
+  local result="$1" balancer
+  balancer=$(aws elbv2 describe-load-balancers --names till --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+  # The last minute of the window reaches CloudWatch a minute or two after it ends.
+  sleep 90
+  python3 - "$result" "${balancer#*:loadbalancer/}" << 'PY' > "${TMPDIR:-/tmp}/till-metrics.json"
+import datetime, json, sys
+result, balancer = json.loads(sys.argv[1]), sys.argv[2]
+# The steady window as the load generator measured it, whole minutes of it: CloudWatch's are minutes.
+parse = lambda text: datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+start, end = parse(result["window"]["from"]), parse(result["window"]["to"])
+start = start.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
+end = end.replace(second=0, microsecond=0)
+length = max(60, int((end - start).total_seconds()))
+def stat(id, namespace, metric, dims, stat, period=60):
+    return {"Id": id, "ReturnData": True, "MetricStat": {"Metric": {"Namespace": namespace, "MetricName": metric,
+            "Dimensions": [{"Name": k, "Value": v} for k, v in dims.items()]}, "Period": period, "Stat": stat}}
+alb = {"LoadBalancer": balancer}
+queries = [
+    stat("alb_requests", "AWS/ApplicationELB", "RequestCount", alb, "Sum"),
+    stat("alb_target_p99", "AWS/ApplicationELB", "TargetResponseTime", alb, "p99", length),
+    stat("alb_target_5xx", "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", alb, "Sum"),
+    stat("alb_own_5xx", "AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", alb, "Sum"),
+    stat("db_cpu_max", "AWS/RDS", "CPUUtilization", {"DBInstanceIdentifier": "till"}, "Maximum"),
+] + [stat(f"{service}_cpu_max", "AWS/ECS", "CPUUtilization", {"ClusterName": "till", "ServiceName": service}, "Maximum")
+     for service in ("edge", "store", "ledger", "kafka")]
+print(json.dumps({"MetricDataQueries": queries, "StartTime": start.isoformat(), "EndTime": end.isoformat()}))
+PY
+  aws cloudwatch get-metric-data --cli-input-json "file://${TMPDIR:-/tmp}/till-metrics.json" --output json |
+    jq --argjson seconds "$(jq '[.MetricDataQueries[] | select(.Id == "alb_target_p99") | .MetricStat.Period][0]' "${TMPDIR:-/tmp}/till-metrics.json")" '
+      [.MetricDataResults[] | {key: .Id, value: .Values}] | from_entries
+      | {
+          window_seconds: $seconds,
+          alb_requests_per_second: (((.alb_requests // []) | add // 0) / $seconds | . * 10 | round / 10),
+          alb_target_p99_ms: (((.alb_target_p99 // [])[0] // null) | if . == null then null else . * 1000 | round end),
+          alb_target_5xx: ((.alb_target_5xx // []) | add // 0),
+          alb_own_5xx: ((.alb_own_5xx // []) | add // 0),
+          db_cpu_max_percent: ((.db_cpu_max // []) | max // null),
+          edge_cpu_max_percent: ((.edge_cpu_max // []) | max // null),
+          store_cpu_max_percent: ((.store_cpu_max // []) | max // null),
+          ledger_cpu_max_percent: ((.ledger_cpu_max // []) | max // null),
+          kafka_cpu_max_percent: ((.kafka_cpu_max // []) | max // null)
+        }'
+  rm -f "${TMPDIR:-/tmp}/till-metrics.json"
 }
 
 cmd_smoke() {
@@ -379,12 +521,16 @@ fi
 for arg in "$@"; do
   case $arg in
     --yes) yes=true ;;
+    --loadtest) loadtest=true ;;
+    --shoppers=*) shoppers=${arg#*=} ;;
+    --ramp=*) ramp=${arg#*=} ;;
+    --hold=*) hold=${arg#*=} ;;
     *) fail "Unknown option: $arg" ;;
   esac
 done
 
 case $command in
-  bootstrap | plan | up | smoke | accounts | status | down | destroy) "cmd_$command" ;;
+  bootstrap | plan | up | smoke | loadtest | accounts | status | down | destroy) "cmd_$command" ;;
   *)
     awk 'NR > 2 && /^#/ { sub(/^# ?/, ""); print; next } NR > 2 { exit }' "$0"
     exit 64

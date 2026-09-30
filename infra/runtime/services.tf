@@ -23,6 +23,33 @@ locals {
   # Readiness, as in the compose file: it asks the database, which is what serving a request needs.
   # A Spring Boot start on half a vCPU takes the better part of a minute.
   readiness = { interval = 10, timeout = 5, retries = 3, startPeriod = 180 }
+
+  # Who the store's customers sign in with: Cognito, or for a load test the stand-in provider
+  # (loadtest.tf), which the load generator reaches over plain HTTP — so the session cookie cannot be
+  # Secure, or it would never be sent back. docs/load-test.md lists what else a load test changes.
+  identity = var.loadtest ? tomap({
+    STORE_OIDC_ISSUER_URI        = local.standin
+    STORE_OIDC_CLIENT_ID         = local.standin_client
+    STORE_OIDC_AUTHORIZATION_URI = "${local.standin}/authorize"
+    STORE_OIDC_TOKEN_URI         = "${local.standin}/token"
+    STORE_OIDC_JWK_SET_URI       = "${local.standin}/certs"
+    STORE_OIDC_LOGOUT_URI        = ""
+    STORE_COOKIE_SECURE          = "false"
+    # Every game stocked beyond what a run can buy, so no checkout is refused for want of stock.
+    SPRING_APPLICATION_JSON = jsonencode({ store = { demo = { "default-stock" = 1000000000 } } })
+    }) : tomap({
+    # Against Cognito the issuer is enough: everything else is in its discovery document.
+    STORE_OIDC_ISSUER_URI = "https://cognito-idp.${var.region}.amazonaws.com/${var.user_pool.id}"
+    STORE_OIDC_CLIENT_ID  = aws_cognito_user_pool_client.store[0].id
+    STORE_OIDC_LOGOUT_URI = "https://${var.user_pool.domain}.auth.${var.region}.amazoncognito.com/logout?client_id={clientId}&logout_uri={baseUrl}/"
+    STORE_COOKIE_SECURE   = "true"
+    # The compose stack's handful of nearly-sold-out games, so the page shows what "only 3 left" and
+    # "sold out" look like here too.
+    SPRING_APPLICATION_JSON = jsonencode({
+      store = { demo = { stock = { ninefold = 3, "hollow-meridian" = 2, "tin-soldier-hop" = 4, "ashen-crown" = 0 } } }
+    })
+  })
+  identity_secret = var.loadtest ? aws_ssm_parameter.standin_secret[0].arn : aws_ssm_parameter.oidc_client_secret[0].arn
 }
 
 resource "aws_ecs_cluster" "till" {
@@ -238,7 +265,7 @@ resource "aws_ecs_task_definition" "store" {
       portMappings = [{ containerPort = 8081, protocol = "tcp" }]
       dependsOn    = [{ containerName = "create-database", condition = "SUCCESS" }]
 
-      environment = [for name, value in {
+      environment = [for name, value in merge(local.identity, {
         STORE_DB_URL  = "${local.jdbc}/store?sslmode=require"
         STORE_DB_USER = "till"
 
@@ -249,25 +276,14 @@ resource "aws_ecs_task_definition" "store" {
         STORE_KAFKA_BROKERS = local.kafka_brokers
         TILL_URL            = local.ledger_url
 
-        # Against Cognito the issuer is enough: everything else is in its discovery document.
-        STORE_OIDC_ISSUER_URI = "https://cognito-idp.${var.region}.amazonaws.com/${var.user_pool.id}"
-        STORE_OIDC_CLIENT_ID  = aws_cognito_user_pool_client.store.id
-        STORE_OIDC_LOGOUT_URI = "https://${var.user_pool.domain}.auth.${var.region}.amazoncognito.com/logout?client_id={clientId}&logout_uri={baseUrl}/"
-
-        STORE_COOKIE_SECURE   = "true"
-        STORE_DEMO_SEED_STOCK = tostring(var.demo)
-        # The compose stack's handful of nearly-sold-out games, so the page shows what "only 3 left"
-        # and "sold out" look like here too.
-        SPRING_APPLICATION_JSON = jsonencode({
-          store = { demo = { stock = { ninefold = 3, "hollow-meridian" = 2, "tin-soldier-hop" = 4, "ashen-crown" = 0 } } }
-        })
-      } : { name = name, value = value }]
+        STORE_DEMO_SEED_STOCK = tostring(var.demo || var.loadtest)
+      }) : { name = name, value = value }]
 
       secrets = [for name, arn in {
         STORE_DB_PASSWORD        = var.secrets.db_password
         TILL_CLIENT_TOKEN        = var.secrets.ledger_client_token
         TILL_ADMIN_TOKEN         = var.secrets.ledger_admin_token
-        STORE_OIDC_CLIENT_SECRET = aws_ssm_parameter.oidc_client_secret.arn
+        STORE_OIDC_CLIENT_SECRET = local.identity_secret
       } : { name = name, valueFrom = arn }]
 
       healthCheck = merge(local.readiness, {
@@ -337,6 +353,8 @@ resource "aws_ecs_task_definition" "edge" {
       STORE_UPSTREAM     = "store.${local.namespace}:8081"
       EDGE_RESOLVER      = cidrhost(var.vpc_cidr, 2)
       EDGE_TRUSTED_PROXY = var.vpc_cidr
+      # Off for a load test: at its rate the log alone would cost more than the edge does.
+      EDGE_ACCESS_LOG = var.loadtest ? "off" : "/var/log/nginx/access.log edge"
     } : { name = name, value = value }]
 
     healthCheck = {

@@ -7,9 +7,10 @@
 # The ledger is not reachable from here at all. The store holds the only token that can call it, and
 # the browser holds no token of any kind.
 #
-# A template: the nginx image fills in STORE_UPSTREAM, EDGE_RESOLVER and EDGE_TRUSTED_PROXY from the
-# environment when it starts. The Dockerfile's defaults are the compose stack's; the AWS task
-# definition sets the service-discovery name, the VPC's resolver and the VPC's address range.
+# A template: the nginx image fills in STORE_UPSTREAM, EDGE_RESOLVER, EDGE_TRUSTED_PROXY and
+# EDGE_ACCESS_LOG from the environment when it starts. The Dockerfile's defaults are the compose
+# stack's; the AWS task definition sets the service-discovery name, the VPC's resolver and the VPC's
+# address range.
 
 # Who the customer is. Behind CloudFront every connection comes from the load balancer, so the
 # connection's address is the balancer's — the same for every customer, and useless to a rate limit.
@@ -92,8 +93,9 @@ server {
 
   # Here rather than beside the format: an access_log in this block replaces the image's own, in
   # nginx's `main` format, where one at the top level would be written as well as it — two lines a
-  # request, both paid for at CloudWatch's $0.50 a gigabyte.
-  access_log /var/log/nginx/access.log edge;
+  # request, both paid for at CloudWatch's $0.50 a gigabyte. EDGE_ACCESS_LOG is `off` for a load
+  # test, whose rate would make the log cost more than the edge.
+  access_log ${EDGE_ACCESS_LOG};
 
   include /etc/nginx/snippets/security-headers.conf;
 

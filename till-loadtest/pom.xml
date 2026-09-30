@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.jason-te-sde</groupId>
+    <artifactId>till-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>till-loadtest</artifactId>
+  <name>till-loadtest</name>
+  <description>
+    The load test: the k6 scenario its shoppers follow, and the stand-in OpenID provider they sign in
+    with. Not a library.
+  </description>
+
+  <properties>
+    <!-- A provider that approves every sign-in is not something to publish for anyone to download. -->
+    <maven.deploy.skip>true</maven.deploy.skip>
+  </properties>
+
+  <build>
+    <plugins>
+      <!-- `java -jar till-loadtest.jar` runs the provider. It needs nothing but the JDK, so a plain
+           jar with a main class is the whole of it. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>${jar.plugin.version}</version>
+        <configuration>
+          <archive>
+            <manifest>
+              <mainClass>io.till.loadtest.StandInProvider</mainClass>
+            </manifest>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

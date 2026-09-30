@@ -145,7 +145,7 @@ resource "local_file" "backend" {
 # One registry per Dockerfile target, and a copy of the broker the compose stack runs: pulling Kafka
 # from Docker Hub at start-up would put an anonymous rate limit between a task and starting.
 resource "aws_ecr_repository" "image" {
-  for_each = toset(["till/runtime", "till/edge", "till/kafka"])
+  for_each = toset(["till/runtime", "till/edge", "till/loadtest", "till/kafka"])
 
   name = each.key
 

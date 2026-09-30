@@ -503,7 +503,10 @@ replays, injected crashes, lost answers, expiries and refusals all have to have 
 
 There is no throughput figure for the services, on purpose. Measuring them on one laptop against one
 PostgreSQL would say more about the laptop than about till; that number comes from a written load-test
-protocol run against a deployed stack, or not at all.
+protocol run against a deployed stack, or not at all. [`docs/load-test.md`](docs/load-test.md) is the
+protocol — 8,000 concurrent shoppers, 3,000 requests a second, a p99 under a second — and
+[`till-loadtest`](till-loadtest) the scenario and the stand-in sign-in it runs with. No run is
+recorded yet.
 
 ## How it is tested
 
