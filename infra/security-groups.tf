@@ -1,15 +1,18 @@
 # Who may open a connection to whom. The same picture as the comment at the top of
 # docker-compose.yml, enforced: everything not in this table is refused, and nothing in it admits the
 # internet.
+#
+# The descriptions are plain ASCII without apostrophes: EC2 refuses anything outside
+# a-zA-Z0-9 and . _-:/()#,@[]+=&;{}!$* in a security group's description.
 locals {
   tiers = {
     alb    = "The internal load balancer: CloudFront in, the edge out"
-    edge   = "The edge: nginx, the storefront's files, the proxy in front of the store"
+    edge   = "The edge: nginx, the storefront files, the proxy in front of the store"
     store  = "The store: catalogue, orders, sign-in"
     ledger = "The ledger: the only thing that decides a sale"
-    kafka  = "The broker the ledger's outbox publishes to"
-    db     = "PostgreSQL: the ledger's database and the store's"
-    cache  = "Valkey: the store's sessions"
+    kafka  = "The broker the ledger outbox publishes to"
+    db     = "PostgreSQL: the ledger database and the store database"
+    cache  = "Valkey: the store sessions"
   }
 
   admits = {

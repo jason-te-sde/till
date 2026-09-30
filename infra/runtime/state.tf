@@ -37,7 +37,7 @@ resource "aws_db_instance" "till" {
 
 resource "aws_elasticache_replication_group" "sessions" {
   replication_group_id = "till-sessions"
-  description          = "The store's sessions"
+  description          = "Sessions for the store"
 
   engine               = "valkey"
   engine_version       = "8.2"
