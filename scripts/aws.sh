@@ -370,6 +370,10 @@ DATABASE_TRANSACTIONS="select coalesce(jsonb_object_agg(datname, jsonb_build_obj
 RESERVATIONS="select coalesce(jsonb_object_agg(state, n), '{}') from (select state, count(*) as n
   from till_reservation group by state) s"
 
+# The ledger's stock rows: a SKU split sixteen ways is sixteen of them (docs/design/0009-hot-sku-shards.md),
+# so this is what shows a split was in effect rather than only configured.
+STOCK_ROWS="select jsonb_build_object('skus', count(distinct sku), 'rows', count(*)) from till_stock"
+
 # One run of the load generator (docs/load-test.md). Without options it is the protocol's run; with
 # them, a shorter one to try things with. Its summary is printed, and saved with what CloudWatch says
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
@@ -417,7 +421,7 @@ cmd_loadtest() {
 
   # The run happened whether or not psql can say what the database did in it.
   after=$(dbstat "$loadgen" "select jsonb_build_object('statements', ($TOP_STATEMENTS),
-    'transactions', ($DATABASE_TRANSACTIONS), 'reservations', ($RESERVATIONS))" | tail -1) || after=null
+    'transactions', ($DATABASE_TRANSACTIONS), 'reservations', ($RESERVATIONS), 'stock', ($STOCK_ROWS))" | tail -1) || after=null
   jq -e . <<< "$after" > /dev/null 2>&1 || after=null
 
   # Nothing is written until everything is known, and a CloudWatch that cannot be read costs the
@@ -435,7 +439,8 @@ cmd_loadtest() {
       database_transactions: (if $before == null or $after == null then null else
         $after.transactions | with_entries(.key as $db | .value |= with_entries(.key as $count
           | .value -= ($before.transactions[$db][$count] // 0))) end),
-      reservations: (if $after == null then null else {before: ($before.reservations // null), after: $after.reservations} end)}' > "$file"
+      reservations: (if $after == null then null else {before: ($before.reservations // null), after: $after.reservations} end),
+      stock_rows: ($after.stock // null)}' > "$file"
   say "Server side, over the same window"
   jq -r '(.cloudwatch // {}) | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
   say "The store's catalogue reads, over the same window (its cache $([[ $cached == true ]] && echo on || echo off))"
@@ -446,6 +451,7 @@ cmd_loadtest() {
   jq -r '(.database_top_statements // [])[:8][] | "  \(.total_ms) ms  \(.calls) calls  \(.mean_ms) ms each  [\(.db)]  \(.query[:110])"' "$file"
   jq -r '(.database_transactions // {}) | to_entries[] | "  \(.key): \(.value.commits) transactions committed, \(.value.rollbacks) rolled back"' "$file"
   jq -r '.reservations // empty | "  reservations when it ended: \(.after | to_entries | map("\(.value) \(.key | ascii_downcase)") | join(", "))"' "$file"
+  jq -r '.stock_rows // empty | "  stock: \(.skus) SKUs in \(.rows) rows"' "$file"
   echo
   echo "Saved to $file."
   # k6 exits 99 when a target was missed; the run still happened, and its numbers are the result.
