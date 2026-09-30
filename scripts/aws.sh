@@ -305,13 +305,17 @@ PY
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen cluster family subnets group overrides task started status code reason log result file
+  local loadgen cluster family subnets group overrides task started status code reason log result file deployed
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
   cluster=$(output cluster)
   family=$(jq -r .task_definition <<< "$loadgen")
   subnets=$(jq -r '.subnets | join(",")' <<< "$loadgen")
   group=$(jq -r .security_group <<< "$loadgen")
+  # The commit the running images were built from, which is not necessarily the one checked out.
+  deployed=$(aws ecs describe-task-definition --task-definition "$family" \
+    --query 'taskDefinition.containerDefinitions[0].image' --output text)
+  deployed=${deployed##*:}
   # Only what was asked for is overridden: the task definition holds the protocol's run.
   overrides=$(jq -nc --arg shoppers "$shoppers" --arg ramp "$ramp" --arg hold "$hold" '{containerOverrides: [{
     name: "loadgen",
@@ -348,7 +352,7 @@ cmd_loadtest() {
   file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
   mkdir -p till-loadtest/results
   server_side "$result" |
-    jq --argjson result "$result" --arg commit "$(commit)" --arg code "$code" \
+    jq --argjson result "$result" --arg commit "$deployed" --arg code "$code" \
       '{commit: $commit, exit_code: ($code | tonumber? // $code), k6: $result, cloudwatch: .}' > "$file"
   say "Server side, over the same window"
   jq -r '.cloudwatch | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
