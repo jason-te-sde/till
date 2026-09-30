@@ -63,6 +63,8 @@ class SimTest {
         assertTrue(report.committed() > 5, "nothing was ever sold: " + report.summary());
         assertTrue(report.outOfStock() > 0, "the SKUs never ran out: " + report.summary());
         assertTrue(report.reloads() > 0, "no command ever came up short with expired holds in its way: " + report.summary());
+        assertTrue(report.sharded() > 5, "no SKU was ever split: " + report.summary());
+        assertTrue(report.splitHolds() > 0, "no hold ever had to take from more than one shard: " + report.summary());
     }
 
     @Test
@@ -98,6 +100,6 @@ class SimTest {
                 () ->
                         new SimConfig(
                                 1, 10, 1, 2, 10, 3, 1, base.ttl(), base.stepTime(), 0, base.timeJump(), 0, 0, 0, 0, 0, 0,
-                                Flaw.NONE, base.start()));
+                                0, Flaw.NONE, base.start()));
     }
 }

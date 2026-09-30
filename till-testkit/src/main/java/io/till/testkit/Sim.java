@@ -369,6 +369,9 @@ public final class Sim {
             long delta = 1 + random.nextInt((int) config.maxQuantity());
             return new Command.Adjust(nextKey(caller), skus.get(random.nextInt(skus.size())), delta);
         }
+        if (roll < config.duplicateChance() + config.adjustChance() + config.shardChance()) {
+            return new Command.Shard(nextKey(caller), skus.get(random.nextInt(skus.size())), 2 + random.nextInt(7));
+        }
         return new Command.Reserve(nextKey(caller), nextReservationId(caller), randomLines(), config.ttl());
     }
 
@@ -432,6 +435,8 @@ public final class Sim {
                 counters.released,
                 counters.expired(inspector),
                 counters.adjusted,
+                counters.sharded,
+                counters.splitHolds(inspector),
                 counters.sweeps,
                 counters.rejections,
                 counters.outOfStock,
@@ -477,6 +482,7 @@ public final class Sim {
         private long committed;
         private long released;
         private long adjusted;
+        private long sharded;
         private long sweeps;
         private long rejections;
         private long outOfStock;
@@ -488,6 +494,7 @@ public final class Sim {
                 case Outcome.Committed ignored -> committed++;
                 case Outcome.Released ignored -> released++;
                 case Outcome.Adjusted ignored -> adjusted++;
+                case Outcome.Sharded ignored -> sharded++;
                 case Outcome.Swept ignored -> { /* counted where it is run */ }
                 case Outcome.Rejected rejected -> {
                     rejections++;
@@ -496,6 +503,13 @@ public final class Sim {
                     }
                 }
             }
+        }
+
+        /** Holds that one shard could not cover, counted from what the ledger kept of them. */
+        private long splitHolds(LedgerInspector inspector) {
+            return inspector.allReservations().stream()
+                    .filter(reservation -> reservation.allocations().size() > reservation.lines().size())
+                    .count();
         }
 
         /** Expiries are not answers to anybody, so they are counted from the outbox. */
