@@ -47,6 +47,13 @@ which is on the publishing path only, never on a command's; whoever holds it pub
 order, and the others sit the round out and take over the moment it is free. The consumer still has
 to be idempotent: delivery is still at least once.
 
+Measured with `OutboxThroughputBenchmark` (20,000 events, two publishers, PostgreSQL on two CPUs, a
+real broker): one batch of 200 a run, as before, delivered 390 events a second; draining, 15,187 and
+15,748. Reading them is the slower half now — `ProjectionThroughputBenchmark`, 40,000 events into the
+store's read models with four consumers: 1,373 and 1,379 a second from a topic of one partition, where
+one consumer works and three wait, and 2,699 and 3,111 from the twelve the ledger now declares. End to
+end, the stream went from about 390 events a second to about 3,000.
+
 ## Consequences
 
 **The backlog is the metric that matters.** `till_outbox_backlog` growing means everything downstream
