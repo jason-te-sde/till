@@ -140,6 +140,11 @@ class EventConsumer {
         // history that produced the current levels, not whatever happens next.
         config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        // The ledger declares the topic, with as many partitions as there are consumers to read them.
+        // A store that asked for it first would otherwise have had the broker create it, with its
+        // default of one, and would go on reading only that one after the ledger grew it — until its
+        // next metadata refresh, five minutes later. So a store waits for the topic instead.
+        config.put(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG, false);
         return config;
     }
 

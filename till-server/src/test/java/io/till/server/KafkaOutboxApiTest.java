@@ -145,6 +145,9 @@ class KafkaOutboxApiTest extends ApiTestBase {
         config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
         config.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
         config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        // A reader, like the store: it waits for the ledger to declare the topic. Allowed to create it,
+        // it would get the broker's one partition, and miss what the ledger then sends to the others.
+        config.put(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG, false);
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
 
