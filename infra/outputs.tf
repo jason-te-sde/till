@@ -8,6 +8,11 @@ output "running" {
   value       = var.running
 }
 
+output "database" {
+  description = "Which PostgreSQL is deployed: \"rds\" or \"aurora\". scripts/aws.sh loadtest records it with a run's result."
+  value       = var.database
+}
+
 output "cluster" {
   description = "The ECS cluster, while it is running."
   value       = one(module.runtime[*].cluster)

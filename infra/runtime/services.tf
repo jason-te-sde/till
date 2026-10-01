@@ -9,7 +9,7 @@ locals {
   namespace     = aws_service_discovery_private_dns_namespace.till.name
   kafka_brokers = "kafka.${local.namespace}:9092"
   ledger_url    = "http://ledger.${local.namespace}:8080"
-  jdbc          = "jdbc:postgresql://${aws_db_instance.till.address}:5432"
+  jdbc          = "jdbc:postgresql://${local.db_endpoint}:5432"
 
   logs = { for name, group in var.log_groups : name => {
     logDriver = "awslogs"
@@ -262,7 +262,7 @@ resource "aws_ecs_task_definition" "store" {
         "exists || psql -qc 'create database store' || exists",
       ])]
       environment = [for name, value in {
-        PGHOST            = aws_db_instance.till.address
+        PGHOST            = local.db_endpoint
         PGUSER            = "till"
         PGDATABASE        = "till"
         PGSSLMODE         = "require"

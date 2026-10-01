@@ -23,6 +23,12 @@ explicitly not: it is a testing tool and it will change.
   than checked inside `JdbcLedger`'s write transaction on every command. The last load test found
   41,259 of 48,744 holds still held when the run ended: checkouts the store had already stopped
   waiting for while the ledger, behind the database, kept working on them.
+- **Aurora PostgreSQL Serverless v2 as the database, picked per deployment**
+  (`infra/variables.tf`'s `database`, `infra/runtime/state.tf`, `scripts/aws.sh up
+  --database=aurora`): the free plan's other option to RDS, capped at 4 ACU and 1 GiB of storage per
+  cluster and able to pause at 0 ACU between connections, where RDS is billed whether or not a
+  connection is open. RDS stays the default and is unchanged; `scripts/aws.sh loadtest` records
+  which one a run used and, for Aurora, `ServerlessDatabaseCapacity` alongside the database's CPU.
 - **A hot SKU's stock in several rows** ([ADR 9](docs/design/0009-hot-sku-shards.md)).
   `Command.Shard` — `POST /v1/stock/{sku}/shards`, `TillClient.shard`, `tillctl shard` — splits a SKU
   across up to 64 rows. A hold takes its units from the row its reservation id points at, and from

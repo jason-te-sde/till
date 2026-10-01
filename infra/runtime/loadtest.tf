@@ -217,8 +217,8 @@ resource "aws_ecs_task_definition" "loadgen" {
 # --- what the database spent its time on ----------------------------------------------------------
 
 # One psql statement per task, the statement in SQL: scripts/aws.sh loadtest resets
-# pg_stat_statements before a run and reads the most expensive statements after it. RDS preloads
-# the module; the extension is created on first use.
+# pg_stat_statements before a run and reads the most expensive statements after it. Both RDS and
+# Aurora PostgreSQL preload the module by default; the extension is created on first use.
 resource "aws_ecs_task_definition" "dbstat" {
   count = var.loadtest ? 1 : 0
 
@@ -243,7 +243,7 @@ resource "aws_ecs_task_definition" "dbstat" {
     command = ["sh", "-c", "psql -X -q -v ON_ERROR_STOP=1 -P pager=off -A -t -c \"$SQL\""]
 
     environment = [for name, value in {
-      PGHOST            = aws_db_instance.till.address
+      PGHOST            = local.db_endpoint
       PGUSER            = "till"
       PGDATABASE        = "till"
       PGSSLMODE         = "require"
