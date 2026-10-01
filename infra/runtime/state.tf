@@ -1,11 +1,20 @@
 # Where the state lives: one PostgreSQL instance with the ledger's database and the store's, as in
 # the compose stack, and one Valkey node for the store's sessions.
 #
-# Both single-instance, no replicas, no backups: this deployment is started for a session and
-# destroyed after it, and the store stocks itself on start. What a production deployment would
-# change is in infra/README.md.
+# PostgreSQL is RDS or Aurora PostgreSQL Serverless v2, picked per deployment by var.database
+# (infra/variables.tf; default "rds", unchanged). The AWS free plan caps each differently: RDS to
+# db.t3.micro or db.t4g.micro, Aurora to 4 ACU and 1 GiB of storage per cluster — infra/README.md has
+# what both cost. Exactly one of the two resources below exists at a time (count); local.db_endpoint
+# is what services.tf and loadtest.tf connect to either way, and both are identified "till" so a
+# CloudWatch query (scripts/aws.sh server_side) never has to know which one is live.
+#
+# Both single-instance, no replicas, no backups beyond what the engine insists on: this deployment
+# is started for a session and destroyed after it, and the store stocks itself on start. What a
+# production deployment would change is in infra/README.md.
 
 resource "aws_db_instance" "till" {
+  count = var.database == "rds" ? 1 : 0
+
   identifier     = "till"
   engine         = "postgres"
   engine_version = "17"
@@ -33,6 +42,86 @@ resource "aws_db_instance" "till" {
   apply_immediately            = true
   auto_minor_version_upgrade   = true
   performance_insights_enabled = false
+}
+
+# count alone would otherwise replace this instance: Terraform addresses a counted resource as
+# till[0], not till, and without this move the next plan would destroy and recreate the one a
+# running deployment already has state for.
+moved {
+  from = aws_db_instance.till
+  to   = aws_db_instance.till[0]
+}
+
+# Aurora Serverless v2. engine_mode = "provisioned" is what a cluster made of Serverless v2
+# instances is called — "serverless" (no v2) is the first, retired generation, and takes neither
+# var.db_instance_class nor the scaling block below.
+#
+# 17.9 is the closest Aurora release to the RDS instance's PostgreSQL 17, and is confirmed to exist:
+# https://aws.amazon.com/about-aws/whats-new/2026/04/amazon-aurora-postgresql-17-9-16-13-15-17-14-22
+# Later 17.x minors exist by now (up to 17.11, announced September 2026) — auto_minor_version_upgrade
+# on the instance below tracks them forward, as it already does for the RDS instance above. Before
+# the first real apply, check `aws rds describe-db-engine-versions --engine aurora-postgresql
+# --region <region>` in case 17.9 has aged out of the region's offering by then.
+#
+# min_capacity = 0 pauses the instance between connections instead of floating at a minimum charge.
+# Aurora PostgreSQL has supported a minimum of 0 ACU since versions 13.15, 14.12, 15.7 and 16.3 — all
+# older than 17, so 17.9 qualifies:
+# https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2-auto-pause.html
+# A paused instance resumes on the next connection in about fifteen seconds, which is inside the
+# JDBC connect timeouts the services already run with (services.tf).
+resource "aws_rds_cluster" "till" {
+  count = var.database == "aurora" ? 1 : 0
+
+  cluster_identifier = "till"
+  engine             = "aurora-postgresql"
+  engine_version     = "17.9"
+  engine_mode        = "provisioned"
+
+  # The ledger's database. The store's is created by its task before it starts, exactly as for RDS
+  # (services.tf) — Aurora, like RDS, makes only the one named here.
+  database_name   = "till"
+  master_username = "till"
+  master_password = var.db_password
+
+  db_subnet_group_name   = var.db_subnet_group
+  vpc_security_group_ids = [var.security_groups.db]
+  availability_zones     = [var.zone]
+  storage_encrypted      = true
+
+  serverlessv2_scaling_configuration {
+    min_capacity = 0
+    max_capacity = 4
+  }
+
+  # Aurora's API refuses 0 here, unlike a plain RDS instance's: 1 day is its minimum.
+  backup_retention_period = 1
+  skip_final_snapshot     = true
+  deletion_protection     = false
+  apply_immediately       = true
+
+  # pg_stat_statements, which the load test reads (scripts/aws.sh dbstat), is already in the default
+  # Aurora PostgreSQL cluster parameter group's shared_preload_libraries, so no custom one is needed:
+  # "Typically, the default DB cluster parameter group loads only the pg_stat_statements."
+  # https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Appendix.PostgreSQL.CommonDBATasks.html
+}
+
+resource "aws_rds_cluster_instance" "till" {
+  count = var.database == "aurora" ? 1 : 0
+
+  identifier         = "till"
+  cluster_identifier = aws_rds_cluster.till[0].id
+  instance_class     = "db.serverless"
+  engine             = aws_rds_cluster.till[0].engine
+  engine_version     = aws_rds_cluster.till[0].engine_version
+
+  availability_zone            = var.zone
+  publicly_accessible          = false
+  auto_minor_version_upgrade   = true
+  performance_insights_enabled = false
+}
+
+locals {
+  db_endpoint = var.database == "aurora" ? aws_rds_cluster.till[0].endpoint : aws_db_instance.till[0].address
 }
 
 resource "aws_elasticache_replication_group" "sessions" {

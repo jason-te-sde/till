@@ -52,6 +52,7 @@ module "runtime" {
 
   size              = var.size
   db_instance_class = var.db_instance_class
+  database          = var.database
   cache_node_type   = var.cache_node_type
   demo              = var.demo
   loadtest          = var.loadtest

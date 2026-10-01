@@ -6,7 +6,9 @@
 #   scripts/aws.sh smoke       check that the running deployment behaves
 #   scripts/aws.sh up --loadtest   start it set up for a load test instead (docs/load-test.md);
 #                  --no-catalogue-cache to measure the store without its catalogue cache,
-#                  --shards=N to keep each game's stock in N rows instead of the load test's 16
+#                  --shards=N to keep each game's stock in N rows instead of the load test's 16,
+#                  --database=aurora to run Aurora PostgreSQL Serverless v2 instead of RDS
+#                  (infra/README.md has what each costs and is limited to on the free plan)
 #   scripts/aws.sh loadtest    one load test run: the protocol's, or --shoppers= --ramp= --hold=
 #   scripts/aws.sh accounts    the demonstration accounts' passwords
 #   scripts/aws.sh status      what is billed by the hour and still there, and since when
@@ -35,6 +37,7 @@ yes=false
 loadtest=false
 catalogue_cache=true
 shards=""
+database=""
 shoppers=""
 ramp=""
 hold=""
@@ -152,6 +155,9 @@ running_vars() {
   fi
   if [[ -n $shards ]]; then
     printf '%s\n' -var "stock_shards=$shards"
+  fi
+  if [[ -n $database ]]; then
+    printf '%s\n' -var "database=$database"
   fi
 }
 
@@ -379,9 +385,10 @@ STOCK_ROWS="select jsonb_build_object('skus', count(distinct sku), 'rows', count
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached split
+  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached split database
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
+  database=$(output database)
   family=$(jq -r .task_definition <<< "$loadgen")
   subnets=$(jq -r '.subnets | join(",")' <<< "$loadgen")
   group=$(jq -r .security_group <<< "$loadgen")
@@ -431,9 +438,10 @@ cmd_loadtest() {
   file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
   mkdir -p till-loadtest/results
   jq -n --argjson result "$result" --argjson before "$before" --argjson after "$after" --argjson cloudwatch "$cloudwatch" \
-    --argjson reads "$reads" --arg cached "$cached" --arg split "$split" --arg commit "$deployed" --arg code "$code" \
+    --argjson reads "$reads" --arg cached "$cached" --arg split "$split" --arg database "$database" \
+    --arg commit "$deployed" --arg code "$code" \
     '{commit: $commit, exit_code: ($code | tonumber? // $code), store_catalogue_cache: ($cached == "true"),
-      stock_shards: ($split | tonumber? // null),
+      stock_shards: ($split | tonumber? // null), database: $database,
       k6: $result, catalogue_reads: $reads, cloudwatch: $cloudwatch,
       database_top_statements: ($after.statements // null),
       database_transactions: (if $before == null or $after == null then null else
@@ -525,6 +533,11 @@ queries = [
     stat("alb_target_5xx", "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", alb, "Sum"),
     stat("alb_own_5xx", "AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", alb, "Sum"),
     stat("db_cpu_max", "AWS/RDS", "CPUUtilization", {"DBInstanceIdentifier": "till"}, "Maximum"),
+    # Empty when it is RDS: the metric only exists for Aurora, and CloudWatch returns no data points
+    # for a dimension value that does not rather than an error. Dimensioned by DBInstanceIdentifier,
+    # not DBClusterIdentifier, the same as CPUUtilization above — AWS's own example for this metric
+    # queries it that way (infra/runtime/state.tf has the link).
+    stat("db_acu_max", "AWS/RDS", "ServerlessDatabaseCapacity", {"DBInstanceIdentifier": "till"}, "Maximum"),
 ] + [stat(f"{service}_cpu_max", "AWS/ECS", "CPUUtilization", {"ClusterName": "till", "ServiceName": service}, "Maximum")
      for service in ("edge", "store", "ledger", "kafka")]
 print(json.dumps({"MetricDataQueries": queries, "StartTime": start.isoformat(), "EndTime": end.isoformat()}))
@@ -539,6 +552,7 @@ PY
           alb_target_5xx: ((.alb_target_5xx // []) | add // 0),
           alb_own_5xx: ((.alb_own_5xx // []) | add // 0),
           db_cpu_max_percent: ((.db_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
+          db_acu_max_capacity: ((.db_acu_max // []) | max // null),
           edge_cpu_max_percent: ((.edge_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
           store_cpu_max_percent: ((.store_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
           ledger_cpu_max_percent: ((.ledger_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
@@ -667,6 +681,7 @@ for arg in "$@"; do
     --loadtest) loadtest=true ;;
     --no-catalogue-cache) catalogue_cache=false ;;
     --shards=*) shards=${arg#*=} ;;
+    --database=*) database=${arg#*=} ;;
     --shoppers=*) shoppers=${arg#*=} ;;
     --ramp=*) ramp=${arg#*=} ;;
     --hold=*) hold=${arg#*=} ;;

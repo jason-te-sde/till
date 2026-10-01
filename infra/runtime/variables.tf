@@ -94,6 +94,11 @@ variable "db_instance_class" {
   type = string
 }
 
+variable "database" {
+  description = "Which PostgreSQL runs: \"rds\" or \"aurora\" (state.tf)."
+  type        = string
+}
+
 variable "cache_node_type" {
   type = string
 }

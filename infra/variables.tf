@@ -80,6 +80,22 @@ variable "db_instance_class" {
   default     = "db.t4g.micro"
 }
 
+variable "database" {
+  description = <<-EOT
+    Which PostgreSQL runs: "rds" (an aws_db_instance; the free plan allows only db.t3.micro or
+    db.t4g.micro) or "aurora" (an Aurora PostgreSQL Serverless v2 cluster; the free plan caps it at
+    4 ACU and 1 GiB of storage per cluster). infra/README.md has what each costs.
+    scripts/aws.sh up --database=aurora sets it; the default is unchanged.
+  EOT
+  type        = string
+  default     = "rds"
+
+  validation {
+    condition     = contains(["rds", "aurora"], var.database)
+    error_message = "database is either \"rds\" or \"aurora\"."
+  }
+}
+
 variable "cache_node_type" {
   description = "The ElastiCache node type for the store's sessions."
   type        = string
