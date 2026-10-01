@@ -198,6 +198,16 @@ resource "aws_ecs_service" "ledger" {
   desired_count   = var.size.ledger.count
   launch_type     = "FARGATE"
 
+  # The store and the ledger hold 64 connections between them at steady state (32 each: see the store
+  # service below), which is most of what a db.t4g.micro allows before it refuses the rest — around
+  # 70. The default deployment would double the ledger's own 32 to 64 while rolling, the same way it
+  # did for the store; replacing one task at a time keeps it at 32 throughout. 50% of 2 is exactly 1,
+  # so this is sized to that count rather than computed from it — a different ledger.count changes the
+  # connection budget too and needs the same rechecking either way.
+  deployment_minimum_healthy_percent = 50
+  deployment_maximum_percent         = 100
+  availability_zone_rebalancing      = "DISABLED"
+
   network_configuration {
     subnets          = var.task_subnet_ids
     security_groups  = [var.security_groups.ledger]
@@ -305,6 +315,21 @@ resource "aws_ecs_service" "store" {
   task_definition = aws_ecs_task_definition.store.arn
   desired_count   = var.size.store.count
   launch_type     = "FARGATE"
+
+  # 4 tasks at 8 connections each (loadtest.tfvars) hold 32 at steady state; the ledger's own 32 bring
+  # the total to 64, most of what a db.t4g.micro allows before it refuses the rest with "remaining
+  # connection slots are reserved for roles with privileges of the rds_reserved role" — observed
+  # refusing around 70. The default deployment (maximumPercent 200) starts four replacement tasks
+  # before stopping the four old ones, so a store deploy alone doubled the store's 32 to 64 and pushed
+  # the combined total past the limit; that rolled the store back twice on 2026-10-01 when only
+  # STORE_DEMO_SHARDS changed. Replacing one task at a time keeps the store at 32 throughout. 75% of 4
+  # is exactly 3, so this is sized to that count rather than computed from it — a different store.count
+  # changes the connection budget too and needs the same rechecking either way. Availability Zone
+  # Rebalancing is off because ECS refuses it otherwise: "Availability Zone Rebalancing does not
+  # support maximumPercent <= 100 %".
+  deployment_minimum_healthy_percent = 75
+  deployment_maximum_percent         = 100
+  availability_zone_rebalancing      = "DISABLED"
 
   network_configuration {
     subnets          = var.task_subnet_ids
