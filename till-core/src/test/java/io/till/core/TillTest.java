@@ -230,6 +230,59 @@ class TillTest {
         assertThrows(IllegalArgumentException.class, () -> Till.builder(new InMemoryLedger()).reclaimLimit(-1).build());
     }
 
+    @Test
+    @DisplayName("execute with a null deadline behaves exactly as execute(Command)")
+    void nullDeadlineBehavesAsNoDeadline() {
+        InMemoryLedger ledger = new InMemoryLedger();
+        Till till = Till.builder(ledger).clock(fixed(T0)).build();
+        seed(ledger, 10);
+
+        Outcome outcome =
+                till.execute(new Command.Reserve(key("c1"), rid("r1"), List.of(line("widget", 3)), TTL), null);
+
+        assertInstanceOf(Outcome.Reserved.class, outcome);
+        assertEquals(3, ledger.stock(sku("widget")).orElseThrow().reserved());
+    }
+
+    @Test
+    @DisplayName("a deadline already passed: execute loads nothing and applies nothing")
+    void alreadyPassedDeadlineLoadsAndAppliesNothing() {
+        InMemoryLedger ledger = new InMemoryLedger();
+        CountingLedger counting = new CountingLedger(ledger);
+        Till till = Till.builder(counting).clock(fixed(T0)).build();
+        seed(ledger, 10);
+        counting.loads.set(0);
+
+        Command command = new Command.Reserve(key("c1"), rid("r1"), List.of(line("widget", 3)), TTL);
+        DeadlineExceededException thrown =
+                assertThrows(DeadlineExceededException.class, () -> till.execute(command, T0.minusSeconds(1)));
+
+        assertEquals(command, thrown.command());
+        assertEquals(0, counting.loads.get(), "the deadline is checked before the load, not after it");
+        assertEquals(0, counting.applies.get());
+        assertTrue(ledger.reservation(rid("r1")).isEmpty());
+    }
+
+    @Test
+    @DisplayName("a deadline that passes between decide and apply: nothing is applied")
+    void deadlinePassingBetweenDecideAndApplyAppliesNothing() {
+        InMemoryLedger ledger = new InMemoryLedger();
+        seed(ledger, 10);
+        SteppingClock clock = new SteppingClock(T0);
+        // The deadline is still ahead when the attempt starts, but the load for that attempt
+        // pushes the clock a second past it — the gap between "decided" and "about to apply" that
+        // the second check exists to catch.
+        AdvancingOnLoadLedger advancing = new AdvancingOnLoadLedger(ledger, clock, Duration.ofSeconds(1));
+        Till till = Till.builder(advancing).clock(clock).build();
+        Instant deadline = T0.plusMillis(500);
+
+        Command command = new Command.Reserve(key("c1"), rid("r1"), List.of(line("widget", 3)), TTL);
+        assertThrows(DeadlineExceededException.class, () -> till.execute(command, deadline));
+
+        assertTrue(ledger.reservation(rid("r1")).isEmpty(), "decided in time, but applied too late and so not applied");
+        assertEquals(10, ledger.stock(sku("widget")).orElseThrow().available(), "nothing was taken");
+    }
+
     private static void seed(InMemoryLedger ledger, long quantity) {
         Till.builder(ledger).clock(fixed(T0)).build().adjust(key("seed"), sku("widget"), quantity);
     }
@@ -309,9 +362,10 @@ class TillTest {
         }
     }
 
-    /** Counts applies, so a test can assert that one never happened. */
+    /** Counts loads and applies, so a test can assert that one never happened. */
     private static final class CountingLedger implements Ledger {
         private final Ledger delegate;
+        private final AtomicInteger loads = new AtomicInteger();
         private final AtomicInteger applies = new AtomicInteger();
 
         private CountingLedger(Ledger delegate) {
@@ -320,12 +374,41 @@ class TillTest {
 
         @Override
         public Snapshot load(Command command, Instant now, int reclaimLimit) {
+            loads.incrementAndGet();
             return delegate.load(command, now, reclaimLimit);
         }
 
         @Override
         public boolean apply(Decision decision) {
             applies.incrementAndGet();
+            return delegate.apply(decision);
+        }
+    }
+
+    /**
+     * Advances a clock by a fixed amount as a side effect of loading, so a test can put the
+     * deadline in the gap between one attempt's decide and its apply without sleeping through it.
+     */
+    private static final class AdvancingOnLoadLedger implements Ledger {
+        private final Ledger delegate;
+        private final SteppingClock clock;
+        private final Duration by;
+
+        private AdvancingOnLoadLedger(Ledger delegate, SteppingClock clock, Duration by) {
+            this.delegate = delegate;
+            this.clock = clock;
+            this.by = by;
+        }
+
+        @Override
+        public Snapshot load(Command command, Instant now, int reclaimLimit) {
+            Snapshot snapshot = delegate.load(command, now, reclaimLimit);
+            clock.advance(by);
+            return snapshot;
+        }
+
+        @Override
+        public boolean apply(Decision decision) {
             return delegate.apply(decision);
         }
     }
