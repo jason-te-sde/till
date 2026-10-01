@@ -11,6 +11,18 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **The ledger honours the caller's deadline** ([ADR 11](docs/design/0011-request-deadlines.md)).
+  `TillClient` sends, on every attempt, what is left of its call's deadline as `Till-Timeout-Ms` —
+  milliseconds, relative rather than an absolute instant, so clock skew between hosts cannot matter.
+  `Till.execute(Command, Instant)` checks it before loading and again before applying, and never
+  applies a decision for a caller who has stopped waiting; a passed deadline is a new
+  `DeadlineExceededException`, answered 503 `DEADLINE_EXCEEDED` and counted on its own
+  (`till.outcome{outcome="deadline_exceeded"}`), next to `exhausted` so an operator can tell overload
+  from contention. What it does not close — a decision applied after the deadline because `apply`
+  itself waited, for a pooled connection or a statement — is measured instead, as `till.late`, rather
+  than checked inside `JdbcLedger`'s write transaction on every command. The last load test found
+  41,259 of 48,744 holds still held when the run ended: checkouts the store had already stopped
+  waiting for while the ledger, behind the database, kept working on them.
 - **A hot SKU's stock in several rows** ([ADR 9](docs/design/0009-hot-sku-shards.md)).
   `Command.Shard` — `POST /v1/stock/{sku}/shards`, `TillClient.shard`, `tillctl shard` — splits a SKU
   across up to 64 rows. A hold takes its units from the row its reservation id points at, and from

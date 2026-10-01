@@ -103,6 +103,8 @@ instance at once, which is the worst possible response to a database hiccup.
 | --- | --- | --- |
 | `till_outbox_backlog` | growing for more than a few minutes | everything downstream is working from a picture of stock that is falling further behind. This is the single most important number here |
 | `till_outcome_total{outcome="exhausted"}` | non-zero and rising | commands are being refused for contention, not for stock. Raise `till.max-attempts`, or look at why so many callers are on one SKU |
+| `till_outcome_total{outcome="deadline_exceeded"}` | non-zero and rising | callers are giving up before the ledger can finish, not because the rows keep moving. Look at `till_command_seconds` and the database, not at contention — raising `till.max-attempts` does nothing for a caller whose own clock ran out |
+| `till_late_total` | tracking `till_outcome_total{outcome="deadline_exceeded"}` closely | decisions are being applied after their caller's deadline, inside `apply` itself — a pooled connection (`spring.datasource.hikari.connection-timeout`) or a slow statement. If the two numbers move together, the pre-apply check in `Till.execute` is arriving too late to matter and an in-transaction check ([ADR 11](design/0011-request-deadlines.md)) is worth its cost |
 | `till_outbox_failures_total` | rising | the broker is unreachable. Nothing is lost — the batch is offered again — but it is not being delivered |
 | `till_sweeper_failures_total` | non-zero | the sweep is throwing. Stock still comes back on demand, so this is not urgent, but something is wrong |
 | `till_retention_failures_total` | non-zero | the pruning pass is throwing, so three tables are growing. Not urgent on the hour it starts; very urgent on the month it continues |
@@ -378,6 +380,7 @@ There is one migration so far, so this is advice rather than experience.
 | Symptom | Look at |
 | --- | --- |
 | 503s with `"code":"CONTENTION"` | contention, not an outage. `till_outcome_total{outcome="exhausted"}`, then how many callers are on one SKU. Split that SKU (`tillctl shard <sku> 16`), or raise `till.max-attempts` |
+| 503s with `"code":"DEADLINE_EXCEEDED"` | the caller's own deadline, not the rows: this fires even on a command's very first attempt, which contention cannot. Compare `till_outcome_total{outcome="deadline_exceeded"}` with `{outcome="exhausted"}` — rising together points at an overloaded database slowing everything down; `deadline_exceeded` alone with `exhausted` flat points at callers with too short a budget for how long the ledger legitimately takes. Splitting a SKU or raising `till.max-attempts` helps the second symptom, not the first |
 | 503 `"Ledger unavailable"` | the database. The readiness probe will already be failing |
 | 422 `IDEMPOTENCY_KEY_REUSED` | a client is reusing a key for a different body. Usually a key derived from something not unique per request — a cart id rather than a checkout attempt |
 | `available` lower than it should be | expired holds not yet written off. Check `till_sweeper_failures_total`; the next command short of stock on those SKUs will reclaim them anyway |

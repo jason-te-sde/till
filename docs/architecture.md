@@ -125,6 +125,18 @@ retries with the same idempotency key, which is the only reason retrying is safe
 that covers every attempt, so that its caller hears within a bounded time. The store's is five
 seconds: before it had one, a ledger too busy to answer cost a checkout four five-second attempts.
 
+**The deadline is not only the client's.** Each attempt sends what is left of it as
+`Till-Timeout-Ms`, a relative budget in milliseconds rather than an absolute instant, so that clock
+skew between the store's host and the ledger's cannot matter. `Till.execute` refuses to load, and
+refuses to apply a decision it has already made, once its caller's budget has passed — so a database
+already behind does not do work for a customer who has been told to try again. What it does not
+bound is time spent before the header is read (a request still queued in the servlet container) or
+a statement already running in PostgreSQL once `apply` has started. This is a different deadline
+from the hold's own fifteen minutes ([ADR 4](design/0004-deadline-is-the-truth.md)): that one is
+"may this commit?", decided by the kernel from a stored `expiresAt`; this one is "is anyone still
+waiting for this call?", decided by `Till` before the kernel is ever invoked.
+[ADR 11](design/0011-request-deadlines.md) has the rest.
+
 **Truncated to microseconds** because that is the resolution PostgreSQL stores. An instant that loses
 precision on the way to disk comes back different, and a recorded outcome that no longer equals the
 one that was returned is not a recorded outcome.
