@@ -13,8 +13,10 @@ size = {
   # A whole vCPU each: at half of one the first run's edges were at 99%, compressing every response.
   edge = { cpu = 1024, memory = 2048, count = 2 }
   # Four: at two, the second run's stores were at 93% CPU.
-  store   = { cpu = 1024, memory = 2048, count = 4 }
-  ledger  = { cpu = 1024, memory = 2048, count = 2 }
+  store  = { cpu = 1024, memory = 2048, count = 4 }
+  ledger = { cpu = 1024, memory = 2048, count = 2 }
+  # Per broker — three run regardless of `count` here (runtime/services.tf), so this is 1 vCPU and
+  # 4 GB times three, not once.
   kafka   = { cpu = 1024, memory = 4096 }
   idp     = { cpu = 512, memory = 1024 }
   loadgen = { cpu = 8192, memory = 16384 }

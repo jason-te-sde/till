@@ -44,6 +44,13 @@ services:
     # The JVM image rather than apache/kafka-native: the native build segfaults on start when the
     # container's UID has no /etc/passwd entry, which is host-dependent — it works on a laptop and
     # dies on a CI runner. It also ships the CLI the health check below needs.
+    #
+    # One broker, same as every environment but AWS's until this is started with
+    # docker-compose.kafka-cluster.yml added (`-f docker-compose.yml -f docker-compose.kafka-cluster.yml`),
+    # which turns this into node 1 of three and is what the "Kafka cluster survives losing a
+    # broker" CI job runs. docs/design/0010-kafka-replication.md says why the default here stays
+    # one: three Kafka JVMs are most of a gigabyte more than one, for a property nothing else in
+    # this stack needs exercised every time.
     image: apache/kafka:4.1.0
     environment:
       # KRaft: one node that is its own controller, no ZooKeeper. A demonstration stack does not need

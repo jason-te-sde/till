@@ -388,6 +388,7 @@ There is one migration so far, so this is advice rather than experience.
 | 503 with `"code":"STORE_UNAVAILABLE"` | the edge cannot reach the store |
 | 503 with `"code":"LEDGER_UNAVAILABLE"` | the store cannot reach the ledger. The request is safe to retry: every write carries an idempotency key |
 | Store pages show stale stock | the consumer. Is `STORE_KAFKA_BROKERS` set, is the broker up, and is the `till-store` group's lag falling? |
+| `till_outbox_failures_total` rising, `NOT_ENOUGH_REPLICAS` or `NotEnoughReplicasException` in the ledger's log | fewer brokers in the topic's in-sync set than `min.insync.replicas` — on the three-broker deployment, two of three down at once ([ADR 10](design/0010-kafka-replication.md)). Nothing is lost: the batch is offered again on the next tick. `kafka-topics.sh --describe --topic till.events` shows which partitions' `Isr` is short of their `Replicas`; bring back enough brokers to close the gap |
 | Everybody was signed out at once | Redis restarted, or lost its data |
 | The store refuses to start: "an identity provider" | `STORE_OIDC_ISSUER_URI` and `STORE_OIDC_CLIENT_ID` are required |
 | Refuses to start, Flyway validation | the database has a schema this build did not create, or a migration was edited after being applied |

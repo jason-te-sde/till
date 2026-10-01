@@ -39,8 +39,9 @@ variable "vpc_cidr" {
 
 variable "size" {
   description = <<-EOT
-    Fargate CPU units and MiB for each task, and how many of each to run. Kafka is one broker
-    whatever this says: it is a single KRaft node, like the compose stack's.
+    Fargate CPU units and MiB for each task, and how many of each to run. Kafka always runs three
+    nodes (runtime/services.tf) whatever `count` says here, one per broker: this is the size of
+    each one, not a total, and `count` on this entry is ignored.
   EOT
   type = map(object({
     cpu    = number
@@ -51,7 +52,8 @@ variable "size" {
     edge   = { cpu = 256, memory = 512 }
     store  = { cpu = 512, memory = 2048 }
     ledger = { cpu = 512, memory = 2048 }
-    # 2 GiB for Kafka's default 1 GiB heap, with room for the health check's CLI beside it.
+    # 2 GiB for Kafka's default 1 GiB heap, with room for the health check's CLI beside it. Per
+    # broker: three of these run, so the running cost is this size times three (infra/README.md).
     kafka = { cpu = 512, memory = 2048 }
   }
 

@@ -11,6 +11,16 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **Kafka runs three brokers, not one** ([ADR 10](docs/design/0010-kafka-replication.md)):
+  replication factor 3 and `min.insync.replicas` 2 on every topic, including the one the ledger
+  declares, so an acknowledged write survives losing any single broker and a second one down is
+  refused rather than silently accepted. `infra/runtime/services.tf` runs them as three ECS
+  services (`kafka-1`..`kafka-3`), each a stable Cloud Map identity and a shared `CLUSTER_ID`, with
+  the matching security group rules for the controller quorum; `docker-compose.kafka-cluster.yml`
+  is the local equivalent, exercised by a new CI job ("the Kafka cluster survives losing a broker")
+  that stops one broker and confirms delivery continues, then a second and confirms it does not.
+  Not yet applied to the AWS account. `infra/README.md`'s cost tables and `scripts/aws.sh`'s
+  estimate move from $0.16 to $0.22 an hour accordingly.
 - **Aurora PostgreSQL Serverless v2 as the database, picked per deployment**
   (`infra/variables.tf`'s `database`, `infra/runtime/state.tf`, `scripts/aws.sh up
   --database=aurora`): the free plan's other option to RDS, capped at 4 ACU and 1 GiB of storage per

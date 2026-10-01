@@ -438,6 +438,129 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  kafka-cluster:
+    # docker-compose.kafka-cluster.yml's three brokers instead of the one in docker-compose.yml —
+    # the local equivalent of infra/'s three ECS services — so the replication factor 3,
+    # min.insync.replicas 2 configuration is actually run somewhere, not only declared
+    # (docs/design/0010-kafka-replication.md). Only the ledger and what it needs: the storefront,
+    # Redis and Keycloak have nothing to do with replication, and not starting them is most of why
+    # three Kafka JVMs here do not cost what they look like they should next to "the container
+    # stack works".
+    name: the Kafka cluster survives losing a broker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+
+      - name: build the images
+        uses: docker/bake-action@v6
+        with:
+          source: .
+          files: |
+            docker-compose.yml
+            docker-compose.kafka-cluster.yml
+          load: true
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
+
+      - name: bring up the ledger on three brokers
+        run: docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml up -d --wait till
+
+      # tillctl talks to the ledger that is already up; --no-deps is what keeps this from being a
+      # test of nothing, because `run` otherwise starts any stopped dependency first — including,
+      # later in this job, the broker the step just stopped on purpose.
+      - name: the topic the ledger declares has three replicas, and two in sync is enough to write
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml run --rm --no-deps \
+            tillctl adjust widget 100
+          description=$(docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml exec -T kafka \
+            /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --describe --topic till.events)
+          echo "$description"
+          grep -q 'ReplicationFactor: 3' <<< "$description"
+          grep -q 'min.insync.replicas=2' <<< "$description"
+
+      - name: one broker down, the stream still delivers
+        run: |
+          set -euo pipefail
+          compose() { docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml "$@"; }
+          offsets() {
+            compose exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server 127.0.0.1:9092 \
+              --topic till.events --time -1 | awk -F: '{sum += $3} END {print sum + 0}'
+          }
+
+          before=$(offsets)
+          compose stop kafka-3
+          compose run --rm --no-deps tillctl adjust widget 7
+
+          for i in $(seq 1 30); do
+            [ "$(offsets)" -gt "$before" ] && break
+            sleep 2
+          done
+          after=$(offsets)
+          echo "offsets on till.events: $before -> $after, with kafka-3 stopped"
+          test "$after" -gt "$before"
+
+          state=$(compose ps -a kafka-3 --format '{{.State}}')
+          echo "kafka-3 is $state"
+          test "$state" = exited
+
+      - name: two brokers down, a send fails instead of being acknowledged
+        run: |
+          set -euo pipefail
+          compose() { docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml "$@"; }
+          offsets() {
+            compose exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server 127.0.0.1:9092 \
+              --topic till.events --time -1 | awk -F: '{sum += $3} END {print sum + 0}'
+          }
+          # Absent until the first failure increments it, which grep then does not find: that is
+          # also "zero", not an error this should stop on.
+          failures() {
+            curl -sf http://127.0.0.1:9101/actuator/prometheus | grep '^till_outbox_failures_total ' | awk '{print $2}' || echo 0
+          }
+
+          before=$(offsets)
+          compose stop kafka-2
+          # The ledger's own write succeeds regardless — it only touches its database
+          # (docs/design/0006-outbox.md) — and the batch is offered to Kafka on the next tick,
+          # where min.insync.replicas=2 cannot be met by the one broker left.
+          compose run --rm --no-deps tillctl adjust widget 3
+
+          for i in $(seq 1 20); do
+            [ "$(failures)" != 0 ] && break
+            sleep 3
+          done
+          echo "till_outbox_failures_total: $(failures)"
+          test "$(failures)" != 0
+          echo "offsets on till.events: $before -> $(offsets) (must be unchanged)"
+          test "$(offsets)" = "$before"
+
+      - name: the backlog drains once the brokers are back
+        run: |
+          set -euo pipefail
+          compose() { docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml "$@"; }
+          compose start kafka-2 kafka-3
+          for i in $(seq 1 30); do
+            backlog=$(curl -sf http://127.0.0.1:9101/actuator/prometheus | grep '^till_outbox_backlog ' | awk '{print $2}')
+            [ "$backlog" = "0.0" ] && break
+            sleep 2
+          done
+          echo "till_outbox_backlog: $backlog"
+          test "$backlog" = "0.0"
+
+      - name: container state
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml ps -a
+          echo "--- logs ---"
+          docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml logs --no-color --tail=150 kafka kafka-2 kafka-3 till
+
+      - name: tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.kafka-cluster.yml down -v
+
   clean-clone:
     name: a clean clone builds
     runs-on: ubuntu-latest

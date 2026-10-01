@@ -18,7 +18,7 @@ flowchart LR
     L --> DB[("RDS PostgreSQL<br/>till · store")]
     S --> DB
     S --> R[("ElastiCache Valkey<br/><i>sessions</i>")]
-    L -. outbox .-> K["Kafka<br/><i>one broker</i>"]
+    L -. outbox .-> K["Kafka<br/><i>three brokers, replicated</i>"]
     K -. events .-> S
     S <-->|OpenID Connect| C["Cognito"]
     B -. sign-in .-> C
@@ -96,17 +96,21 @@ On-demand prices in us-west-2, from the AWS Price List API:
 | | Size | Per hour |
 | --- | --- | ---: |
 | Fargate, ARM: edge | 0.25 vCPU, 0.5 GB | $0.0099 |
-| Fargate, ARM: store, ledger, Kafka | 0.5 vCPU, 2 GB each | $0.0699 |
-| Public IPv4, one per task | 4 | $0.0200 |
+| Fargate, ARM: store, ledger | 0.5 vCPU, 2 GB each | $0.0466 |
+| Fargate, ARM: Kafka ×3 | 0.5 vCPU, 2 GB each | $0.0699 |
+| Public IPv4, one per task | 6 (edge, store, ledger, Kafka ×3) | $0.0300 |
 | Application Load Balancer | idle | $0.0225 |
 | RDS for PostgreSQL | db.t4g.micro, single-AZ, 20 GB gp3 | $0.0192 |
 | ElastiCache for Valkey | cache.t4g.micro, one node | $0.0128 |
-| **Running** | | **$0.154** |
+| **Running** | | **$0.211** |
 
-Round it to $0.16 for what is metered rather than reserved: CloudWatch Logs at $0.50 a GB written,
-load balancer capacity units at $0.008 each, DNS queries. CloudFront's always-free allowance —
-1 TB and 10 million requests a month — covers a session many times over, and so does Cognito's
-10,000 monthly users.
+One Kafka broker at this size is $0.0233 an hour (0.5 × $0.03238/vCPU-hour + 2 × $0.00356/GB-hour);
+three are the $0.0699 above — three times one, because nothing is shared between them
+([ADR 10](design/0010-kafka-replication.md)). Round the total to $0.22 for what is metered rather
+than reserved: CloudWatch Logs at $0.50 a GB written (a little more of it now, from two more
+containers), load balancer capacity units at $0.008 each, DNS queries. CloudFront's always-free
+allowance — 1 TB and 10 million requests a month — covers a session many times over, and so does
+Cognito's 10,000 monthly users.
 
 Stopped, what is left is ECR's storage ($0.10 a GB-month, for about a gigabyte of images), the logs'
 ($0.03 a GB-month, kept a week) and the state bucket's — cents a month in all. The VPC, its subnets,
@@ -154,16 +158,21 @@ it is the largest a free-plan account may create, which refuses anything bigger 
 
 | | Size | Per hour |
 | --- | --- | ---: |
-| Fargate, ARM: edge ×2, store ×4, ledger ×2, Kafka, the stand-in provider | 9.5 vCPU, 21 GB | $0.382 |
+| Fargate, ARM: edge ×2, store ×4, ledger ×2, Kafka ×3, the stand-in provider | 11.5 vCPU, 29 GB | $0.476 |
 | Fargate, ARM: the load generator, while a run lasts | 8 vCPU, 16 GB | $0.316 |
-| Public IPv4, one per task | 11 | $0.055 |
+| Public IPv4, one per task | 13 | $0.065 |
 | Application Load Balancer, and its capacity units under 3,500 requests a second | about 27 | $0.24 |
 | RDS for PostgreSQL | db.t4g.micro, single-AZ, and its unlimited-mode CPU beyond the baseline: $0.075 a vCPU-hour | up to $0.15 |
 | ElastiCache for Valkey | cache.t4g.micro | $0.013 |
-| **During a run** | | **about $1.15** |
+| **During a run** | | **about $1.26** |
 
-Between runs it is about $0.50 an hour. A session — start, a minute's trial, the protocol's run, stop —
-comes to well under a dollar.
+One Kafka broker at the load test's size (1 vCPU, 4 GB) is $0.0466 an hour; three are $0.1399 —
+about three times one, same arithmetic as the "Running" table above, folded into the $0.476 row
+because that row was already one blended total before this change. Between runs — no load
+generator task, but Kafka's three brokers still up — it is about $0.50 plus two more brokers'
+$0.0932, so about $0.59 an hour. A session — start, a minute's trial, the protocol's run, stop —
+is mostly at that between-runs rate and comes to well under a dollar still, the load generator's
+share of it being minutes, not an hour.
 
 ## How it is split
 
@@ -190,15 +199,23 @@ Parameter Store and Cognito. A NAT gateway is $0.045 an hour before it carries a
 all of the above but the containers — and VPC endpoints for the same four services would be $0.01
 an hour each per zone. [`network.tf`](network.tf) says the same.
 
-**Kafka is one broker on Fargate, not MSK.** It is the compose stack's broker, a single KRaft node,
-with its log on the task's own disk. That is enough because the ledger's outbox is the durable
-record: a broker that restarts empty is sent everything that has not been published yet. MSK
-Serverless would be $0.75 an hour on its own, five times all of this; provisioned MSK is two brokers
-at the least, $0.09 an hour for the smallest before storage, against $0.023 for this one.
+**Kafka is three brokers on Fargate, not MSK.** Three ECS services (`kafka-1`, `kafka-2`,
+`kafka-3`), each its own KRaft node, replication factor 3 and `min.insync.replicas` 2 on every
+topic — including the one the ledger declares — so losing any single broker loses neither an
+acknowledged write nor the ability to take the next one. Each node's log is still on its own
+task's disk, which Fargate does not keep across a replacement; that is accepted rather than
+engineered around with persistent storage, and [ADR 10](design/0010-kafka-replication.md) says
+why at length. The short version: the ledger's outbox is the durable record regardless of how many
+brokers exist, a broker that restarts empty re-replicates from the two that did not, and this
+deployment is a session that gets torn down, not a fixture that has to survive losing its zone.
+MSK Serverless would be $0.75 an hour on its own, five times all of this; provisioned MSK is two
+brokers at the least, $0.09 an hour for the smallest before storage, against $0.070 for three of
+these (the arithmetic below).
 
-**One zone for everything with state.** The database, the cache and the broker are single-instance,
-so the containers run in the same zone as them rather than paying for every query to cross zones.
-The load balancer is in two, because it has to be.
+**One zone for everything with state.** The database and the cache are single-instance, and
+Kafka's three brokers all run in that same zone too — three brokers change how many copies of a
+partition exist, not which zone holds them. All of it runs where the database and cache are rather
+than paying for every query to cross zones. The load balancer is in two, because it has to be.
 
 **CloudFront's own certificate.** There is no domain here, so the store is at
 `https://d….cloudfront.net`, and CloudFront terminates TLS with the certificate that comes with it.
@@ -217,7 +234,9 @@ generated passwords, and sign-up is closed.
 
 - RDS Multi-AZ with backups, deletion protection and a final snapshot; the store with a database
   user of its own rather than the master user.
-- MSK, or three brokers with replicated, persistent storage.
+- MSK, or persistent, replicated storage under Kafka's three brokers (EFS; today's disks are
+  ephemeral Fargate storage, re-replicated from the surviving two on a restart) — and more than
+  one zone for the whole stateful tier, database and cache included, not only Kafka.
 - The containers in private subnets behind NAT gateways or VPC endpoints, one per zone.
 - A domain of its own: an ACM certificate on CloudFront and HTTPS from CloudFront to the load
   balancer; AWS WAF in front.
