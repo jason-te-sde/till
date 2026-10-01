@@ -161,6 +161,19 @@ running_vars() {
   fi
 }
 
+# An up that names no database means RDS, and against a deployment running on Aurora that is not a
+# setting changed but a database replaced: the cluster destroyed, an empty instance created in its
+# place, ten minutes of each — between two runs of a session that meant to change something else.
+# So an up keeps the database a running deployment has, or says so; switching is down, then up.
+same_database() {
+  local deployed
+  [[ $(output running) == true ]] || return 0
+  # Absent from a state written before the choice existed, and then it was RDS.
+  deployed=$(output database 2> /dev/null) || return 0
+  [[ -z $deployed || $deployed == "${database:-rds}" ]] ||
+    fail "It is running on $deployed. scripts/aws.sh up --database=$deployed keeps it; to switch, scripts/aws.sh down first."
+}
+
 cmd_plan() {
   init
   local vars=()
@@ -176,6 +189,7 @@ cmd_up() {
   started=$(date +%s)
   [[ $loadtest == true ]] && hourly=$LOADTEST_HOURLY
   init
+  same_database
   push_images "$tag"
 
   local vars=()

@@ -137,6 +137,10 @@ This account is on AWS's free plan, which caps each option on its own terms:
 `ServerlessDatabaseCapacity` CloudWatch metric's maximum alongside the usual database CPU — the ACU
 equivalent of the CPU figures above.
 
+Every `up` of a running deployment keeps the database it has. An `up` that names another, or none
+against one on Aurora, would replace the database with an empty one, so it stops and says so
+instead: switching is `scripts/aws.sh down`, then `up` with the other.
+
 ## Set up for a load test
 
 `scripts/aws.sh up --loadtest` runs it the way [`docs/load-test.md`](../docs/load-test.md) says a

@@ -67,8 +67,10 @@ moved {
 # Aurora PostgreSQL has supported a minimum of 0 ACU since versions 13.15, 14.12, 15.7 and 16.3 — all
 # older than 17, so 17.9 qualifies:
 # https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2-auto-pause.html
-# A paused instance resumes on the next connection in about fifteen seconds, which is inside the
-# JDBC connect timeouts the services already run with (services.tf).
+# A paused instance takes about fifteen seconds to resume on the next connection, far longer than the
+# services wait for one (two seconds), but it does not pause while they run: it pauses only after
+# five minutes with no connection at all, and their pools keep theirs open. What it saves is the
+# cluster nobody is connected to.
 resource "aws_rds_cluster" "till" {
   count = var.database == "aurora" ? 1 : 0
 
@@ -83,9 +85,12 @@ resource "aws_rds_cluster" "till" {
   master_username = "till"
   master_password = var.db_password
 
+  # No availability_zones. Aurora keeps a cluster's storage in three zones whatever is named here,
+  # and a list of fewer comes back as three, which Terraform reads as a change that replaces the
+  # cluster — at the next apply, and every one after. The instance below is what is put in
+  # var.zone, next to the tasks.
   db_subnet_group_name   = var.db_subnet_group
   vpc_security_group_ids = [var.security_groups.db]
-  availability_zones     = [var.zone]
   storage_encrypted      = true
 
   serverlessv2_scaling_configuration {
@@ -121,7 +126,11 @@ resource "aws_rds_cluster_instance" "till" {
 }
 
 locals {
-  db_endpoint = var.database == "aurora" ? aws_rds_cluster.till[0].endpoint : aws_db_instance.till[0].address
+  # For Aurora, the instance's address rather than the cluster's. The cluster is ready before it has
+  # an instance to answer, and the services wait only for what they refer to: given the cluster's,
+  # they would start against an endpoint with nothing behind it. With one instance, its address is
+  # the writer's.
+  db_endpoint = var.database == "aurora" ? aws_rds_cluster_instance.till[0].endpoint : aws_db_instance.till[0].address
 }
 
 resource "aws_elasticache_replication_group" "sessions" {
