@@ -64,6 +64,15 @@ public final class TillClient {
     /** Attempts before a call gives up, unless configured otherwise. */
     public static final int DEFAULT_MAX_ATTEMPTS = 4;
 
+    /**
+     * Carries each attempt's budget: how long this attempt will still wait, in milliseconds.
+     * Relative rather than an absolute instant, so that clock skew between this host and the
+     * service cannot matter — the same reason gRPC's {@code grpc-timeout} is relative. Sent only
+     * when the call has a {@linkplain Builder#deadline deadline}; {@code tillctl} and the console
+     * use the client without one, and see no change.
+     */
+    static final String TIMEOUT_HEADER = "Till-Timeout-Ms";
+
     private final HttpClient http;
     private final URI base;
     private final String token;
@@ -396,6 +405,11 @@ public final class TillClient {
                 }
             }
             attempt++;
+            if (deadline != null) {
+                // setHeader, not header: on a retry the builder is reused, and header() would add
+                // a second value rather than replace the first attempt's.
+                builder.setHeader(TIMEOUT_HEADER, Long.toString(budget.toMillis()));
+            }
             HttpRequest request = builder.timeout(budget).build();
             HttpResponse<String> response;
             try {
