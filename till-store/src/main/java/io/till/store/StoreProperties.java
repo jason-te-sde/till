@@ -243,8 +243,12 @@ public record StoreProperties(
      *     default, and the setting to raise rather than lower: every "best sellers" read depends on
      *     the last {@link Games#SALES_WINDOW_DAYS} days still having a partition, so a shorter
      *     retention is refused rather than quietly dropping a window a live query still needs
+     * @param lockTimeout how long the maintenance pass's DDL waits for the lock it needs on
+     *     {@code store_sales_daily} before giving up and retrying next interval, rather than queuing
+     *     every other reader and writer of the table behind it for as long as whatever already holds
+     *     that lock keeps running
      */
-    public record Sales(@DefaultValue("13m") Period retention) {
+    public record Sales(@DefaultValue("13m") Period retention, @DefaultValue("2s") Duration lockTimeout) {
 
         public Sales {
             if (retention.isZero() || retention.isNegative()) {
@@ -257,6 +261,9 @@ public record StoreProperties(
             if (approxDays < Games.SALES_WINDOW_DAYS) {
                 throw new IllegalArgumentException("store.sales.retention must be at least " + Games.SALES_WINDOW_DAYS
                         + " days, the best-seller window it would otherwise cut a partition out from under");
+            }
+            if (lockTimeout.isZero() || lockTimeout.isNegative()) {
+                throw new IllegalArgumentException("store.sales.lock-timeout must be positive");
             }
         }
     }

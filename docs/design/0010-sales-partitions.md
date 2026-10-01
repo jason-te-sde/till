@@ -46,13 +46,12 @@ as the table's catch-all.
   only when there is no default; with one, a row for a month nobody has created yet is kept, not
   rejected. That is what makes the next point safe rather than a race against every write.
 - **`SalesPartitionMaintenance`** (`io.till.store.sales`) ensures this month's and next month's
-  partitions exist, on startup and once a day (`store.sales.partitions.interval`, default 24h) — the
-  same shape as `till-server`'s `RetentionSweeper` / `ExpirySweeper` / `OutboxPublisher`, the closest
-  prior art in this codebase for "a thing that must keep happening without a release," adapted into
-  `till-store`, which had none of its own yet. It also drops whole months older than
-  `store.sales.retention` (default 13 months; the record refuses a value shorter than
-  `Games.SALES_WINDOW_DAYS` at startup, because a retention shorter than the window it exists to keep
-  cheap is a misconfiguration, not a valid small number).
+  partitions exist, on startup and once a day — the same shape as `till-server`'s `RetentionSweeper` /
+  `ExpirySweeper` / `OutboxPublisher`, the closest prior art in this codebase for "a thing that must
+  keep happening without a release," adapted into `till-store`, which had none of its own yet. It also
+  drops whole months older than `store.sales.retention` (default 13 months; the record refuses a
+  value shorter than `Games.SALES_WINDOW_DAYS` at startup, because a retention shorter than the window
+  it exists to keep cheap is a misconfiguration, not a valid small number).
 - **A month created while `default` already holds rows for it is handled, not assumed away.**
   PostgreSQL refuses to create or attach a partition that would pull rows out from under `default`
   unless they are moved out first. `SalesPartitionMaintenance` checks for that case before creating a
@@ -63,6 +62,23 @@ as the table's catch-all.
   propagates both to every partition created the ordinary way (`create table ... partition of ...
   for values from (...) to (...)`); only the rescue-from-`default` path recreates them by hand, because
   it attaches a table that was never created as a partition in the first place.
+- **The whole pass runs in one transaction, entered only after a claim.** Every store instance runs
+  `SalesPartitionMaintenance` at the same moment on a fresh deploy (`ApplicationReadyEvent`), and
+  `create table if not exists` is not race-free in PostgreSQL — two sessions can both pass the
+  existence check and then collide creating the same relation. `pg_try_advisory_xact_lock`, the same
+  pattern as `till-jdbc`'s `JdbcLedger` outbox-publishing claim (`CLAIM_PUBLISHING` /
+  `PUBLISHING_LOCK`), means at most one instance ever runs this DDL at a time; the rest find the claim
+  taken and do nothing that pass. The single transaction is what makes a crash mid-rescue safe: a task
+  that dies after moving rows out of `default` but before attaching the table they went into used to
+  leave that table behind, unattached, under the exact name the next pass's existence check matches —
+  so it was never revisited, and the month's sales became invisible to every query, permanently and
+  silently. One transaction means the connection dropping with the process rolls the whole pass back,
+  `default` included, so the next pass starts from exactly where the last successful one left off.
+  `set local lock_timeout` (`store.sales.lock-timeout`, default 2s), set once the claim is held,
+  bounds how long the DDL waits for its lock on `store_sales_daily` — which PostgreSQL extends to
+  every one of its partitions, `default` included. Without it, a slow query already holding that lock
+  would queue every later reader and writer of the table behind this pass, for as long as the slow
+  query runs, because PostgreSQL's lock queue is first in, first out.
 
 ## Consequences
 
@@ -79,11 +95,26 @@ can fail silently if nobody is watching logs for it — the same cost every swee
 already carries, and no larger than that. A failed run leaves next month's partition missing for a
 day, which `default` absorbs without losing anything.
 
+**A lock the DDL cannot get within `lock_timeout` costs one pass, not a stalled table.** The pass
+rolls back and tries again next interval; a partition is created a month ahead of when anything needs
+it, so losing a day to contention costs nothing a caller would notice. The failure is logged at
+`WARN`, distinct from any other failure, because it is the expected outcome of something else holding
+`store_sales_daily` open for a while, not a bug in this job.
+
 **`default` is still a sequential scan if rows keep landing there.** A clock far out of step, or the
 job disabled for longer than a month, grows it the same way the old unpartitioned table grew. Normal
 operation keeps it empty, because every month gets its own partition before any row needs it.
 
 ## Alternatives
+
+**Each statement autocommitting on its own, no claim.** The first version of this design. It missed
+two things, both found in review before this shipped: concurrent `create table if not exists` on a
+fresh deploy — every instance runs the first pass at the same moment — can collide in PostgreSQL
+rather than one of them simply finding the table already there; and without one transaction around
+the rescue sequence, a task that died between moving rows out of `default` and attaching the table
+they went into left that table behind, unattached, invisible to every later pass's existence check,
+and so invisible to every query, forever. Both are why the pass is now a single claimed transaction
+rather than a sequence of independent statements.
 
 **Leave it unpartitioned and `delete` old rows on a schedule**, the way `RetentionSweeper` already
 prunes the ledger's history. Simpler — no migration, no new component — but a `delete` of a month's

@@ -19,7 +19,12 @@ explicitly not: it is a testing tool and it will change.
   `SalesPartitionMaintenance` creates this month's and next month's partitions on start-up and once a
   day, moves rows out of `default` when a month's partition is created after they landed there, and
   drops whole months past `store.sales.retention` (default 13 months; refused below the seven-day
-  best-seller window it would otherwise cut a partition out from under).
+  best-seller window it would otherwise cut a partition out from under). Every store instance running
+  this at the same moment on a fresh deploy is claimed with a transaction-scoped advisory lock, the
+  same pattern as the ledger's outbox publisher, and the whole pass runs in one transaction bounded by
+  `store.sales.lock-timeout` (default 2s), so a task that dies mid-pass never leaves a partition
+  created but not attached, and a slow query already holding the table's lock costs this job one
+  retry rather than every other reader and writer queuing behind it.
 - **The ledger honours the caller's deadline** ([ADR 11](docs/design/0011-request-deadlines.md)).
   `TillClient` sends, on every attempt, what is left of its call's deadline as `Till-Timeout-Ms` —
   milliseconds, relative rather than an absolute instant, so clock skew between hosts cannot matter.

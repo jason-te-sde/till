@@ -1,6 +1,7 @@
 package io.till.store.sales;
 
 import io.till.store.StoreProperties;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -15,6 +16,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Keeps {@code store_sales_daily}'s monthly partitions one month ahead of the clock, and drops the
@@ -44,6 +46,37 @@ import org.springframework.stereotype.Component;
  * waiting, moves them into a table built with the same primary key and index the ordinary path would
  * have given it, then attaches that — rather than letting the create fail or leaving the rows where a
  * seven-day read would have to scan over all of {@code default} to find them.
+ *
+ * <h2>One transaction, one claim</h2>
+ *
+ * <p>The whole pass — the rescue sequence above included — runs inside one transaction, entered only
+ * after {@link #CLAIM_MAINTENANCE} succeeds, exactly as {@code JdbcLedger}'s outbox publisher claims
+ * before it drains ({@code till-jdbc}, {@code CLAIM_PUBLISHING}/{@code PUBLISHING_LOCK}). Two things
+ * that pattern buys here:
+ *
+ * <ul>
+ *   <li><b>Every store instance runs {@link #maintain} at the same moment on a fresh deploy</b>
+ *       ({@code ApplicationReadyEvent}), and {@code create table if not exists} is not race-free in
+ *       PostgreSQL: two sessions can both pass the existence check and then collide creating the same
+ *       relation. The claim means only one instance ever runs the DDL below at a time; the rest see
+ *       {@link #maintain} return having done nothing, which is indistinguishable from a pass that
+ *       simply found nothing to do.
+ *   <li><b>A task that dies mid-rescue</b> — after moving rows out of {@code default} but before
+ *       attaching the table they were moved into — used to leave that table behind, unattached, under
+ *       the name the next pass's existence check matches: the month's sales would be invisible to
+ *       every query, permanently, and silently. One transaction makes that impossible. The connection
+ *       dropping with the process rolls everything in the pass back, default included, so the next
+ *       pass starts from exactly where the last successful one left off.
+ * </ul>
+ *
+ * <p>{@code set local lock_timeout}, set once the claim is held, bounds how long the DDL below will
+ * wait for the lock it needs on {@code store_sales_daily} — which PostgreSQL extends to every one of
+ * its partitions, {@code default} included. Without it, a slow query already holding that lock would
+ * queue every later reader and writer of the table behind this pass, for as long as the slow query
+ * runs: PostgreSQL's lock queue is first in, first out, so a DDL statement waiting for a lock holds
+ * its place in line even against requests that would not otherwise conflict with each other. A
+ * partition is created a month ahead of when anything needs it, so losing a pass to the timeout and
+ * retrying at the next interval costs nothing a caller would notice.
  */
 @Component
 class SalesPartitionMaintenance {
@@ -53,13 +86,28 @@ class SalesPartitionMaintenance {
     /** The naming scheme this class both writes and reads back; see {@link #partitionName}. */
     private static final Pattern MONTHLY_PARTITION = Pattern.compile("store_sales_daily_y(\\d{4})m(\\d{2})");
 
+    /**
+     * The maintenance claim: a transaction-scoped advisory lock, so it is released automatically when
+     * the transaction ends — committed, rolled back, or dropped with the connection of an instance
+     * that died holding it — never left held by a session that is no longer there to release it.
+     */
+    private static final String CLAIM_MAINTENANCE = "select pg_try_advisory_xact_lock(?)";
+
+    /** "tillpart" in ASCII. Any fixed number would do; this one says whose it is in {@code pg_locks}. */
+    static final long MAINTENANCE_LOCK = 0x74696c6c70617274L;
+
+    /** PostgreSQL's SQLSTATE for a statement that gave up waiting for a lock. */
+    private static final String LOCK_NOT_AVAILABLE = "55P03";
+
     private final JdbcClient jdbc;
     private final Clock clock;
+    private final TransactionTemplate transaction;
     private final StoreProperties.Sales properties;
 
-    SalesPartitionMaintenance(JdbcClient jdbc, Clock clock, StoreProperties properties) {
+    SalesPartitionMaintenance(JdbcClient jdbc, Clock clock, TransactionTemplate transaction, StoreProperties properties) {
         this.jdbc = jdbc;
         this.clock = clock;
+        this.transaction = transaction;
         this.properties = properties.sales();
     }
 
@@ -87,23 +135,45 @@ class SalesPartitionMaintenance {
     /**
      * Guards both triggers the same way every scheduled job in this codebase does: an uncaught
      * exception from a {@code @Scheduled} method cancels every future run of it for the life of the
-     * process, which would silently stop partitions from ever being created again.
+     * process, which would silently stop partitions from ever being created again. A lock-timeout
+     * failure is logged at a lower level than any other, because it is the expected outcome of
+     * something else legitimately holding {@code store_sales_daily} open for a while, not a bug.
      */
     private void runProtected() {
         try {
             maintain();
         } catch (RuntimeException e) {
-            LOG.error("sales partition maintenance failed; it will try again next interval", e);
+            if (isLockTimeout(e)) {
+                LOG.warn("sales partition maintenance gave up waiting {} for a lock on store_sales_daily; it will "
+                                + "try again next interval. If this keeps happening, find what is holding the table "
+                                + "open that long — this job is not where the problem is.",
+                        properties.lockTimeout(), e);
+            } else {
+                LOG.error("sales partition maintenance failed; it will try again next interval", e);
+            }
         }
     }
 
-    /** One pass: this month, next month, and whatever the retention window no longer wants. */
+    /**
+     * One pass, in one transaction, entered only once this instance holds {@link #MAINTENANCE_LOCK}:
+     * this month, next month, and whatever the retention window no longer wants. See the class
+     * documentation for why both the claim and the single transaction matter.
+     */
     void maintain() {
-        LocalDate today = LocalDate.now(clock.withZone(ZoneOffset.UTC));
-        YearMonth thisMonth = YearMonth.from(today);
-        ensureMonth(thisMonth);
-        ensureMonth(thisMonth.plusMonths(1));
-        dropExpired(today);
+        transaction.executeWithoutResult(status -> {
+            Boolean claimed = jdbc.sql(CLAIM_MAINTENANCE).param(MAINTENANCE_LOCK).query(Boolean.class).single();
+            if (!Boolean.TRUE.equals(claimed)) {
+                LOG.debug("another instance already holds the sales partition maintenance claim; skipping this pass");
+                return;
+            }
+            jdbc.sql("set local lock_timeout = '" + properties.lockTimeout().toMillis() + "ms'").update();
+
+            LocalDate today = LocalDate.now(clock.withZone(ZoneOffset.UTC));
+            YearMonth thisMonth = YearMonth.from(today);
+            ensureMonth(thisMonth);
+            ensureMonth(thisMonth.plusMonths(1));
+            dropExpired(today);
+        });
     }
 
     private void ensureMonth(YearMonth month) {
@@ -190,5 +260,15 @@ class SalesPartitionMaintenance {
             return null;
         }
         return YearMonth.of(Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2)));
+    }
+
+    /** Walks the cause chain for the SQLSTATE PostgreSQL uses for an expired {@code lock_timeout}. */
+    private static boolean isLockTimeout(Throwable e) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLException sqlException && LOCK_NOT_AVAILABLE.equals(sqlException.getSQLState())) {
+                return true;
+            }
+        }
+        return false;
     }
 }

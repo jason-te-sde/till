@@ -104,6 +104,9 @@ store:
     # drops it. Generous, and the one to raise rather than lower: shorter than the seven-day
     # best-seller window is refused at start-up (docs/design/0010-sales-partitions.md).
     retention: ${STORE_SALES_RETENTION:13m}
+    # How long the maintenance pass's DDL waits for its lock on store_sales_daily before giving up
+    # and retrying next interval, rather than queuing every reader and writer of the table behind it.
+    lock-timeout: ${STORE_SALES_LOCK_TIMEOUT:2s}
 
 springdoc:
   api-docs:
