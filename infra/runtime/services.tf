@@ -201,10 +201,13 @@ resource "aws_ecs_service" "ledger" {
   # The store and the ledger hold 64 connections between them at steady state (32 each: see the store
   # service below), which is most of what a db.t4g.micro allows before it refuses the rest — around
   # 70. The default deployment would double the ledger's own 32 to 64 while rolling, the same way it
-  # did for the store; replacing one task at a time keeps it at 32 throughout. 50% of 2 is exactly 1,
-  # so this is sized to that count rather than computed from it — a different ledger.count changes the
-  # connection budget too and needs the same rechecking either way.
-  deployment_minimum_healthy_percent = 50
+  # did for the store; replacing one task at a time keeps it at 32 throughout, whatever the count. The
+  # minimum is derived rather than a number tied to the load test's two, because this module also runs
+  # the default deployment's single task (var.size.ledger.count defaults to 1 in variables.tf, where
+  # loadtest.tfvars is not loaded): a hard-coded 50% would still round up to a minimum of 1 against a
+  # maximum of 1, and the service could never start a replacement. For one task the derived minimum is
+  # 0%, so a deploy stops it and then starts the replacement — a brief gap rather than a stuck one.
+  deployment_minimum_healthy_percent = floor(100 * (var.size.ledger.count - 1) / var.size.ledger.count)
   deployment_maximum_percent         = 100
   availability_zone_rebalancing      = "DISABLED"
 
@@ -322,12 +325,15 @@ resource "aws_ecs_service" "store" {
   # refusing around 70. The default deployment (maximumPercent 200) starts four replacement tasks
   # before stopping the four old ones, so a store deploy alone doubled the store's 32 to 64 and pushed
   # the combined total past the limit; that rolled the store back twice on 2026-10-01 when only
-  # STORE_DEMO_SHARDS changed. Replacing one task at a time keeps the store at 32 throughout. 75% of 4
-  # is exactly 3, so this is sized to that count rather than computed from it — a different store.count
-  # changes the connection budget too and needs the same rechecking either way. Availability Zone
-  # Rebalancing is off because ECS refuses it otherwise: "Availability Zone Rebalancing does not
-  # support maximumPercent <= 100 %".
-  deployment_minimum_healthy_percent = 75
+  # STORE_DEMO_SHARDS changed. Replacing one task at a time keeps the store at 32 throughout, whatever
+  # the count. The minimum is derived rather than a number tied to the load test's four, because this
+  # module also runs the default deployment's single task (var.size.store.count defaults to 1 in
+  # variables.tf, where loadtest.tfvars is not loaded): a hard-coded 75% would still round up to a
+  # minimum of 1 against a maximum of 1, and the service could never start a replacement. For one
+  # task the derived minimum is 0%, so a deploy stops it and then starts the replacement — a brief gap
+  # rather than a stuck one. Availability Zone Rebalancing is off because ECS refuses maximumPercent
+  # of 100 or less otherwise: "Availability Zone Rebalancing does not support maximumPercent <= 100 %".
+  deployment_minimum_healthy_percent = floor(100 * (var.size.store.count - 1) / var.size.store.count)
   deployment_maximum_percent         = 100
   availability_zone_rebalancing      = "DISABLED"
 
