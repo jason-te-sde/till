@@ -95,6 +95,13 @@ explicitly not: it is a testing tool and it will change.
 
 ### Changed
 
+- **The event stream keeps up.** The outbox publisher drains until it has caught up
+  (`till.outbox.passes`), one instance at a time under a publishing claim, and the ledger declares its
+  topic with `till.kafka.partitions` (12) before it publishes. One batch of 200 a second had capped the
+  stream at about 200 events a second, a second instance added only copies, and a topic left to the
+  broker's default had one partition — so of four stores, one consumed. Measured end to end, from about
+  390 events a second to about 3,000 (ADR 6). A store now waits for the ledger to declare the topic
+  rather than letting the broker create it with one partition.
 - **A decision writes its stock rows first**, in SKU and shard order: they are the rows most likely to
   have moved, and a conflict found after the reservation's inserts rolled them back.
 - **A snapshot's transaction sets its own isolation** with `SET TRANSACTION`, rather than the

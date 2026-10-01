@@ -3,6 +3,11 @@ package io.till.server;
 import io.till.core.EventPublisher;
 import io.till.kafka.KafkaEventPublisher;
 import io.till.kafka.KafkaProducers;
+import io.till.kafka.KafkaTopic;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.producer.Producer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,13 +46,39 @@ class KafkaConfiguration {
     }
 
     /**
+     * @param properties the configured broker list, and the settings a secured cluster needs
+     * @return the client that declares the topic, closed by Spring at shutdown
+     */
+    @Bean(destroyMethod = "close")
+    Admin kafkaAdmin(TillProperties properties) {
+        TillProperties.Kafka kafka = properties.kafka();
+        Map<String, Object> config = new HashMap<>(kafka.properties());
+        config.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.bootstrapServers());
+        return Admin.create(config);
+    }
+
+    /**
+     * The publisher, which declares the topic before the first batch it sends.
+     *
+     * <p>Before every batch until that has worked once, and the batch fails while it has not: so the
+     * first record never reaches a topic a broker created on its own, with its default of one
+     * partition, and a broker that is not up yet costs the publisher a few rounds rather than the
+     * service its start.
+     *
      * @param producer the producer to send with
-     * @param properties the configured topic and delivery budget
+     * @param admin the client that declares the topic
+     * @param properties the configured topic, its partitions and the delivery budget
      * @return the publisher {@code OutboxPublisher} will find and use instead of the log-line one
      */
     @Bean
-    EventPublisher kafkaEventPublisher(Producer<String, String> producer, TillProperties properties) {
+    EventPublisher kafkaEventPublisher(Producer<String, String> producer, Admin admin, TillProperties properties) {
         TillProperties.Kafka kafka = properties.kafka();
-        return new KafkaEventPublisher(producer, kafka.topic(), kafka.deliveryTimeout());
+        KafkaTopic topic =
+                new KafkaTopic(admin, kafka.topic(), kafka.partitions(), kafka.replicationFactor(), kafka.deliveryTimeout());
+        KafkaEventPublisher publisher = new KafkaEventPublisher(producer, kafka.topic(), kafka.deliveryTimeout());
+        return entries -> {
+            topic.ensure();
+            publisher.publish(entries);
+        };
     }
 }

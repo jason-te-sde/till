@@ -2,6 +2,8 @@ package io.till.core;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.OptionalInt;
+import java.util.function.Consumer;
 
 /**
  * The reading half of the transactional outbox.
@@ -52,4 +54,22 @@ public interface Outbox {
      * @param at when they were delivered
      */
     void markPublished(List<Long> sequences, Instant at);
+
+    /**
+     * Publishes the oldest unpublished entries, if no other publisher is: reads up to {@code limit} of
+     * them, hands them to {@code publish}, and marks them published at {@code at} — all under one
+     * claim that one publisher at a time can hold.
+     *
+     * <p>One at a time, so that two publishers never send the same entries and neither overtakes the
+     * other: entries leave in sequence order, which is the order a consumer of one reservation's
+     * events needs. If {@code publish} throws, nothing is marked and the claim is given up, so the
+     * same entries are offered again next time.
+     *
+     * @param limit at most how many
+     * @param at when they are handed over
+     * @param publish delivers them, throwing if it could not
+     * @return how many were published — 0 when none were waiting — or empty when another publisher
+     *     holds the claim
+     */
+    OptionalInt publishNext(int limit, Instant at, Consumer<List<OutboxEntry>> publish);
 }

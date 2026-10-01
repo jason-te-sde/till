@@ -2,10 +2,9 @@ package io.till.server;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.till.core.EventPublisher;
-import io.till.core.OutboxEntry;
 import io.till.jdbc.JdbcLedger;
 import java.time.Clock;
-import java.util.List;
+import java.util.OptionalInt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -22,10 +21,16 @@ import org.springframework.stereotype.Component;
  * way round would lose an event every time this process died at the wrong moment, and nothing
  * downstream would ever know which one.
  *
- * <p>Several instances may run this at once. Two of them can deliver the same batch — the duplicate
- * is the consumer's to drop, which it can, because every event carries a stable deduplication key.
- * Coordinating them instead would buy exactly-once at the cost of a lock on the hot path, and the
- * consumer needs to be idempotent anyway.
+ * <p><b>Until it has caught up.</b> A run publishes batch after batch while each comes back full,
+ * up to {@code till.outbox.passes} of them, and waits the interval only once it has caught up. One
+ * batch a run was a ceiling of one batch an interval, and a busy checkout writes more than that.
+ *
+ * <p><b>One instance at a time.</b> Several may run this, and each round is taken under the outbox's
+ * publishing claim ({@link io.till.core.Outbox#publishNext}): the instance that holds it publishes, and
+ * the others sit the round out. They used not to — two instances delivered the same batches, and the
+ * consumers dropped the copies — which was cheap at one batch a second and doubles everything the
+ * consumers do once a run drains the backlog. One at a time also keeps the entries in sequence order
+ * on their way out, and the next instance takes over the moment one stops holding the claim.
  *
  * <p>The backlog gauge is deliberately <b>not</b> here. It reports on this component, so keeping it
  * here made it accurate only while this component was working — see {@link TillMetrics}.
@@ -83,20 +88,27 @@ class OutboxPublisher {
      */
     @Scheduled(fixedDelayString = "${till.outbox.interval:1s}", initialDelayString = "${till.outbox.interval:1s}")
     void drain() {
-        List<OutboxEntry> batch = ledger.unpublished(properties.outbox().batch());
-        if (batch.isEmpty()) {
-            return;
+        TillProperties.Outbox settings = properties.outbox();
+        for (int pass = 0; pass < settings.passes(); pass++) {
+            OptionalInt published;
+            try {
+                published = ledger.publishNext(settings.batch(), clock.instant(), publisher::publish);
+            } catch (RuntimeException e) {
+                // Nothing is marked, so the same batch is offered again next time. That is the correct
+                // response to a broker that is down, and it is why delivery is at least once.
+                LOG.warn("publishing the outbox failed; the batch will be offered again", e);
+                registry.counter("till.outbox.failures").increment();
+                return;
+            }
+            if (published.isEmpty()) {
+                // Another instance is publishing; it will drain what this one would have.
+                registry.counter("till.outbox.standby").increment();
+                return;
+            }
+            registry.counter("till.outbox.published").increment(published.getAsInt());
+            if (published.getAsInt() < settings.batch()) {
+                return;
+            }
         }
-        try {
-            publisher.publish(batch);
-        } catch (RuntimeException e) {
-            // Nothing is marked, so the same batch is offered again next time. That is the correct
-            // response to a broker that is down, and it is why delivery is at least once.
-            LOG.warn("publishing {} events failed; they will be offered again", batch.size(), e);
-            registry.counter("till.outbox.failures").increment();
-            return;
-        }
-        ledger.markPublished(batch.stream().map(OutboxEntry::sequence).toList(), clock.instant());
-        registry.counter("till.outbox.published").increment(batch.size());
     }
 }

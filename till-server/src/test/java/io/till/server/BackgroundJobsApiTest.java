@@ -42,7 +42,9 @@ import org.springframework.test.context.TestPropertySource;
             "till.outbox.interval=1h",
             // Small, so that draining more than a batch in one run needs only a handful of holds.
             "till.sweeper.batch=2",
-            "till.sweeper.passes=10"
+            "till.sweeper.passes=10",
+            "till.outbox.batch=2",
+            "till.outbox.passes=3"
         })
 // JUnit does not inherit @ResourceLock from a superclass, so every class that shares the one
 // database names the lock itself. Without it two Spring contexts write the same tables at once and
@@ -138,6 +140,47 @@ class BackgroundJobsApiTest extends ApiTestBase {
 
         publisher.drain();
         assertEquals(3, collected.delivered().size());
+    }
+
+    @Test
+    @DisplayName("one run publishes batch after batch until it has caught up, up to its passes")
+    void publisherDrainsABacklog() {
+        TillClient till = client(ADMIN_TOKEN);
+        for (int i = 0; i < 7; i++) {
+            till.adjust(IdempotencyKey.of("d" + i), Sku.of("widget"), 1);
+        }
+
+        publisher.drain();
+        assertEquals(6, collected.delivered().size(), "three passes of two");
+        assertEquals(1, ledger.backlog());
+
+        publisher.drain();
+        assertEquals(0, ledger.backlog(), "and the last one on the next run");
+        assertEquals(7, meters.counter("till.outbox.published").count(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("an instance sits out a round another is publishing, rather than sending the same events twice")
+    void oneInstanceAtATime() throws Exception {
+        TillClient till = client(ADMIN_TOKEN);
+        till.adjust(IdempotencyKey.of("d1"), Sku.of("widget"), 1);
+        till.adjust(IdempotencyKey.of("d2"), Sku.of("widget"), 1);
+
+        // Another instance's round, holding the claim while this instance's run starts.
+        ledger.publishNext(1, clock.instant(), batch -> {
+            try (var other = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+                other.submit(publisher::drain).get(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+
+        assertTrue(collected.delivered().isEmpty(), "this instance sent nothing");
+        assertEquals(1, meters.counter("till.outbox.standby").count(), 1e-9);
+        assertEquals(1, ledger.backlog(), "the other marked the one it took");
+
+        publisher.drain();
+        assertEquals(List.of("adjusted:d2"), collected.delivered());
     }
 
     @Test

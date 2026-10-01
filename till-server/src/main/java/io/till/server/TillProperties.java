@@ -158,13 +158,24 @@ public record TillProperties(
      * The background publisher.
      *
      * @param enabled whether to run it
-     * @param interval how often
-     * @param batch how many events to publish per run
+     * @param interval how long it waits once it has caught up
+     * @param batch how many events to publish at a time
+     * @param passes how many batches a run may publish while each comes back full. One batch a run
+     *     was a ceiling of one batch an interval — 200 events a second, below what a busy checkout
+     *     writes — and the backlog, and every store's view of stock, fell behind it
      */
     public record Outbox(
             @DefaultValue("true") boolean enabled,
             @DefaultValue("1s") Duration interval,
-            @DefaultValue("200") int batch) {}
+            @DefaultValue("500") int batch,
+            @DefaultValue("20") int passes) {
+
+        public Outbox {
+            if (batch < 1 || passes < 1) {
+                throw new IllegalArgumentException("till.outbox.batch and till.outbox.passes must be at least 1");
+            }
+        }
+    }
 
     /**
      * Where the outbox goes, when it goes to Kafka.
@@ -180,15 +191,25 @@ public record TillProperties(
      *     rather than letting it come back on the next tick
      * @param properties extra producer settings, merged last, so a deployment can set security or
      *     tuning options without a code change
+     * @param partitions how many partitions the topic has at least: how many consumers of one group can
+     *     read it at once. The ledger declares the topic before it publishes to it, so the number is
+     *     this and not a broker's default
+     * @param replicationFactor how many copies of each partition a topic the ledger creates has; one
+     *     for a single broker, three for a cluster that should survive losing one
      */
     public record Kafka(
             @DefaultValue("") String bootstrapServers,
             @DefaultValue("till.events") String topic,
             @DefaultValue("30s") Duration deliveryTimeout,
-            @DefaultValue Map<String, String> properties) {
+            @DefaultValue Map<String, String> properties,
+            @DefaultValue("12") int partitions,
+            @DefaultValue("1") short replicationFactor) {
 
         public Kafka {
             properties = properties == null ? Map.of() : Map.copyOf(properties);
+            if (partitions < 1 || replicationFactor < 1) {
+                throw new IllegalArgumentException("till.kafka.partitions and till.kafka.replication-factor must be at least 1");
+            }
         }
 
         /**
