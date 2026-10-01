@@ -283,7 +283,7 @@ class JdbcLedgerTest {
         // A commit's snapshot takes four reads. After the first, another connection changes the stock
         // and commits; the fourth, which reads the stock, must not see it.
         List<String> settings = new CopyOnWriteArrayList<>();
-        DataSource interfering = interfering(dataSource, settings, "select sku, on_hand", () -> {
+        DataSource interfering = interfering(dataSource, settings, "select sku, shard, on_hand", () -> {
             try (Connection other = dataSource.getConnection();
                     Statement statement = other.createStatement()) {
                 statement.executeUpdate(

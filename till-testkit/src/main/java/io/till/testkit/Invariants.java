@@ -1,5 +1,6 @@
 package io.till.testkit;
 
+import io.till.core.Allocation;
 import io.till.core.Event;
 import io.till.core.LedgerInspector;
 import io.till.core.Line;
@@ -9,7 +10,9 @@ import io.till.core.ReservationId;
 import io.till.core.ReservationState;
 import io.till.core.Sku;
 import io.till.core.StockItem;
+import io.till.core.StockShard;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -26,12 +29,15 @@ import java.util.Set;
  * <p>The properties:
  *
  * <ul>
- *   <li><b>Possible levels.</b> {@code 0 <= reserved <= onHand} for every SKU. The most direct
- *       statement of "never oversold": stock cannot be promised twice, and cannot be promised at all
- *       if it is not there.
+ *   <li><b>Possible levels.</b> {@code 0 <= reserved <= onHand} for every SKU, and for every shard
+ *       of every SKU. The most direct statement of "never oversold": stock cannot be promised twice,
+ *       and cannot be promised at all if it is not there — not by the SKU, and not by any row of it.
  *   <li><b>Conservation.</b> A SKU's {@code reserved} equals the sum of the quantities of every
- *       reservation whose stored state is {@code HELD}. Not "roughly equals" and not "eventually
- *       equals": every hold is counted exactly once, at every instant.
+ *       reservation whose stored state is {@code HELD}, and so does each shard's, counting what each
+ *       hold took from it. Not "roughly equals" and not "eventually equals": every hold is counted
+ *       exactly once, at every instant, in the row it came from.
+ *   <li><b>A level is its shards.</b> What a SKU reports is its shards added up, and the shards are
+ *       numbered from 0 without a gap.
  *   <li><b>The ledger agrees with its own audit log.</b> {@code onHand} equals the adjustments in
  *       the outbox minus the commits in it, and {@code reserved} equals the reservations in it minus
  *       the commits, releases and expiries. This is the invariant that catches a change written
@@ -61,6 +67,7 @@ public final class Invariants {
     private final Map<Sku, Ledgered> ledgered = new HashMap<>();
     private final Map<ReservationId, ReservationState> lastState = new HashMap<>();
     private final Map<Sku, Long> maxStockVersion = new HashMap<>();
+    private final Map<String, Long> maxShardVersion = new HashMap<>();
     private final Map<ReservationId, Long> maxReservationVersion = new HashMap<>();
     private final Map<ReservationId, Set<String>> eventKinds = new HashMap<>();
     private final Set<String> dedupeKeys = new HashSet<>();
@@ -98,14 +105,16 @@ public final class Invariants {
     public void check(long step, Instant now, LedgerInspector inspector) {
         checks++;
         List<StockItem> stock = inspector.allStock();
+        List<StockShard> shards = inspector.allShards();
         List<Reservation> reservations = inspector.allReservations();
 
         foldNewEvents(step, inspector.allEvents());
-        possibleLevels(step, stock);
-        conservation(step, stock, reservations);
+        possibleLevels(step, stock, shards);
+        levelsAreTheirShards(step, stock, shards);
+        conservation(step, stock, shards, reservations);
         agreesWithItsAuditLog(step, stock);
         terminalStatesAreTerminal(step, reservations);
-        versionsNeverGoBackwards(step, stock, reservations);
+        versionsNeverGoBackwards(step, stock, shards, reservations);
         eventsMatchStates(step, now, reservations);
     }
 
@@ -161,16 +170,46 @@ public final class Invariants {
         return eventKinds.computeIfAbsent(id, ignored -> new HashSet<>());
     }
 
-    private void possibleLevels(long step, List<StockItem> stock) {
+    private void possibleLevels(long step, List<StockItem> stock, List<StockShard> shards) {
         for (StockItem item : stock) {
             if (item.onHand() < 0 || item.reserved() < 0 || item.reserved() > item.onHand()) {
                 throw new InvariantViolation("Possible levels", seed, step, item.toString());
             }
         }
+        for (StockShard shard : shards) {
+            if (shard.onHand() < 0 || shard.reserved() < 0 || shard.reserved() > shard.onHand()) {
+                throw new InvariantViolation("Possible levels", seed, step, shard.toString());
+            }
+        }
     }
 
-    private void conservation(long step, List<StockItem> stock, List<Reservation> reservations) {
+    private void levelsAreTheirShards(long step, List<StockItem> stock, List<StockShard> shards) {
+        Map<Sku, List<StockShard>> bySku = new HashMap<>();
+        shards.forEach(shard -> bySku.computeIfAbsent(shard.sku(), ignored -> new ArrayList<>()).add(shard));
+        for (StockItem item : stock) {
+            List<StockShard> rows = bySku.remove(item.sku());
+            if (rows == null) {
+                throw new InvariantViolation("A level is its shards", seed, step, item + " has no shards");
+            }
+            for (int i = 0; i < rows.size(); i++) {
+                if (rows.get(i).index() != i) {
+                    throw new InvariantViolation("A level is its shards", seed, step, item.sku() + " has shards " + rows);
+                }
+            }
+            StockItem sum = StockItem.of(item.sku(), rows);
+            if (sum.onHand() != item.onHand() || sum.reserved() != item.reserved() || sum.shards() != item.shards()) {
+                throw new InvariantViolation(
+                        "A level is its shards", seed, step, item + " is reported, and its shards add up to " + sum);
+            }
+        }
+        if (!bySku.isEmpty()) {
+            throw new InvariantViolation("A level is its shards", seed, step, "shards with no level: " + bySku);
+        }
+    }
+
+    private void conservation(long step, List<StockItem> stock, List<StockShard> shards, List<Reservation> reservations) {
         Map<Sku, Long> heldBySku = new HashMap<>();
+        Map<String, Long> heldByShard = new HashMap<>();
         for (Reservation reservation : reservations) {
             if (reservation.state() != ReservationState.HELD) {
                 continue;
@@ -178,6 +217,24 @@ public final class Invariants {
             for (Line line : reservation.lines()) {
                 heldBySku.merge(line.sku(), line.quantity(), Long::sum);
             }
+            for (Allocation allocation : reservation.allocations()) {
+                heldByShard.merge(allocation.sku() + "#" + allocation.shard(), allocation.quantity(), Long::sum);
+            }
+        }
+        for (StockShard shard : shards) {
+            long held = heldByShard.getOrDefault(shard.sku() + "#" + shard.index(), 0L);
+            if (shard.reserved() != held) {
+                throw new InvariantViolation(
+                        "Conservation",
+                        seed,
+                        step,
+                        shard + " says reserved=" + shard.reserved() + " but the holds taken from it sum to " + held);
+            }
+            heldByShard.remove(shard.sku() + "#" + shard.index());
+        }
+        if (!heldByShard.isEmpty()) {
+            throw new InvariantViolation(
+                    "Conservation", seed, step, "reservations hold " + heldByShard + " in shards that do not exist");
         }
         for (StockItem item : stock) {
             long held = heldBySku.getOrDefault(item.sku(), 0L);
@@ -240,7 +297,18 @@ public final class Invariants {
         }
     }
 
-    private void versionsNeverGoBackwards(long step, List<StockItem> stock, List<Reservation> reservations) {
+    private void versionsNeverGoBackwards(
+            long step, List<StockItem> stock, List<StockShard> shards, List<Reservation> reservations) {
+        for (StockShard shard : shards) {
+            Long seen = maxShardVersion.put(shard.sku() + "#" + shard.index(), shard.version());
+            if (seen != null && shard.version() < seen) {
+                throw new InvariantViolation(
+                        "Versions never go backwards",
+                        seed,
+                        step,
+                        shard.sku() + " shard " + shard.index() + " was at version " + seen + " and is now at " + shard.version());
+            }
+        }
         for (StockItem item : stock) {
             Long seen = maxStockVersion.put(item.sku(), item.version());
             if (seen != null && item.version() < seen) {

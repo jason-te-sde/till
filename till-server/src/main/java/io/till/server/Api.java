@@ -157,21 +157,23 @@ final class Api {
      * @param onHand units physically held
      * @param reserved units spoken for by open holds
      * @param available what a new hold may take
+     * @param shards how many rows the stock is kept in, as it stands now: 1 unless it was split
      */
     @Schema(name = "Stock")
     record Stock(
             @Schema(requiredMode = REQUIRED) String sku,
             @Schema(requiredMode = REQUIRED) long onHand,
             @Schema(requiredMode = REQUIRED) long reserved,
-            @Schema(requiredMode = REQUIRED) long available) {
+            @Schema(requiredMode = REQUIRED) long available,
+            @Schema(requiredMode = REQUIRED) int shards) {
 
         static Stock of(StockItem item) {
-            return new Stock(item.sku().value(), item.onHand(), item.reserved(), item.available());
+            return new Stock(item.sku().value(), item.onHand(), item.reserved(), item.available(), item.shards());
         }
 
-        static Stock of(Outcome.Adjusted outcome) {
+        static Stock of(Outcome.Adjusted outcome, int shards) {
             return new Stock(
-                    outcome.sku().value(), outcome.onHand(), outcome.reserved(), outcome.available());
+                    outcome.sku().value(), outcome.onHand(), outcome.reserved(), outcome.available(), shards);
         }
     }
 
@@ -249,6 +251,14 @@ final class Api {
      */
     @Schema(name = "AdjustRequest")
     record AdjustRequest(@NotNull Long delta) {}
+
+    /**
+     * Splitting a SKU's stock across more rows, so that holds on it contend less.
+     *
+     * @param shards how many rows at least, from 1 to 64; a SKU already in more is left as it is
+     */
+    @Schema(name = "ShardRequest")
+    record ShardRequest(@NotNull Integer shards) {}
 
     /**
      * What every failure looks like.

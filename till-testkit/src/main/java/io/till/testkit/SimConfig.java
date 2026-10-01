@@ -29,6 +29,8 @@ import java.time.Instant;
  * @param duplicateChance chance that a caller re-sends a command it has already completed
  * @param abandonChance chance that a caller with a hold simply walks away, leaving it to expire
  * @param adjustChance chance that an idle caller restocks instead of reserving
+ * @param shardChance chance that an idle caller splits a SKU across more shards instead (ADR 9), so
+ *     that holds are taken from, split across and returned to shards while everything else goes on
  * @param sweepChance chance per step that the background sweeper runs
  * @param flaw a known bug to inject, to check that the suite would catch it
  * @param start the instant the run begins at
@@ -50,6 +52,7 @@ public record SimConfig(
         double duplicateChance,
         double abandonChance,
         double adjustChance,
+        double shardChance,
         double sweepChance,
         Flaw flaw,
         Instant start) {
@@ -106,6 +109,7 @@ public record SimConfig(
                 0.05,
                 0.15,
                 0.10,
+                0.01,
                 0.02,
                 Flaw.NONE,
                 EPOCH);
@@ -121,7 +125,7 @@ public record SimConfig(
         return new SimConfig(
                 value, steps, clients, skus, startingStock, maxLines, maxQuantity, ttl, stepTime,
                 timeJumpChance, timeJump, crashBeforeApplyChance, lostAckChance, duplicateChance,
-                abandonChance, adjustChance, sweepChance, flaw, start);
+                abandonChance, adjustChance, shardChance, sweepChance, flaw, start);
     }
 
     /**
@@ -134,7 +138,21 @@ public record SimConfig(
         return new SimConfig(
                 seed, value, clients, skus, startingStock, maxLines, maxQuantity, ttl, stepTime,
                 timeJumpChance, timeJump, crashBeforeApplyChance, lostAckChance, duplicateChance,
-                abandonChance, adjustChance, sweepChance, flaw, start);
+                abandonChance, adjustChance, shardChance, sweepChance, flaw, start);
+    }
+
+    /**
+     * This configuration with a different chance of splitting a SKU, for a run that has to be about
+     * shards: a short one otherwise may never split anything.
+     *
+     * @param value the new chance
+     * @return a copy
+     */
+    public SimConfig withShardChance(double value) {
+        return new SimConfig(
+                seed, steps, clients, skus, startingStock, maxLines, maxQuantity, ttl, stepTime,
+                timeJumpChance, timeJump, crashBeforeApplyChance, lostAckChance, duplicateChance,
+                abandonChance, adjustChance, value, sweepChance, flaw, start);
     }
 
     /**
@@ -147,6 +165,6 @@ public record SimConfig(
         return new SimConfig(
                 seed, steps, clients, skus, startingStock, maxLines, maxQuantity, ttl, stepTime,
                 timeJumpChance, timeJump, crashBeforeApplyChance, lostAckChance, duplicateChance,
-                abandonChance, adjustChance, sweepChance, value, start);
+                abandonChance, adjustChance, shardChance, sweepChance, value, start);
     }
 }

@@ -14,7 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * The same seeded schedule against both ledgers, compared row for row.
@@ -45,11 +45,11 @@ class JdbcDifferentialTest {
         PostgresFixture.reset();
     }
 
-    @ParameterizedTest
-    @ValueSource(longs = {1, 7, 8123})
+    @ParameterizedTest(name = "seed {0}, splitting {1}")
+    @CsvSource({"1, 0.01", "7, 0.01", "8123, 0.01", "1, 0.15", "7, 0.15", "8123, 0.15"})
     @DisplayName("PostgreSQL and the in-memory ledger end up in the same state, row for row")
-    void ledgersAgree(long seed) {
-        SimConfig config = SimConfig.defaults(seed).withSteps(400);
+    void ledgersAgree(long seed, double shardChance) {
+        SimConfig config = SimConfig.defaults(seed).withSteps(400).withShardChance(shardChance);
 
         InMemoryLedger memory = new InMemoryLedger();
         Sim inMemory = new Sim(config, memory);
@@ -62,7 +62,8 @@ class JdbcDifferentialTest {
 
         assertEquals(memoryReport, postgresReport, "the two runs did not even do the same things");
         assertEquals(memory.allStock(), postgres.allStock());
-        assertEquals(memory.allReservations(), postgres.allReservations());
+        assertEquals(memory.allShards(), postgres.allShards(), "the same rows, not only the same sums");
+        assertEquals(memory.allReservations(), postgres.allReservations(), "down to the shard each unit came from");
         assertEquals(
                 memory.allEvents().stream().map(e -> e.sequence() + " " + e.dedupeKey()).toList(),
                 postgres.allEvents().stream().map(e -> e.sequence() + " " + e.dedupeKey()).toList());
@@ -79,5 +80,10 @@ class JdbcDifferentialTest {
                     "the two ledgers disagree about " + state + " reservations");
         }
         assertTrue(memoryReport.conflicts() > 0, "a schedule with no contention compares nothing: " + memoryReport.summary());
+        if (shardChance > 0.1) {
+            // Holds across several shards are rarer than 400 steps reliably produce; SimTest's longer
+            // run is what insists on those. This insists that there were shards to compare.
+            assertTrue(memoryReport.sharded() > 0, "a schedule meant to split SKUs split none: " + memoryReport.summary());
+        }
     }
 }

@@ -18,6 +18,7 @@ import io.till.core.Retention;
 import io.till.core.Sku;
 import io.till.core.Snapshot;
 import io.till.core.StockItem;
+import io.till.core.StockShard;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -60,7 +61,8 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
 
     private final ReentrantLock lock = new ReentrantLock();
 
-    private final Map<Sku, StockItem> stock = new LinkedHashMap<>();
+    /** Each SKU's shards, by index. */
+    private final Map<Sku, List<StockShard>> stock = new LinkedHashMap<>();
     private final Map<ReservationId, Reservation> reservations = new LinkedHashMap<>();
     private final Map<IdempotencyKey, OutcomeRecord> records = new LinkedHashMap<>();
     private final TreeMap<Long, OutboxEntry> outbox = new TreeMap<>();
@@ -92,8 +94,8 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
             builder.reclaimable(reclaimable);
 
             for (Sku sku : scope) {
-                StockItem item = stock.get(sku);
-                builder.stock(item != null ? item : StockItem.empty(sku));
+                builder.absent(sku);
+                stock.getOrDefault(sku, List.of()).forEach(builder::shard);
             }
             return builder.build();
         } finally {
@@ -145,10 +147,7 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
             }
             for (Mutation mutation : decision.mutations()) {
                 switch (mutation) {
-                    case Mutation.PutStock m ->
-                            stock.put(
-                                    m.sku(),
-                                    new StockItem(m.sku(), m.onHand(), m.reserved(), m.expectedVersion() + 1));
+                    case Mutation.PutStock m -> put(m);
                     case Mutation.InsertReservation m -> reservations.put(m.reservation().id(), m.reservation());
                     case Mutation.SetReservationState m ->
                             reservations.computeIfPresent(
@@ -175,7 +174,7 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
         for (Mutation mutation : decision.mutations()) {
             boolean ok =
                     switch (mutation) {
-                        case Mutation.PutStock m -> versionOf(m.sku()) == m.expectedVersion();
+                        case Mutation.PutStock m -> versionOf(m.sku(), m.shard()) == m.expectedVersion();
                         case Mutation.InsertReservation m -> !reservations.containsKey(m.reservation().id());
                         case Mutation.SetReservationState m -> {
                             Reservation existing = reservations.get(m.reservationId());
@@ -191,9 +190,26 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
         return decision.outcomeRecord().map(record -> !records.containsKey(record.key())).orElse(true);
     }
 
-    private long versionOf(Sku sku) {
-        StockItem item = stock.get(sku);
-        return item != null ? item.version() : StockItem.ABSENT;
+    private long versionOf(Sku sku, int shard) {
+        List<StockShard> shards = stock.get(sku);
+        return shards != null && shard < shards.size() ? shards.get(shard).version() : StockItem.ABSENT;
+    }
+
+    private void put(Mutation.PutStock m) {
+        List<StockShard> shards = stock.computeIfAbsent(m.sku(), sku -> new ArrayList<>());
+        StockShard written = new StockShard(m.sku(), m.shard(), m.onHand(), m.reserved(), m.expectedVersion() + 1);
+        if (m.shard() < shards.size()) {
+            shards.set(m.shard(), written);
+        } else if (m.shard() == shards.size()) {
+            shards.add(written);
+        } else {
+            // The kernel adds shards in order; one that would leave a gap is a bug, not contention.
+            throw new IllegalStateException("shard " + m.shard() + " of " + m.sku() + " would leave a gap after " + shards);
+        }
+    }
+
+    private StockItem level(Sku sku) {
+        return StockItem.of(sku, stock.get(sku));
     }
 
     @Override
@@ -321,7 +337,7 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
     public Optional<StockItem> stock(Sku sku) {
         lock.lock();
         try {
-            return Optional.ofNullable(stock.get(sku));
+            return stock.containsKey(sku) ? Optional.of(level(sku)) : Optional.empty();
         } finally {
             lock.unlock();
         }
@@ -336,10 +352,11 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
     public List<StockItem> listStock(Optional<Sku> after, int limit) {
         lock.lock();
         try {
-            return stock.values().stream()
-                    .sorted(Comparator.comparing(StockItem::sku))
-                    .filter(item -> after.isEmpty() || item.sku().compareTo(after.get()) > 0)
+            return stock.keySet().stream()
+                    .sorted()
+                    .filter(sku -> after.isEmpty() || sku.compareTo(after.get()) > 0)
                     .limit(Math.min(limit, LedgerInspector.MAX_PAGE))
+                    .map(this::level)
                     .toList();
         } finally {
             lock.unlock();
@@ -369,7 +386,17 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
     public List<StockItem> allStock() {
         lock.lock();
         try {
-            return stock.values().stream().sorted(Comparator.comparing(StockItem::sku)).toList();
+            return stock.keySet().stream().sorted().map(this::level).toList();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public List<StockShard> allShards() {
+        lock.lock();
+        try {
+            return stock.values().stream().flatMap(List::stream).sorted(StockShard.ORDER).toList();
         } finally {
             lock.unlock();
         }

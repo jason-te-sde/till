@@ -61,6 +61,8 @@ public final class Codec {
                             .put("onhand", Long.toString(a.onHand()))
                             .put("reserved", Long.toString(a.reserved()))
                             .done();
+            case Outcome.Sharded s ->
+                    head("sharded").put("sku", s.sku().value()).put("shards", Integer.toString(s.shards())).done();
             case Outcome.Swept s -> head("swept").put("n", Integer.toString(s.reclaimed())).done();
             case Outcome.Rejected r ->
                     head("rejected")
@@ -93,6 +95,7 @@ public final class Codec {
             case "adjusted" ->
                     new Outcome.Adjusted(
                             Sku.of(frame.get("sku")), frame.getLong("onhand"), frame.getLong("reserved"));
+            case "sharded" -> new Outcome.Sharded(Sku.of(frame.get("sku")), (int) frame.getLong("shards"));
             case "swept" -> new Outcome.Swept((int) frame.getLong("n"));
             case "rejected" ->
                     new Outcome.Rejected(

@@ -25,6 +25,8 @@ import java.time.Instant;
  * @param released holds given back
  * @param expired holds written off for running out of time
  * @param adjusted direct stock changes
+ * @param sharded SKUs split across more shards, or asked to be
+ * @param splitHolds holds at the end of the run that took their units from more than one shard of a SKU
  * @param sweeps background sweeps run
  * @param rejections commands refused by the rules
  * @param outOfStock of those, ones refused for want of stock
@@ -47,6 +49,8 @@ public record SimReport(
         long released,
         long expired,
         long adjusted,
+        long sharded,
+        long splitHolds,
         long sweeps,
         long rejections,
         long outOfStock,
@@ -73,6 +77,7 @@ public record SimReport(
                 + " released=" + released
                 + " expired=" + expired
                 + " adjusted=" + adjusted
+                + " sharded=" + sharded + " (split holds=" + splitHolds + ")"
                 + " sweeps=" + sweeps
                 + " rejections=" + rejections + " (outOfStock=" + outOfStock + ")"
                 + " reloads=" + reloads;

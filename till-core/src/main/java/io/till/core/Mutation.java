@@ -17,24 +17,40 @@ package io.till.core;
 public sealed interface Mutation {
 
     /**
-     * Write a stock level.
+     * Write one shard of a SKU's stock.
      *
      * @param sku which SKU
+     * @param shard which of its shards (ADR 9); 0 for a SKU that was never split
      * @param onHand the level to write
      * @param reserved how much of it is spoken for
      * @param expectedVersion the version the row had when the decision was made, or
      *     {@link StockItem#ABSENT} to mean the row must not exist yet
      */
-    record PutStock(Sku sku, long onHand, long reserved, long expectedVersion) implements Mutation {
+    record PutStock(Sku sku, int shard, long onHand, long reserved, long expectedVersion) implements Mutation {
 
         public PutStock {
             if (sku == null) {
                 throw new IllegalArgumentException("sku must not be null");
             }
-            if (onHand < 0 || reserved < 0 || reserved > onHand) {
-                throw new IllegalArgumentException(
-                        "refusing to write an impossible level for " + sku + ": onHand=" + onHand + " reserved=" + reserved);
+            if (shard < 0) {
+                throw new IllegalArgumentException("shard must not be negative, got " + shard + " for " + sku);
             }
+            if (onHand < 0 || reserved < 0 || reserved > onHand) {
+                throw new IllegalArgumentException("refusing to write an impossible level for " + sku + " shard " + shard
+                        + ": onHand=" + onHand + " reserved=" + reserved);
+            }
+        }
+
+        /**
+         * Write the stock of a SKU kept in one row.
+         *
+         * @param sku which SKU
+         * @param onHand the level to write
+         * @param reserved how much of it is spoken for
+         * @param expectedVersion the version the row had, or {@link StockItem#ABSENT}
+         */
+        public PutStock(Sku sku, long onHand, long reserved, long expectedVersion) {
+            this(sku, 0, onHand, reserved, expectedVersion);
         }
 
         /**

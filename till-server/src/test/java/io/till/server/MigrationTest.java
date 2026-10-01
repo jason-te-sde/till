@@ -44,7 +44,7 @@ class MigrationTest extends ApiTestBase {
         }
 
         assertEquals(
-                List.of("1 till schema", "2 listing indexes"),
+                List.of("1 till schema", "2 listing indexes", "3 stock shards"),
                 applied,
                 "the schema history is not what this build ships");
     }
@@ -67,6 +67,28 @@ class MigrationTest extends ApiTestBase {
         // Named individually: an index that quietly stops being created turns a paged listing into a
         // full sort, which nothing else in this suite would notice on a table with ten rows in it.
         assertEquals(List.of("till_reservation_by_state", "till_stock_sku_c"), indexes.stream().sorted().toList());
+    }
+
+    @Test
+    @DisplayName("a stock row, and a hold's line, are keyed by shard as well as by SKU")
+    void shardsAreInTheKeys() throws SQLException {
+        List<String> keys = new ArrayList<>();
+        try (var connection = dataSource.getConnection();
+                Statement statement = connection.createStatement();
+                ResultSet rows =
+                        statement.executeQuery(
+                                "select conname || ' ' || pg_get_constraintdef(oid) as key from pg_constraint "
+                                        + "where conname in ('till_stock_pkey', 'till_reservation_line_pkey') order by conname")) {
+            while (rows.next()) {
+                keys.add(rows.getString("key"));
+            }
+        }
+
+        assertEquals(
+                List.of(
+                        "till_reservation_line_pkey PRIMARY KEY (reservation_id, sku, shard)",
+                        "till_stock_pkey PRIMARY KEY (sku, shard)"),
+                keys);
     }
 
     @Test

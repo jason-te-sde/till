@@ -2,6 +2,7 @@ package io.till.core;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -33,6 +34,9 @@ import java.util.TreeMap;
  *   <li><b>Availability is {@code onHand - reserved}.</b> Committing lowers both; releasing and
  *       expiring lower only {@code reserved}. There is no other way for either number to move except
  *       an explicit {@link Command.Adjust}.
+ *   <li><b>A SKU's stock may be in several shards, and the answer is the SKU's.</b> A hold takes its
+ *       units from one shard when one has them and from several when none does, and gives them back
+ *       to the same ones; it is refused only when the SKU as a whole is short (ADR 9).
  *   <li><b>A deadline is the truth, not the stored state.</b> A hold past its deadline is expired
  *       whether or not anything has written that down, so an answer never depends on whether a
  *       background sweep happened to have run.
@@ -79,6 +83,7 @@ public final class Kernel {
                     case Command.Commit c -> commit(work, c);
                     case Command.Release c -> release(work, c);
                     case Command.Adjust c -> adjust(work, c);
+                    case Command.Shard c -> shard(work, c);
                     case Command.Sweep ignored -> new Outcome.Swept(work.reclaimed());
                 };
 
@@ -143,14 +148,16 @@ public final class Kernel {
                     RejectionCode.INSUFFICIENT_STOCK, describe(shortfalls), shortfalls);
         }
 
+        List<Allocation> allocations = new ArrayList<>();
         for (Line line : command.lines()) {
-            work.put(work.level(line.sku()).withReservedDelta(line.quantity()));
+            allocations.addAll(work.take(line, command.reservationId()));
         }
         Reservation reservation =
                 new Reservation(
                         command.reservationId(),
                         command.key(),
                         command.lines(),
+                        allocations,
                         ReservationState.HELD,
                         work.now,
                         work.now.plus(command.ttl()),
@@ -185,8 +192,8 @@ public final class Kernel {
                         "reservation " + reservation.id() + " expired at " + reservation.expiresAt());
             }
             case HELD -> {
-                for (Line line : reservation.lines()) {
-                    work.put(work.require(line.sku(), reservation).withCommitDelta(-line.quantity()));
+                for (Allocation allocation : reservation.allocations()) {
+                    work.put(work.shard(allocation, reservation).withCommitDelta(-allocation.quantity()));
                 }
                 work.mutations.add(
                         new Mutation.SetReservationState(
@@ -216,8 +223,8 @@ public final class Kernel {
                 yield new Outcome.Released(reservation.id(), work.now);
             }
             case HELD -> {
-                for (Line line : reservation.lines()) {
-                    work.put(work.require(line.sku(), reservation).withReservedDelta(-line.quantity()));
+                for (Allocation allocation : reservation.allocations()) {
+                    work.put(work.shard(allocation, reservation).withReservedDelta(-allocation.quantity()));
                 }
                 work.mutations.add(
                         new Mutation.SetReservationState(
@@ -236,12 +243,11 @@ public final class Kernel {
                         RejectionCode.UNKNOWN_SKU,
                         "cannot remove stock from " + command.sku() + ", which has no row");
             }
-            StockItem created = new StockItem(command.sku(), command.delta(), 0, StockItem.ABSENT);
-            work.put(created);
+            work.put(new StockShard(command.sku(), 0, command.delta(), 0, StockItem.ABSENT));
             work.events.add(
                     new Event.StockAdjusted(
-                            command.key(), command.sku(), command.delta(), created.onHand(), 0, work.now));
-            return new Outcome.Adjusted(command.sku(), created.onHand(), 0);
+                            command.key(), command.sku(), command.delta(), command.delta(), 0, work.now));
+            return new Outcome.Adjusted(command.sku(), command.delta(), 0);
         }
 
         long after = item.onHand() + command.delta();
@@ -257,8 +263,12 @@ public final class Kernel {
                             + ": on-hand is " + item.onHand() + " with " + item.reserved() + " reserved",
                     List.of(shortfall));
         }
-        StockItem updated = item.withOnHandDelta(command.delta());
-        work.put(updated);
+        if (command.delta() > 0) {
+            work.fill(command.sku(), command.delta());
+        } else {
+            work.drain(command.sku(), -command.delta());
+        }
+        StockItem updated = work.level(command.sku());
         work.events.add(
                 new Event.StockAdjusted(
                         command.key(),
@@ -268,6 +278,39 @@ public final class Kernel {
                         updated.reserved(),
                         work.now));
         return new Outcome.Adjusted(command.sku(), updated.onHand(), updated.reserved());
+    }
+
+    /**
+     * Splits a SKU across at least as many shards as asked, dealing its unreserved units out evenly.
+     *
+     * <p>Every shard keeps what its holds have reserved, because those units are promised from there;
+     * what is available is dealt out anew, over the old shards and the new ones alike. So every shard
+     * of a SKU just split can take a hold, whichever one a reservation id points at.
+     *
+     * <p>No event: the SKU's on-hand and reserved are what they were, and nothing outside the ledger
+     * has any business knowing which row they are in.
+     */
+    private static Outcome shard(Work work, Command.Shard command) {
+        List<StockShard> shards = work.shards(command.sku());
+        if (shards.isEmpty()) {
+            return Outcome.Rejected.of(
+                    RejectionCode.UNKNOWN_SKU, "cannot split " + command.sku() + ", which has no row");
+        }
+        if (shards.size() >= command.shards()) {
+            return new Outcome.Sharded(command.sku(), shards.size());
+        }
+        long available = 0;
+        for (StockShard shard : shards) {
+            available += shard.available();
+        }
+        int count = command.shards();
+        for (int index = 0; index < count; index++) {
+            StockShard current = index < shards.size() ? shards.get(index) : StockShard.empty(command.sku(), index);
+            long share = available / count + (index < available % count ? 1 : 0);
+            work.put(new StockShard(
+                    command.sku(), index, current.reserved() + share, current.reserved(), current.version()));
+        }
+        return new Outcome.Sharded(command.sku(), count);
     }
 
     /**
@@ -314,7 +357,7 @@ public final class Kernel {
     /**
      * The mutable half of one decision.
      *
-     * <p>Levels are edited in a working copy and written out once at the end, so a SKU touched twice
+     * <p>Levels are edited in a working copy and written out once at the end, so a shard touched twice
      * in one decision — reclaimed from an expired hold and then reserved again — produces one row
      * change carrying the version the snapshot had, not two that would conflict with each other.
      */
@@ -322,7 +365,8 @@ public final class Kernel {
 
         private final Snapshot snapshot;
         private final Instant now;
-        private final Map<Sku, StockItem> levels = new LinkedHashMap<>();
+        /** The shards of each SKU the decision has touched, as it has left them so far. */
+        private final Map<Sku, List<StockShard>> levels = new LinkedHashMap<>();
         private final List<Mutation> mutations = new ArrayList<>();
         private final List<Event> events = new ArrayList<>();
         private int reclaimed;
@@ -332,23 +376,152 @@ public final class Kernel {
             this.now = now;
         }
 
-        private StockItem level(Sku sku) {
-            StockItem working = levels.get(sku);
-            return working != null ? working : snapshot.require(sku);
+        private List<StockShard> shards(Sku sku) {
+            List<StockShard> working = levels.get(sku);
+            return working != null ? working : snapshot.shards(sku);
         }
 
-        /** Like {@link #level}, with a message that names the reservation that needed the SKU. */
-        private StockItem require(Sku sku, Reservation reservation) {
+        /** A SKU's level: its shards as the decision has left them, added up. */
+        private StockItem level(Sku sku) {
+            return StockItem.of(sku, shards(sku));
+        }
+
+        /** The shard an allocation of this reservation came from. */
+        private StockShard shard(Allocation allocation, Reservation reservation) {
+            List<StockShard> shards;
             try {
-                return level(sku);
+                shards = shards(allocation.sku());
             } catch (IncompleteSnapshotException e) {
-                throw new IncompleteSnapshotException(
-                        e.getMessage() + "; needed by reservation " + reservation.id());
+                throw new IncompleteSnapshotException(e.getMessage() + "; needed by reservation " + reservation.id());
+            }
+            if (allocation.shard() >= shards.size()) {
+                throw new IncompleteSnapshotException("reservation " + reservation.id() + " holds " + allocation
+                        + ", and the snapshot has " + shards.size() + " shards of " + allocation.sku());
+            }
+            return shards.get(allocation.shard());
+        }
+
+        private void put(StockShard shard) {
+            List<StockShard> working =
+                    levels.computeIfAbsent(shard.sku(), sku -> new ArrayList<>(snapshot.shards(sku)));
+            if (shard.index() < working.size()) {
+                working.set(shard.index(), shard);
+            } else if (shard.index() == working.size()) {
+                working.add(shard);
+            } else {
+                throw new IllegalStateException("shard " + shard + " would leave a gap after " + working);
             }
         }
 
-        private void put(StockItem item) {
-            levels.put(item.sku(), item);
+        /**
+         * Takes a line's units, from one shard if one has them all and from several if not, starting
+         * at the shard the reservation id points at. The caller has established that the SKU as a
+         * whole has them.
+         */
+        private List<Allocation> take(Line line, ReservationId id) {
+            int count = shards(line.sku()).size();
+            int start = Math.floorMod(spread(id), count);
+            for (int i = 0; i < count; i++) {
+                StockShard shard = shards(line.sku()).get((start + i) % count);
+                if (shard.available() >= line.quantity()) {
+                    put(shard.withReservedDelta(line.quantity()));
+                    return List.of(new Allocation(line.sku(), shard.index(), line.quantity()));
+                }
+            }
+            List<Allocation> taken = new ArrayList<>();
+            long left = line.quantity();
+            for (int i = 0; i < count && left > 0; i++) {
+                StockShard shard = shards(line.sku()).get((start + i) % count);
+                long units = Math.min(left, shard.available());
+                if (units > 0) {
+                    put(shard.withReservedDelta(units));
+                    taken.add(new Allocation(line.sku(), shard.index(), units));
+                    left -= units;
+                }
+            }
+            if (left > 0) {
+                throw new IllegalStateException(
+                        "took " + (line.quantity() - left) + " of " + line + " with the SKU's total checked first: "
+                                + shards(line.sku()));
+            }
+            return taken;
+        }
+
+        /**
+         * Where a reservation starts looking: its id's hash, with the high bits folded in, so that ids
+         * that differ only at the end still spread. {@link String#hashCode} is specified, so this is the
+         * same on every machine and a replay of a decision takes the same shards.
+         */
+        private static int spread(ReservationId id) {
+            int hash = id.value().hashCode();
+            return hash ^ (hash >>> 16);
+        }
+
+        /** Adds units to the shards with the least available first, levelling them. */
+        private void fill(Sku sku, long units) {
+            List<StockShard> shards = shards(sku);
+            long[] share = level(shards, units, true);
+            for (int i = 0; i < share.length; i++) {
+                if (share[i] > 0) {
+                    put(shards(sku).get(i).withOnHandDelta(share[i]));
+                }
+            }
+        }
+
+        /** Takes unreserved units from the shards with the most available first, levelling them. */
+        private void drain(Sku sku, long units) {
+            List<StockShard> shards = shards(sku);
+            long[] share = level(shards, units, false);
+            for (int i = 0; i < share.length; i++) {
+                if (share[i] > 0) {
+                    put(shards(sku).get(i).withOnHandDelta(-share[i]));
+                }
+            }
+        }
+
+        /**
+         * How many units each shard gets, or gives, so that the ones with the least available (or the
+         * most) end as level as whole units allow: water poured in, or let out. The caller has checked
+         * that there is enough to let out.
+         *
+         * @return per shard, by index, a count never negative
+         */
+        private static long[] level(List<StockShard> shards, long units, boolean pour) {
+            int count = shards.size();
+            Integer[] order = new Integer[count];
+            for (int i = 0; i < count; i++) {
+                order[i] = i;
+            }
+            // Lowest available first when pouring, highest first when letting out; by index on a tie.
+            Arrays.sort(order, Comparator.<Integer>comparingLong(
+                            i -> pour ? shards.get(i).available() : -shards.get(i).available())
+                    .thenComparingInt(i -> i));
+            // Letting out is pouring into the negated levels: the fullest shard is the lowest there.
+            long[] height = new long[count];
+            int[] rank = new int[count];
+            for (int i = 0; i < count; i++) {
+                long available = shards.get(order[i]).available();
+                height[i] = pour ? available : -available;
+                rank[order[i]] = i;
+            }
+            // The first k shards reach the level of the next one while that costs at most what there is.
+            int k = 1;
+            long sum = height[0];
+            while (k < count && (long) k * height[k] - sum <= units) {
+                sum += height[k];
+                k++;
+            }
+            long target = Math.floorDiv(sum + units, k);
+            long extra = (sum + units) - target * k;
+            long[] share = new long[count];
+            // The units that do not divide evenly go to the lowest-numbered of the shards at the level.
+            Integer[] pool = Arrays.copyOf(order, k);
+            Arrays.sort(pool);
+            for (int index : pool) {
+                long end = target + (extra-- > 0 ? 1 : 0);
+                share[index] = end - height[rank[index]];
+            }
+            return share;
         }
 
         /**
@@ -389,8 +562,8 @@ public final class Kernel {
                         "only a held reservation has stock to return, and " + reservation.id() + " is "
                                 + reservation.state());
             }
-            for (Line line : reservation.lines()) {
-                put(require(line.sku(), reservation).withReservedDelta(-line.quantity()));
+            for (Allocation allocation : reservation.allocations()) {
+                put(shard(allocation, reservation).withReservedDelta(-allocation.quantity()));
             }
             mutations.add(
                     new Mutation.SetReservationState(
@@ -404,24 +577,29 @@ public final class Kernel {
         }
 
         /**
-         * Turns the working state into a decision: the stock rows that actually changed, in SKU
+         * Turns the working state into a decision: the stock rows that changed, in SKU and shard
          * order, then the reservations, and the idempotency record if the command had a key.
          *
          * <p>Stock first, because a stock row is the row most likely to have moved since the
-         * snapshot — every command on its SKU writes it. A ledger that applies the mutations in order
+         * snapshot — every command on its shard writes it. A ledger that applies the mutations in order
          * finds that out before it has written anything else, rather than after inserting a
          * reservation and its lines only to roll them back, which is what 64% of the reservations
-         * the fourth load test inserted came to (docs/load-test.md).
+         * the fourth load test inserted came to (docs/load-test.md). A shard the decision creates is
+         * written even at zero, because a SKU has as many shards as it has rows.
          */
         private Decision finish(Command command, Outcome outcome) {
             List<Mutation> all = new ArrayList<>();
-            for (Map.Entry<Sku, StockItem> entry : new TreeMap<>(levels).entrySet()) {
-                StockItem before = snapshot.require(entry.getKey());
-                StockItem after = entry.getValue();
-                if (before.onHand() != after.onHand() || before.reserved() != after.reserved()) {
-                    all.add(
-                            new Mutation.PutStock(
-                                    after.sku(), after.onHand(), after.reserved(), before.version()));
+            for (Map.Entry<Sku, List<StockShard>> entry : new TreeMap<>(levels).entrySet()) {
+                List<StockShard> before = snapshot.shards(entry.getKey());
+                for (StockShard after : entry.getValue()) {
+                    StockShard was = after.index() < before.size() ? before.get(after.index()) : null;
+                    if (was == null) {
+                        all.add(new Mutation.PutStock(
+                                after.sku(), after.index(), after.onHand(), after.reserved(), StockItem.ABSENT));
+                    } else if (was.onHand() != after.onHand() || was.reserved() != after.reserved()) {
+                        all.add(new Mutation.PutStock(
+                                after.sku(), after.index(), after.onHand(), after.reserved(), was.version()));
+                    }
                 }
             }
             all.addAll(mutations);

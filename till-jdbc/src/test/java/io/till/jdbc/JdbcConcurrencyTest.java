@@ -3,6 +3,7 @@ package io.till.jdbc;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.till.core.Allocation;
 import io.till.core.IdempotencyKey;
 import io.till.core.Line;
 import io.till.core.Outcome;
@@ -10,6 +11,7 @@ import io.till.core.RejectionCode;
 import io.till.core.ReservationId;
 import io.till.core.Sku;
 import io.till.core.StockItem;
+import io.till.core.StockShard;
 import io.till.core.Till;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -81,6 +83,47 @@ class JdbcConcurrencyTest {
         assertEquals(20, item.reserved());
         assertEquals(0, item.available());
         assertEquals(20, ledger.allReservations().size());
+    }
+
+    @Test
+    @DisplayName("split eight ways, two hundred callers still buy exactly the twenty units, and each hold is in the row it came from")
+    void neverOversellsAcrossShards() throws Exception {
+        till.adjust(key("seed"), sku("widget"), 20);
+        assertEquals(new Outcome.Sharded(sku("widget"), 8), till.shard(key("split"), sku("widget"), 8));
+
+        AtomicInteger reserved = new AtomicInteger();
+        AtomicInteger refused = new AtomicInteger();
+        inParallel(
+                200,
+                i -> {
+                    // Two units a hold, so that the last of the stock is scattered in ones and has to
+                    // be gathered from several shards.
+                    Outcome outcome =
+                            till.reserve(key("caller-" + i), rid("r-" + i), List.of(Line.of("widget", i < 190 ? 1 : 2)), TTL);
+                    if (outcome.ok()) {
+                        reserved.incrementAndGet();
+                    } else {
+                        assertEquals(RejectionCode.INSUFFICIENT_STOCK, ((Outcome.Rejected) outcome).code());
+                        refused.incrementAndGet();
+                    }
+                });
+
+        StockItem item = ledger.allStock().get(0);
+        assertEquals(20, item.onHand());
+        assertEquals(item.onHand() - item.available(), item.reserved());
+        long held = ledger.allReservations().stream().mapToLong(r -> r.lines().get(0).quantity()).sum();
+        assertEquals(item.reserved(), held, "every unit reserved belongs to exactly one hold");
+        assertEquals(8, item.shards());
+        for (StockShard shard : ledger.allShards()) {
+            long fromHere = ledger.allReservations().stream()
+                    .flatMap(r -> r.allocations().stream())
+                    .filter(a -> a.shard() == shard.index())
+                    .mapToLong(Allocation::quantity)
+                    .sum();
+            assertEquals(shard.reserved(), fromHere, "shard " + shard.index() + " reserves what its holds took from it");
+        }
+        assertTrue(item.available() <= 1, "no hold was refused while it could have been covered: " + item);
+        assertEquals(200, reserved.get() + refused.get());
     }
 
     @Test

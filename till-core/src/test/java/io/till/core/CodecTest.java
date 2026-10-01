@@ -32,6 +32,7 @@ class CodecTest {
                 new Outcome.Committed(rid("r1"), T0),
                 new Outcome.Released(rid("r1"), T0),
                 new Outcome.Adjusted(sku("widget"), 100, 7),
+                new Outcome.Sharded(sku("widget"), 8),
                 new Outcome.Swept(42),
                 Outcome.Rejected.of(RejectionCode.RESERVATION_NOT_FOUND, "no reservation r9"),
                 new Outcome.Rejected(

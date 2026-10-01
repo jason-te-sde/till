@@ -122,6 +122,10 @@ variable "catalogue_cache" {
   type = bool
 }
 
+variable "stock_shards" {
+  type = number
+}
+
 variable "loadtest" {
   description = "Set up for a load test (docs/load-test.md) rather than for customers: no CloudFront, the stand-in provider, the load generator."
   type        = bool

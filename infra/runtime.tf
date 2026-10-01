@@ -56,6 +56,7 @@ module "runtime" {
   demo              = var.demo
   loadtest          = var.loadtest
   catalogue_cache   = var.catalogue_cache
+  stock_shards      = var.stock_shards
   db_pool           = var.db_pool
 
   auto_stop_role_arn = aws_iam_role.auto_stop.arn

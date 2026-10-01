@@ -443,6 +443,7 @@ because the alternative is a client that retried a timeout being told "out of st
 | Reclaim on demand | a command that would be short of stock writes off the expired holds standing in its way, scoped to its SKUs, and decides again; one with stock to spare leaves them to the sweeper |
 | Idempotency | keyed by the caller, with a fingerprint that ignores the server-minted id and the line order |
 | Optimistic concurrency | a version per row, no locks, no backoff, bounded attempts |
+| Hot-SKU shards | a busy SKU's stock split across up to 64 rows, so two holds on it contend only in the same row; answers stay the SKU's, and a hold is refused only when the whole SKU is short. Sixteen rows: 7% of decisions conflicting where one row had 54% |
 | Transactional outbox | events in the same transaction as the change, delivered at least once, with stable deduplication keys |
 | Kafka, and an idempotent reader | `acks=all` with producer idempotence, records keyed by entity so one reservation's lifecycle stays ordered, and an inbox on the consumer so a redelivery moves nothing |
 | Oversell impossible at the database | `check (reserved >= 0 and on_hand >= 0 and reserved <= on_hand)` |
@@ -461,9 +462,10 @@ reserving a specific unit, scheduled availability, read replicas, and any databa
 **Not done yet, and said so.** The platform runs locally, in CI and on AWS:
 [`infra/`](infra/README.md) is the deployment — Terraform, and a script that checks what it
 deployed — and it was deployed and checked on 30 September 2026. A sign-in through Cognito has not
-yet been completed end to end, only up to Cognito accepting the store's redirect, and there is no
-load-test figure for the services — see [Numbers](#numbers) for why one laptop's number would not be worth printing.
-The catalogue's Redis read cache came after a load test measured the database needing one.
+yet been completed end to end, only up to Cognito accepting the store's redirect. The load test has
+been run on AWS and has not yet met its targets: [`docs/load-test.md`](docs/load-test.md) records every
+run, what it found and what changed because of it — the edge's connections, the catalogue's Redis read
+cache, writing off expired holds when they are needed, the checkout's waste, and hot-SKU shards.
 
 ## Numbers
 
@@ -472,20 +474,20 @@ produced it.
 
 | | |
 | --- | --- |
-| Tests | **551** — 472 Java (one of them the soak, off by default), 74 storefront, 5 end-to-end against the whole stack |
-| Coverage | **88.2% / 79.1%** lines / branches on the Java, **87.4% / 77.8%** on the storefront |
+| Tests | **584** — 505 Java (one of them the soak, off by default), 74 storefront, 5 end-to-end against the whole stack |
+| Coverage | **87.7% / 78.2%** lines / branches on the Java, **87.4% / 77.8%** on the storefront |
 | `mvn verify`, whole reactor | **about a minute**, including the store's PostgreSQL, Redis and Kafka containers |
-| Simulation throughput | **82,895 steps/s** |
-| Soak | 10,000 seeds, **30,237,034 invariant checks**, 4,868,127 conflicts, 4,086,731 answers, **365s**, zero violations |
-| Real threads, real PostgreSQL | 200 callers, 20 units, **exactly 20 sales** |
+| Simulation throughput | **59,927 steps/s**, every shard of every SKU checked after every step |
+| Soak | 10,000 seeds, **30,216,501 invariant checks**, 4,447,884 conflicts, 4,390,387 answers, **504s**, zero violations |
+| Real threads, real PostgreSQL | 200 callers, 20 units, **exactly 20 sales** — and again with the SKU split eight ways |
 | The whole stack, from `up` to healthy | **about 25 s** once the images are built |
 | Sign in, hold, pay | **8 s** end to end in a real browser, including Keycloak's login page |
 | Ledger to storefront | a restock shows in the catalogue within **about 6 s** — Kafka, the projection, and the five-second edge cache |
 | Ledger start to ready | **2.0s** |
 | Storefront bundle | 446 kB, **139 kB gzipped**, plus 4 kB for the operator console, loaded only by operators |
-| Hand-written Java | 13,692 lines main, 9,179 lines test |
+| Hand-written Java | 15,202 lines main, 10,513 lines test |
 | Hand-written TypeScript | 6,003 lines source (918 of them painting cover art), 1,505 lines test, 272 lines CSS |
-| SQL | 555 lines across eight migrations, most of it the catalogue itself |
+| SQL | 574 lines across nine migrations, most of it the catalogue itself |
 | Runtime dependencies | `till-core`: **one**, `slf4j-api`. `till-web`: **five** — React, its DOM renderer, a router, Redux Toolkit and its React bindings |
 
 ```bash
@@ -496,21 +498,24 @@ mvn test -pl till-testkit -Dtill.sim.seeds=10000 \
     -Dtest=SoakTest -Dsurefire.failIfNoSpecifiedTests=false  # soak
 ```
 
-The soak number is the one worth reading. Thirty million invariant checks in six minutes is possible
+The soak number is the one worth reading. Thirty million invariant checks in eight minutes is possible
 only because the rules never touch a database, and that is the whole argument for writing them as a
 function: the same coverage through a transaction would take about a month.
 
-The 4.8 million conflicts matter as much. A simulation of contending callers that produced *no*
+The 4.4 million conflicts matter as much. A simulation of contending callers that produced *no*
 conflicts would have tested the happy path four million times, and would go on passing after the
 concurrency control was deleted. Every chaos test here asserts the run was hostile — conflicts,
 replays, injected crashes, lost answers, expiries and refusals all have to have happened.
 
-There is no throughput figure for the services, on purpose. Measuring them on one laptop against one
-PostgreSQL would say more about the laptop than about till; that number comes from a written load-test
-protocol run against a deployed stack, or not at all. [`docs/load-test.md`](docs/load-test.md) is the
-protocol — 8,000 concurrent shoppers, 3,000 requests a second, a p99 under a second — and
-[`till-loadtest`](till-loadtest) the scenario and the stand-in sign-in it runs with. No run is
-recorded yet.
+There is no throughput figure for the services here, on purpose. Measuring them on one laptop against
+one PostgreSQL would say more about the laptop than about till; that number comes from a written
+load-test protocol run against a deployed stack, or not at all. [`docs/load-test.md`](docs/load-test.md)
+is the protocol — 8,000 concurrent shoppers, 3,000 requests a second, a p99 under a second — and its
+results, and [`till-loadtest`](till-loadtest) the scenario and the stand-in sign-in it runs with.
+
+What a laptop can measure is a *ratio*, and the contention benchmark does: the same checkouts on the
+same PostgreSQL, with one change between runs. Its numbers are in
+[ADR 9](docs/design/0009-hot-sku-shards.md), where they decided how busy SKUs are stored.
 
 ## How it is tested
 

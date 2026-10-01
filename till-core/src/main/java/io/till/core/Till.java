@@ -198,6 +198,18 @@ public final class Till {
     }
 
     /**
+     * Splits a SKU's stock across at least {@code shards} rows, for a SKU about to be busy (ADR 9).
+     *
+     * @param key the caller's key for this attempt
+     * @param sku which SKU
+     * @param shards how many rows at least
+     * @return {@link Outcome.Sharded}, or a rejection
+     */
+    public Outcome shard(IdempotencyKey key, Sku sku, int shards) {
+        return execute(new Command.Shard(key, sku, shards));
+    }
+
+    /**
      * Writes off holds that have run out of time.
      *
      * <p>Background work. Running it returns expired stock to {@code available} sooner than the next

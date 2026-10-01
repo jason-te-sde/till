@@ -92,6 +92,7 @@ class OpenApiContractTest extends ApiTestBase {
                         "/v1/stock",
                         "/v1/stock/{sku}",
                         "/v1/stock/{sku}/adjust",
+                        "/v1/stock/{sku}/shards",
                         "/v1/reservations",
                         "/v1/reservations/{id}",
                         "/v1/reservations/{id}/commit",

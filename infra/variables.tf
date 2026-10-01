@@ -121,6 +121,17 @@ variable "catalogue_cache" {
   default     = true
 }
 
+variable "stock_shards" {
+  description = "How many rows the ledger keeps each demonstration game's stock in once the store has stocked it (docs/design/0009-hot-sku-shards.md). 1 leaves every game in one row."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.stock_shards >= 1 && var.stock_shards <= 64
+    error_message = "stock_shards is between 1 and 64."
+  }
+}
+
 variable "demo" {
   description = "Stock every game when the store starts, as the compose stack does. A real store must not."
   type        = bool

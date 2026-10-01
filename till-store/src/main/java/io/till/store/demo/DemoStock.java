@@ -56,18 +56,9 @@ class DemoStock {
     }
 
     private void seedWithRetries() {
-        List<String> skus = games.skus();
         for (int attempt = 1; attempt <= ATTEMPTS; attempt++) {
             try {
-                for (String sku : skus) {
-                    long units = demo.unitsFor(sku);
-                    // Zero means "leave it unstocked": the ledger refuses an adjustment of nothing, and a
-                    // game it has never heard of is itself a state worth the demonstration showing.
-                    if (units > 0) {
-                        ledger.adjust(LedgerKeys.system("demo-stock", sku), Sku.of(sku), units);
-                    }
-                }
-                LOG.info("demonstration stock in place for {} games", skus.size());
+                stockEveryGame();
                 return;
             } catch (RuntimeException e) {
                 LOG.warn("seeding demonstration stock failed (attempt {} of {}): {}", attempt, ATTEMPTS, e.getMessage());
@@ -75,6 +66,26 @@ class DemoStock {
             }
         }
         LOG.error("gave up seeding demonstration stock; the store will show every game as sold out");
+    }
+
+    /**
+     * One pass over the catalogue: every game stocked, and split if asked. Each step carries the same
+     * key every time, so a pass after a failed one finishes it rather than doing any of it twice.
+     */
+    void stockEveryGame() {
+        List<String> skus = games.skus();
+        for (String sku : skus) {
+            long units = demo.unitsFor(sku);
+            // Zero means "leave it unstocked": the ledger refuses an adjustment of nothing, and a
+            // game it has never heard of is itself a state worth the demonstration showing.
+            if (units > 0) {
+                ledger.adjust(LedgerKeys.system("demo-stock", sku), Sku.of(sku), units);
+                if (demo.shards() > 1) {
+                    ledger.shard(LedgerKeys.system("demo-shards", sku), Sku.of(sku), demo.shards());
+                }
+            }
+        }
+        LOG.info("demonstration stock in place for {} games, each in {} rows", skus.size(), demo.shards());
     }
 
     private static void sleep(Duration duration) {

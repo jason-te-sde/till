@@ -3,8 +3,10 @@ package io.till.core;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -15,9 +17,13 @@ import java.util.Set;
  * {@linkplain Command#fingerprint() fingerprint}, so a retry that happened to reorder its body is
  * still recognised as the same request.
  *
+ * <p>Its allocations say where the units came from: which shard of each SKU (ADR 9). They add up to
+ * the lines, SKU by SKU, and are what committing, releasing and expiring the hold return the units to.
+ *
  * @param id the caller's identifier for this hold
  * @param key the idempotency key of the command that created it
  * @param lines what is held, sorted by SKU, at least one, no SKU twice
+ * @param allocations where it is held, sorted by SKU and shard, adding up to the lines
  * @param state the stored state, which {@link #effectiveState(Instant)} may override
  * @param createdAt when the hold was taken
  * @param expiresAt when the hold stops counting, whether or not anything has noticed
@@ -27,6 +33,7 @@ public record Reservation(
         ReservationId id,
         IdempotencyKey key,
         List<Line> lines,
+        List<Allocation> allocations,
         ReservationState state,
         Instant createdAt,
         Instant expiresAt,
@@ -53,6 +60,68 @@ public record Reservation(
             throw new IllegalArgumentException("reservation version must not be negative, got " + version);
         }
         lines = canonical(lines);
+        allocations = allocations(id, lines, allocations);
+    }
+
+    /**
+     * A hold whose every unit came from shard 0, as every hold on a SKU that was never split does.
+     *
+     * @param id the caller's identifier for this hold
+     * @param key the idempotency key of the command that created it
+     * @param lines what is held
+     * @param state the stored state
+     * @param createdAt when the hold was taken
+     * @param expiresAt when the hold stops counting
+     * @param version optimistic concurrency token
+     */
+    public Reservation(
+            ReservationId id,
+            IdempotencyKey key,
+            List<Line> lines,
+            ReservationState state,
+            Instant createdAt,
+            Instant expiresAt,
+            long version) {
+        this(id, key, lines, fromShardZero(lines), state, createdAt, expiresAt, version);
+    }
+
+    private static List<Allocation> fromShardZero(List<Line> lines) {
+        if (lines == null) {
+            return null;
+        }
+        return lines.stream().map(line -> new Allocation(line.sku(), 0, line.quantity())).toList();
+    }
+
+    /**
+     * Sorts allocations and checks that they account for the lines exactly: every unit of every line
+     * from some shard, and nothing from anywhere else.
+     */
+    private static List<Allocation> allocations(ReservationId id, List<Line> lines, List<Allocation> allocations) {
+        if (allocations == null || allocations.isEmpty()) {
+            throw new IllegalArgumentException("reservation " + id + " must say where its units are held");
+        }
+        Map<Sku, Long> wanted = new HashMap<>();
+        lines.forEach(line -> wanted.put(line.sku(), line.quantity()));
+        Set<String> seen = new HashSet<>();
+        Map<Sku, Long> held = new HashMap<>();
+        for (Allocation allocation : allocations) {
+            if (!wanted.containsKey(allocation.sku())) {
+                throw new IllegalArgumentException(
+                        "reservation " + id + " holds " + allocation + " for a SKU it has no line for");
+            }
+            if (!seen.add(allocation.sku() + "#" + allocation.shard())) {
+                throw new IllegalArgumentException(
+                        "reservation " + id + " names shard " + allocation.shard() + " of " + allocation.sku() + " twice");
+            }
+            held.merge(allocation.sku(), allocation.quantity(), Math::addExact);
+        }
+        if (!held.equals(wanted)) {
+            throw new IllegalArgumentException(
+                    "reservation " + id + " holds " + held + " across its shards for lines of " + wanted);
+        }
+        List<Allocation> copy = new ArrayList<>(allocations);
+        copy.sort(Allocation.ORDER);
+        return List.copyOf(copy);
     }
 
     /**
@@ -129,6 +198,6 @@ public record Reservation(
      * @return the updated reservation
      */
     public Reservation withState(ReservationState newState) {
-        return new Reservation(id, key, lines, newState, createdAt, expiresAt, version + 1);
+        return new Reservation(id, key, lines, allocations, newState, createdAt, expiresAt, version + 1);
     }
 }

@@ -11,6 +11,31 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **A hot SKU's stock in several rows** ([ADR 9](docs/design/0009-hot-sku-shards.md)).
+  `Command.Shard` — `POST /v1/stock/{sku}/shards`, `TillClient.shard`, `tillctl shard` — splits a SKU
+  across up to 64 rows. A hold takes its units from the row its reservation id points at, and from
+  several only when no one row has them all; commit, release and expiry give them back there; the
+  answers stay the SKU's. Two holds on one SKU contend only in the same row: in the contention
+  benchmark, sixteen rows took the decisions that conflicted from 54% to 7%.
+  `V3__stock_shards.sql` keys stock and lines by shard; every stock view reports `shards`; the store
+  splits its demonstration stock when `store.demo.shards` asks, and the load test splits sixteen ways.
+- **A deadline on the client.** `TillClient.Builder.deadline` bounds a call, retries and backoffs
+  included; the store's is five seconds (`store.till.deadline`). Before it, a ledger too busy to
+  answer cost a checkout four five-second attempts — the 20.8 s p99 of the first load tests.
+- **A contention benchmark** for the ledger's write path (`ContentionBenchmark` in `till-jdbc`, only
+  with `-Dtill.benchmark=true`): conflicts, snapshots and transactions per completed checkout.
+- **A deployment on AWS** (`infra/`, `scripts/aws.sh`): ECS on Fargate, RDS PostgreSQL, ElastiCache
+  Valkey, Cognito, and CloudFront to an internal load balancer through a VPC origin; `up`, `smoke`,
+  `down`, and a schedule inside AWS that scales every service to zero at a deadline, for a session
+  that outlives whoever started it.
+- **A load test** (`till-loadtest`, [`docs/load-test.md`](docs/load-test.md)): a written protocol —
+  8,000 concurrent shoppers, 3,000 requests a second, a p99 under a second — run by k6 shoppers with
+  their own cookies, addresses and sign-ins through a stand-in OpenID provider; each result carries
+  CloudWatch's and PostgreSQL's account of the same window.
+- **The catalogue's read cache**, in Valkey: a lifetime per kind of answer, with jitter; one load per
+  miss; keys versioned by the schema. Measured under the load test: the average catalogue read from
+  397.67 ms to 34.42 ms.
+
 - **A game store in front of the ledger.** `till-store` is now a backend-for-frontend: a catalogue of
   thirty-two games with PostgreSQL full-text search, facets and sorting; orders placed by holding
   stock in the ledger, priced on the server, paid and cancelled through commit and release, and
@@ -69,6 +94,17 @@ explicitly not: it is a testing tool and it will change.
   usable; polling stops while the tab is hidden and catches up the moment it comes back; a favicon.
 
 ### Changed
+
+- **A decision writes its stock rows first**, in SKU and shard order: they are the rows most likely to
+  have moved, and a conflict found after the reservation's inserts rolled them back.
+- **A snapshot's transaction sets its own isolation** with `SET TRANSACTION`, rather than the
+  connection being asked, set and put back around it — three statements a load, each a transaction.
+- **Expired holds are written off when a command is short of stock**, not by every command; the
+  sweeper drains in passes (`till.sweeper.passes`). Both pools refuse after two seconds waiting for a
+  connection.
+- `StockItem` gains `shards`, `Reservation` gains `allocations`, `Mutation.PutStock` and `Snapshot` name
+  shards, and `LedgerInspector` gains `allShards` — a schema, a wire format and the `Ledger` contract,
+  so a minor version when released.
 
 - `till-catalogue` is now `till-store`, and its tables are prefixed `store_` (`V3__store_prefix.sql`).
 - The ledger no longer serves a browser console. The `-Pweb` profile, `WebUi` and

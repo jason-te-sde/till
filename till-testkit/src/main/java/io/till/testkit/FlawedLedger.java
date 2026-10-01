@@ -12,6 +12,7 @@ import io.till.core.ReservationId;
 import io.till.core.Sku;
 import io.till.core.Snapshot;
 import io.till.core.StockItem;
+import io.till.core.StockShard;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -50,12 +51,11 @@ public final class FlawedLedger implements Ledger, LedgerInspector {
                     new Snapshot(loaded.stock(), loaded.reservation(), Optional.empty(), loaded.reclaimable());
             case RESERVED_IGNORED -> {
                 Snapshot.Builder builder = Snapshot.builder();
-                loaded.stock()
-                        .values()
-                        .forEach(
-                                item ->
-                                        builder.stock(
-                                                new StockItem(item.sku(), item.onHand(), 0, item.version())));
+                loaded.stock().forEach((sku, shards) -> {
+                    builder.absent(sku);
+                    shards.forEach(shard -> builder.shard(
+                            new StockShard(sku, shard.index(), shard.onHand(), 0, shard.version())));
+                });
                 loaded.reservation().ifPresent(builder::reservation);
                 loaded.recordedOutcome().ifPresent(builder::recordedOutcome);
                 builder.reclaimable(loaded.reclaimable());
@@ -93,7 +93,11 @@ public final class FlawedLedger implements Ledger, LedgerInspector {
                                             case Mutation.PutStock m ->
                                                     (Mutation)
                                                             new Mutation.PutStock(
-                                                                    m.sku(), m.onHand(), m.reserved(), currentVersion(m.sku()));
+                                                                    m.sku(),
+                                                                    m.shard(),
+                                                                    m.onHand(),
+                                                                    m.reserved(),
+                                                                    currentVersion(m.sku(), m.shard()));
                                             case Mutation.SetReservationState m ->
                                                     new Mutation.SetReservationState(
                                                             m.reservationId(),
@@ -106,10 +110,10 @@ public final class FlawedLedger implements Ledger, LedgerInspector {
                 new Decision(decision.outcome(), rewritten, decision.events(), decision.outcomeRecord()));
     }
 
-    private long currentVersion(Sku sku) {
-        return inspector.allStock().stream()
-                .filter(item -> item.sku().equals(sku))
-                .mapToLong(StockItem::version)
+    private long currentVersion(Sku sku, int shard) {
+        return inspector.allShards().stream()
+                .filter(row -> row.sku().equals(sku) && row.index() == shard)
+                .mapToLong(StockShard::version)
                 .findFirst()
                 .orElse(StockItem.ABSENT);
     }
@@ -145,6 +149,11 @@ public final class FlawedLedger implements Ledger, LedgerInspector {
     @Override
     public List<StockItem> allStock() {
         return inspector.allStock();
+    }
+
+    @Override
+    public List<StockShard> allShards() {
+        return inspector.allShards();
     }
 
     @Override

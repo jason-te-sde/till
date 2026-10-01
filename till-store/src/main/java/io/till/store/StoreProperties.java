@@ -205,14 +205,21 @@ public record StoreProperties(
      *     compose stack turns it on: a production store does not invent inventory
      * @param defaultStock units per game
      * @param stock per-game overrides, for a game that should be scarce enough to race for
+     * @param shards how many rows the ledger should keep each game's stock in: 1 leaves it as it is,
+     *     more splits every game once it is stocked, as an operator would a game about to be busy —
+     *     which is every game, in a load test (docs/design/0009-hot-sku-shards.md)
      */
     public record Demo(
             @DefaultValue("false") boolean seedStock,
             @DefaultValue("50") long defaultStock,
-            @DefaultValue Map<String, Long> stock) {
+            @DefaultValue Map<String, Long> stock,
+            @DefaultValue("1") int shards) {
 
         public Demo {
             stock = stock == null ? Map.of() : Map.copyOf(stock);
+            if (shards < 1 || shards > 64) {
+                throw new IllegalArgumentException("store.demo.shards must be between 1 and 64, got " + shards);
+            }
         }
 
         /**

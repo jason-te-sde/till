@@ -13,15 +13,21 @@ import javax.sql.DataSource;
 /**
  * Creates the tables, for callers that are not running Flyway.
  *
- * <p>The statements come from the same {@code db/migration/V1__till_schema.sql} on the classpath that
- * Flyway applies, so there is one description of the schema rather than two that drift. A service
- * should use Flyway — it records what it applied and refuses to apply it twice — and a test or an
- * embedded use can call this instead.
+ * <p>The statements come from the same {@code db/migration} files on the classpath that Flyway
+ * applies, in the same order, so there is one description of the schema rather than two that drift.
+ * A service should use Flyway — it records what it applied and refuses to apply it twice — and a test
+ * or an embedded use can call this instead.
  */
 public final class JdbcSchema {
 
-    /** Where the schema lives on the classpath. */
-    public static final String RESOURCE = "db/migration/V1__till_schema.sql";
+    /**
+     * Where the schema lives on the classpath: every migration, in the order Flyway applies them. A
+     * test holds this to the directory, so a migration cannot be added to one and not the other.
+     */
+    public static final List<String> RESOURCES = List.of(
+            "db/migration/V1__till_schema.sql",
+            "db/migration/V2__listing_indexes.sql",
+            "db/migration/V3__stock_shards.sql");
 
     private JdbcSchema() {}
 
@@ -63,10 +69,12 @@ public final class JdbcSchema {
      */
     static List<String> statements() {
         List<String> statements = new ArrayList<>();
-        for (String candidate : stripComments(read()).split(";")) {
-            String trimmed = candidate.trim();
-            if (!trimmed.isEmpty()) {
-                statements.add(trimmed);
+        for (String resource : RESOURCES) {
+            for (String candidate : stripComments(read(resource)).split(";")) {
+                String trimmed = candidate.trim();
+                if (!trimmed.isEmpty()) {
+                    statements.add(trimmed);
+                }
             }
         }
         return statements;
@@ -93,15 +101,15 @@ public final class JdbcSchema {
         return sb.toString();
     }
 
-    private static String read() {
+    private static String read(String resource) {
         ClassLoader loader = JdbcSchema.class.getClassLoader();
-        try (InputStream in = loader.getResourceAsStream(RESOURCE)) {
+        try (InputStream in = loader.getResourceAsStream(resource)) {
             if (in == null) {
-                throw new IllegalStateException(RESOURCE + " is not on the classpath");
+                throw new IllegalStateException(resource + " is not on the classpath");
             }
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
-            throw new IllegalStateException("could not read " + RESOURCE, e);
+            throw new IllegalStateException("could not read " + resource, e);
         }
     }
 }

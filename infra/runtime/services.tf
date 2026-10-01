@@ -280,6 +280,7 @@ resource "aws_ecs_task_definition" "store" {
 
         STORE_DEMO_SEED_STOCK = tostring(var.demo || var.loadtest)
         STORE_CATALOGUE_CACHE = tostring(var.catalogue_cache)
+        STORE_DEMO_SHARDS     = tostring(var.stock_shards)
       }) : { name = name, value = value }]
 
       secrets = [for name, arn in {
