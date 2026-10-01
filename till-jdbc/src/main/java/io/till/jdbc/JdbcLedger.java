@@ -405,15 +405,17 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 case "line" ->
                         lines.add(
                                 new Allocation(Sku.of(rows.getString("text1")), rows.getInt("int1"), rows.getLong("num1")));
-                case "stock" ->
-                        stock.computeIfAbsent(Sku.of(rows.getString("text1")), ignored -> new ArrayList<>())
-                                .add(
-                                        new StockShard(
-                                                Sku.of(rows.getString("text1")),
-                                                rows.getInt("int1"),
-                                                rows.getLong("num1"),
-                                                rows.getLong("num2"),
-                                                rows.getLong("num3")));
+                case "stock" -> {
+                    Sku sku = Sku.of(rows.getString("text1"));
+                    stock.computeIfAbsent(sku, ignored -> new ArrayList<>())
+                            .add(
+                                    new StockShard(
+                                            sku,
+                                            rows.getInt("int1"),
+                                            rows.getLong("num1"),
+                                            rows.getLong("num2"),
+                                            rows.getLong("num3")));
+                }
                 default ->
                         throw new IllegalStateException(
                                 "snapshot query returned an unknown row kind " + rows.getString("kind"));
