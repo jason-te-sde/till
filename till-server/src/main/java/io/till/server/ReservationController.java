@@ -52,6 +52,8 @@ class ReservationController {
      * the same request, and the answer carries the id of the hold that already exists.
      *
      * @param key the caller's key for this attempt
+     * @param timeoutHeader how long the caller will still wait for this attempt, or null for no
+     *     deadline
      * @param request what to hold and for how long
      * @return the hold
      */
@@ -60,14 +62,25 @@ class ReservationController {
     @Operation(operationId = "reserve", summary = "Take a hold on stock")
     @ApiResponses({
         @ApiResponse(responseCode = "201", description = "the hold was taken, or already existed under this key"),
+        @ApiResponse(
+                responseCode = "400",
+                description = "a time to live beyond the maximum, or Till-Timeout-Ms is not a usable budget"),
         @ApiResponse(responseCode = "404", description = "a SKU has never been stocked"),
         @ApiResponse(responseCode = "409", description = "not enough available stock; the body lists every shortfall"),
         @ApiResponse(responseCode = "422", description = "this key was used for a different request"),
-        @ApiResponse(responseCode = "503", description = "too much contention; retry")
+        @ApiResponse(
+                responseCode = "503",
+                description = "too much contention, or the caller's own deadline had already passed; retry")
     })
     Api.Reserved reserve(
             @Parameter(description = "Retrying with this key returns the first answer and changes nothing")
                     @RequestHeader("Idempotency-Key") String key,
+            @Parameter(
+                            description =
+                                    "How long the caller will still wait for this attempt, in "
+                                            + "milliseconds. Omitted for no deadline")
+                    @RequestHeader(value = Commands.TIMEOUT_HEADER, required = false)
+                    String timeoutHeader,
             @Valid @RequestBody Api.ReserveRequest request) {
         List<Line> lines = request.lines().stream().map(Api.LineRequest::toLine).toList();
         Command command =
@@ -76,13 +89,15 @@ class ReservationController {
                         ReservationId.of(UUID.randomUUID().toString()),
                         lines,
                         ttlOf(request));
-        return Api.Reserved.of(Outcomes.reserved(commands.run(command)));
+        return Api.Reserved.of(Outcomes.reserved(commands.run(command, timeoutHeader)));
     }
 
     /**
      * Turns a hold into a sale.
      *
      * @param key the caller's key for this attempt
+     * @param timeoutHeader how long the caller will still wait for this attempt, or null for no
+     *     deadline
      * @param id which hold
      * @return the commit
      */
@@ -90,13 +105,21 @@ class ReservationController {
     @Operation(operationId = "commitReservation", summary = "Turn a hold into a sale")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "on-hand and reserved both went down"),
+        @ApiResponse(responseCode = "400", description = "Till-Timeout-Ms, if sent, is not a usable budget"),
         @ApiResponse(responseCode = "404", description = "no such reservation"),
         @ApiResponse(responseCode = "409", description = "already committed, or already released"),
-        @ApiResponse(responseCode = "410", description = "the hold ran out of time")
+        @ApiResponse(responseCode = "410", description = "the hold ran out of time"),
+        @ApiResponse(
+                responseCode = "503",
+                description = "too much contention, or the caller's own deadline had already passed; retry")
     })
-    Api.Committed commit(@RequestHeader("Idempotency-Key") String key, @PathVariable String id) {
+    Api.Committed commit(
+            @RequestHeader("Idempotency-Key") String key,
+            @RequestHeader(value = Commands.TIMEOUT_HEADER, required = false) String timeoutHeader,
+            @PathVariable String id) {
         return Api.Committed.of(
-                Outcomes.committed(commands.run(new Command.Commit(IdempotencyKey.of(key), ReservationId.of(id)))));
+                Outcomes.committed(
+                        commands.run(new Command.Commit(IdempotencyKey.of(key), ReservationId.of(id)), timeoutHeader)));
     }
 
     /**
@@ -106,6 +129,8 @@ class ReservationController {
      * to be gone and it is gone. Refused only on one that was committed.
      *
      * @param key the caller's key for this attempt
+     * @param timeoutHeader how long the caller will still wait for this attempt, or null for no
+     *     deadline
      * @param id which hold
      * @return the release
      */
@@ -113,12 +138,21 @@ class ReservationController {
     @Operation(operationId = "releaseReservation", summary = "Give a hold back")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "the hold is gone, whether it went now or earlier"),
+        @ApiResponse(responseCode = "400", description = "Till-Timeout-Ms, if sent, is not a usable budget"),
         @ApiResponse(responseCode = "404", description = "no such reservation"),
-        @ApiResponse(responseCode = "409", description = "it was committed and cannot be released")
+        @ApiResponse(responseCode = "409", description = "it was committed and cannot be released"),
+        @ApiResponse(
+                responseCode = "503",
+                description = "too much contention, or the caller's own deadline had already passed; retry")
     })
-    Api.Released release(@RequestHeader("Idempotency-Key") String key, @PathVariable String id) {
+    Api.Released release(
+            @RequestHeader("Idempotency-Key") String key,
+            @RequestHeader(value = Commands.TIMEOUT_HEADER, required = false) String timeoutHeader,
+            @PathVariable String id) {
         return Api.Released.of(
-                Outcomes.released(commands.run(new Command.Release(IdempotencyKey.of(key), ReservationId.of(id)))));
+                Outcomes.released(
+                        commands.run(
+                                new Command.Release(IdempotencyKey.of(key), ReservationId.of(id)), timeoutHeader)));
     }
 
     /**

@@ -1,6 +1,7 @@
 package io.till.server;
 
 import io.till.core.ConflictException;
+import io.till.core.DeadlineExceededException;
 import io.till.core.IncompleteSnapshotException;
 import io.till.jdbc.LedgerException;
 import org.slf4j.Logger;
@@ -45,6 +46,28 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .header(HttpHeaders.RETRY_AFTER, "1")
                 .body(problem);
+    }
+
+    /**
+     * @param e the caller's own deadline had already passed before this could be decided or
+     *     applied
+     * @return 503, with no {@code Retry-After}
+     */
+    @ExceptionHandler(DeadlineExceededException.class)
+    ResponseEntity<ProblemDetail> onDeadlineExceeded(DeadlineExceededException e) {
+        LOG.info("deadline {} had already passed for {}", e.deadline(), e.command());
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "the caller's own deadline had already passed; nothing was written, and it "
+                                + "can be retried with a fresh deadline");
+        problem.setTitle("Deadline exceeded");
+        problem.setProperty("code", "DEADLINE_EXCEEDED");
+        problem.setProperty("deadline", e.deadline().toString());
+        // No Retry-After, unlike CONTENTION: TillClient does not read it, and by construction the
+        // caller's own deadline bookkeeping has already run out by the time it sees this, which is
+        // what a value here would otherwise be telling it to wait inside.
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
     }
 
     /**

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.till.core.Command;
 import io.till.core.ConflictException;
+import io.till.core.DeadlineExceededException;
 import io.till.core.IdempotencyKey;
 import io.till.core.IncompleteSnapshotException;
 import io.till.core.Line;
@@ -13,6 +14,7 @@ import io.till.core.ReservationId;
 import io.till.jdbc.LedgerException;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -56,6 +58,31 @@ class ApiExceptionHandlerTest {
         assertEquals("CONTENTION", problem.getProperties().get("code"));
         assertEquals(8, problem.getProperties().get("attempts"), "so an operator can see the limit being hit");
         assertTrue(problem.getDetail().contains("retried"), problem.getDetail());
+    }
+
+    @Test
+    @DisplayName("a deadline already passed is a 503 with code DEADLINE_EXCEEDED, not CONTENTION")
+    void deadlineExceededIsRetryableButNotContention() {
+        Command command =
+                new Command.Reserve(
+                        IdempotencyKey.of("c1"),
+                        ReservationId.of("r1"),
+                        List.of(Line.of("widget", 1)),
+                        Duration.ofMinutes(15));
+        Instant deadline = Instant.parse("2026-09-10T12:00:00Z");
+
+        ResponseEntity<ProblemDetail> response =
+                handler.onDeadlineExceeded(new DeadlineExceededException(command, deadline));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, HttpStatus.valueOf(response.getStatusCode().value()));
+        ProblemDetail problem = requireBody(response);
+        assertEquals("DEADLINE_EXCEEDED", problem.getProperties().get("code"));
+        assertTrue(problem.getDetail().contains("retried"), problem.getDetail());
+        // Distinct from CONTENTION, which an operator reads as "raise max-attempts or split the
+        // SKU" — advice that does nothing for a caller whose own clock, not the rows, ran out.
+        assertTrue(
+                !"CONTENTION".equals(problem.getProperties().get("code")),
+                "a deadline running out is not the same symptom as contention");
     }
 
     @Test
