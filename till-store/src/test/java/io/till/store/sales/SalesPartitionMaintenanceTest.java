@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.till.store.StoreProperties;
 import io.till.store.StoreTest;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.Period;
