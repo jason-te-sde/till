@@ -31,6 +31,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -44,19 +45,26 @@ import javax.sql.DataSource;
 /**
  * The {@link Ledger} on PostgreSQL.
  *
- * <p>Two transactions per attempt, on purpose, and the reason is the whole design:
+ * <p>The kernel's contract is that a snapshot is one instant. Reading gets there two ways:
  *
  * <ul>
- *   <li><b>Reading</b> happens in a read-only repeatable-read transaction. The kernel's contract is
- *       that a snapshot is one instant, and at read committed the four statements it takes to
- *       assemble one would each see a different instant — each row correct, the set of them
- *       describing a state that never existed.
- *   <li><b>Writing</b> happens at read committed, with every statement carrying the version it
- *       expects. Nothing is locked between the two transactions, so a caller that thinks for a
- *       second blocks nobody; if the row moved underneath it, its update matches no row, the whole
- *       transaction is rolled back, and {@code apply} returns {@code false} so that the caller can
- *       decide again against what is there now.
+ *   <li><b>A load that reclaims nothing</b> ({@code reclaimLimit == 0}: every reserve, commit and
+ *       release's first try, by far the common case) is one statement, in autocommit, with no
+ *       transaction of its own — see {@link #loadLean}. PostgreSQL takes one snapshot per statement,
+ *       so a single statement already reads at one instant; it needs no transaction to say so.
+ *   <li><b>A load that reclaims, and the sweep,</b> still open a read-only repeatable-read
+ *       transaction: what they read next depends on what the first read found, so it cannot be
+ *       folded into one statement the way the lean load's {@code scope} CTE folds a reservation's
+ *       lines into its stock read. At read committed, the several statements that path takes would
+ *       each see a different instant — each row correct, the set of them describing a state that
+ *       never existed.
  * </ul>
+ *
+ * <p><b>Writing</b> always happens at read committed, with every statement carrying the version it
+ * expects. Nothing is locked between loading and writing, so a caller that thinks for a second
+ * blocks nobody; if the row moved underneath it, its update matches no row, the whole transaction is
+ * rolled back, and {@code apply} returns {@code false} so that the caller can decide again against
+ * what is there now.
  *
  * <p><b>Refused is not failed.</b> A version that has moved, a taken reservation id, an idempotency
  * key claimed by a concurrent copy of the same request: all of them return {@code false}, which is
@@ -93,6 +101,61 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     private static final String SELECT_STOCK =
             "select sku, shard, on_hand, reserved, version from till_stock where sku = any(?) "
                     + "order by sku collate \"C\", shard";
+
+    /**
+     * Everything a lean load ({@code reclaimLimit == 0}: see {@link #loadLean}) reads, in one
+     * statement: the idempotency record, the named reservation and its lines, and the stock of every
+     * SKU in scope, including the SKUs the reservation's lines add. {@code UNION ALL} over four typed
+     * arms, a {@code kind} column saying which, and the other columns reused across arms rather than
+     * named per arm — {@link #assembleLeanSnapshot} has the layout — because PostgreSQL requires one
+     * statement's arms to agree on column count and type, and four genuinely different row shapes
+     * otherwise mean a wide, mostly-{@code null} row either way.
+     *
+     * <p>{@code target_lines} and {@code scope} are CTEs rather than a second round trip: {@code
+     * scope} is {@link Command#declaredSkus()} plus whatever SKUs the named reservation's lines add,
+     * which {@link #readSnapshot} only knows after a separate read of those lines. One statement can
+     * still compute it, because a subquery in it runs against the same snapshot as everything else in
+     * it — the whole reason this needs no transaction (see {@link #load}).
+     *
+     * <p>Orderings are the ones {@link #SELECT_STOCK} and {@link #SELECT_LINES} already use: {@code
+     * collate "C"} for SKUs, not for one reservation's lines (its {@code reservation_id} is constant
+     * within {@code target_lines}, so omitting it from the order leaves the result unchanged). The
+     * differential test depends on both.
+     *
+     * <p>A SKU or key absent from a command binds {@code null} for that arm's parameter rather than
+     * skipping the arm — {@code = null} matches no row, which is the same zero rows a skipped arm
+     * would have produced, and a statement this is cannot have an optional arm.
+     */
+    private static final String SNAPSHOT_QUERY =
+            "with target_lines as ("
+                    + "  select sku, shard, quantity from till_reservation_line where reservation_id = ?"
+                    + "), scope as ("
+                    + "  select sku from unnest(?::varchar[]) as sku"
+                    + "  union"
+                    + "  select sku from target_lines"
+                    + ") "
+                    + "select kind, text1, text2, text3, int1, num1, num2, num3, ts1, ts2 from ("
+                    + "  select 'record' as kind, idem_key::text as text1, fingerprint::text as text2, "
+                    + "         outcome::text as text3, null::integer as int1, null::bigint as num1, "
+                    + "         null::bigint as num2, null::bigint as num3, recorded_at as ts1, "
+                    + "         null::timestamptz as ts2, 0::bigint as seq "
+                    + "  from till_idempotency where idem_key = ? "
+                    + "  union all "
+                    + "  select 'reservation', id::text, idem_key::text, state::text, null::integer, "
+                    + "         version, null::bigint, null::bigint, created_at, expires_at, 0::bigint "
+                    + "  from till_reservation where id = ? "
+                    + "  union all "
+                    + "  select 'line', sku::text, null::text, null::text, shard, quantity, null::bigint, "
+                    + "         null::bigint, null::timestamptz, null::timestamptz, "
+                    + "         row_number() over (order by sku, shard) "
+                    + "  from target_lines "
+                    + "  union all "
+                    + "  select 'stock', sku::text, null::text, null::text, shard, on_hand, reserved, "
+                    + "         version, null::timestamptz, null::timestamptz, "
+                    + "         row_number() over (order by sku collate \"C\", shard) "
+                    + "  from till_stock where sku in (select sku from scope)"
+                    + ") combined "
+                    + "order by kind, seq";
 
     /**
      * Ordering is {@code collate "C"} throughout, which is code point order and therefore the order
@@ -231,14 +294,23 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     /**
      * {@inheritDoc}
      *
-     * <p>The transaction sets its own isolation, as its first statement, rather than the connection's
-     * being changed around it. Changing the connection costs a statement to ask what it was, one to
-     * set it, and one to put it back afterwards, each a transaction of its own; the fourth load test
-     * spent more of the database's commits on those than on everything else together
-     * (docs/load-test.md).
+     * <p>{@code reclaimLimit == 0} — every reserve, commit and release's first try, and the common
+     * case by far (ADR 12) — takes {@link #loadLean}: one statement, in autocommit, no transaction of
+     * its own. A PostgreSQL statement takes its snapshot once, when it starts, and every subquery and
+     * {@code UNION ALL} arm in it shares that snapshot, so one statement already reads at one instant
+     * without a transaction to say so.
+     *
+     * <p>A reclaiming load and the sweep still open one. The transaction sets its own isolation, as
+     * its first statement, rather than the connection's being changed around it. Changing the
+     * connection costs a statement to ask what it was, one to set it, and one to put it back
+     * afterwards, each a transaction of its own; the fourth load test spent more of the database's
+     * commits on those than on everything else together (docs/load-test.md).
      */
     @Override
     public Snapshot load(Command command, Instant now, int reclaimLimit) {
+        if (reclaimLimit == 0) {
+            return loadLean(command);
+        }
         try (Connection connection = dataSource.getConnection()) {
             boolean autoCommit = connection.getAutoCommit();
             connection.setAutoCommit(false);
@@ -258,6 +330,108 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         } catch (SQLException e) {
             throw new LedgerException("loading a snapshot for " + command, e);
         }
+    }
+
+    /**
+     * The lean load: {@link #SNAPSHOT_QUERY} in one round trip, no transaction, because a reclaim
+     * limit of zero means {@link #readReclaimable} would return nothing without issuing a statement
+     * anyway (see its first line) — so the only reads a lean load ever needs are the idempotency
+     * record, the named reservation and its lines, and the stock of the resulting scope, and all four
+     * fit in one statement.
+     */
+    private Snapshot loadLean(Command command) {
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(SNAPSHOT_QUERY)) {
+            String targetId = command.targetReservation().map(ReservationId::value).orElse(null);
+            statement.setString(1, targetId);
+            statement.setArray(2, skuArray(connection, command.declaredSkus()));
+            statement.setString(3, command.idempotencyKey().map(IdempotencyKey::value).orElse(null));
+            statement.setString(4, targetId);
+            try (ResultSet rows = statement.executeQuery()) {
+                return assembleLeanSnapshot(command, rows);
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("loading a snapshot for " + command, e);
+        }
+    }
+
+    /**
+     * Reads {@link #SNAPSHOT_QUERY}'s rows, discriminated by {@code kind}, into the same
+     * {@link Snapshot} {@link #readSnapshot} would build from four separate reads.
+     *
+     * <p>Column layout, read by {@code kind}; a column a kind does not use is {@code null} and never
+     * read:
+     *
+     * <ul>
+     *   <li>{@code record}: {@code text1}=idem_key, {@code text2}=fingerprint, {@code text3}=outcome,
+     *       {@code ts1}=recorded_at
+     *   <li>{@code reservation}: {@code text1}=id, {@code text2}=idem_key, {@code text3}=state,
+     *       {@code num1}=version, {@code ts1}=created_at, {@code ts2}=expires_at
+     *   <li>{@code line}: {@code text1}=sku, {@code int1}=shard, {@code num1}=quantity
+     *   <li>{@code stock}: {@code text1}=sku, {@code int1}=shard, {@code num1}=on_hand,
+     *       {@code num2}=reserved, {@code num3}=version
+     * </ul>
+     *
+     * <p>The scope — every SKU {@link Snapshot#stock()} must have an entry for — is recomputed here
+     * from the command's own SKUs and the reservation found, exactly as {@link #readSnapshot} does,
+     * rather than trusted from the query's {@code scope} CTE: that CTE exists only to decide which
+     * stock rows to fetch, and a SKU with none still has to be marked {@linkplain
+     * Snapshot.Builder#absent absent}.
+     */
+    private Snapshot assembleLeanSnapshot(Command command, ResultSet rows) throws SQLException {
+        Snapshot.Builder builder = Snapshot.builder();
+        Row header = null;
+        List<Allocation> lines = new ArrayList<>();
+        Map<Sku, List<StockShard>> stock = new LinkedHashMap<>();
+
+        while (rows.next()) {
+            switch (rows.getString("kind")) {
+                case "record" ->
+                        builder.recordedOutcome(
+                                new OutcomeRecord(
+                                        IdempotencyKey.of(rows.getString("text1")),
+                                        rows.getString("text2"),
+                                        rows.getString("text3"),
+                                        instant(rows, "ts1")));
+                case "reservation" ->
+                        header =
+                                new Row(
+                                        rows.getString("text1"),
+                                        rows.getString("text2"),
+                                        rows.getString("text3"),
+                                        instant(rows, "ts1"),
+                                        instant(rows, "ts2"),
+                                        rows.getLong("num1"));
+                case "line" ->
+                        lines.add(
+                                new Allocation(Sku.of(rows.getString("text1")), rows.getInt("int1"), rows.getLong("num1")));
+                case "stock" ->
+                        stock.computeIfAbsent(Sku.of(rows.getString("text1")), ignored -> new ArrayList<>())
+                                .add(
+                                        new StockShard(
+                                                Sku.of(rows.getString("text1")),
+                                                rows.getInt("int1"),
+                                                rows.getLong("num1"),
+                                                rows.getLong("num2"),
+                                                rows.getLong("num3")));
+                default ->
+                        throw new IllegalStateException(
+                                "snapshot query returned an unknown row kind " + rows.getString("kind"));
+            }
+        }
+
+        Set<Sku> scope = new LinkedHashSet<>(command.declaredSkus());
+        if (header != null) {
+            Reservation named = header.toReservation(requireLines(lines, ReservationId.of(header.id)));
+            builder.reservation(named);
+            scope.addAll(named.skus());
+        }
+
+        for (Sku sku : scope) {
+            builder.absent(sku);
+            stock.getOrDefault(sku, List.of()).forEach(builder::shard);
+        }
+        return builder.build();
     }
 
     private Snapshot readSnapshot(Connection connection, Command command, Instant now, int reclaimLimit)
@@ -387,13 +561,17 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     }
 
     private static List<Allocation> requireLines(Map<ReservationId, List<Allocation>> lines, ReservationId id) {
-        List<Allocation> found = lines.get(id);
-        if (found == null || found.isEmpty()) {
+        return requireLines(lines.getOrDefault(id, List.of()), id);
+    }
+
+    /** As {@link #requireLines(Map, ReservationId)}, for a caller that already has one reservation's. */
+    private static List<Allocation> requireLines(List<Allocation> lines, ReservationId id) {
+        if (lines.isEmpty()) {
             // The foreign key makes orphaned lines impossible; a reservation with none means
             // somebody wrote the header without them, which is not a state to paper over.
             throw new IllegalStateException("reservation " + id + " has no lines");
         }
-        return found;
+        return lines;
     }
 
     private Map<Sku, List<StockShard>> readStock(Connection connection, Set<Sku> skus) throws SQLException {
@@ -853,7 +1031,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 rows.getLong("version"));
     }
 
-    private static Array skuArray(Connection connection, Set<Sku> skus) throws SQLException {
+    private static Array skuArray(Connection connection, Collection<Sku> skus) throws SQLException {
         return connection.createArrayOf("varchar", skus.stream().map(Sku::value).toArray());
     }
 

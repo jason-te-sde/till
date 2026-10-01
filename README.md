@@ -339,13 +339,14 @@ sequenceDiagram
 
     C->>T: reserve(key, lines, ttl)
     T->>D: read: record? reservation? stock
-    Note over D: one read-only repeatable-read transaction,<br/>because a snapshot has to be one instant
+    Note over D: one statement, in autocommit —<br/>PostgreSQL gives one statement one instant
     D-->>T: Snapshot
     T->>K: decide(snapshot, command, now)
     Note over K: check availability, all lines or none
     K-->>T: Decision
     opt short of stock
         T->>D: read again, with the expired holds in the way
+        Note over D: this read does open a transaction:<br/>what it reads next depends on what it finds
         T->>K: decide again: write them off, check availability
     end
     T->>D: one transaction: stock, reservation, events, record
@@ -973,7 +974,7 @@ Fifteen minutes, in this order:
 | [`core/Till.java`](till-core/src/main/java/io/till/core/Till.java) | the four-line loop, and why there is no backoff in it |
 | [`testkit/Invariants.java`](till-testkit/src/main/java/io/till/testkit/Invariants.java) | the properties, and what each one catches |
 | [`testkit/Sim.java`](till-testkit/src/main/java/io/till/testkit/Sim.java) | why a command is three phases rather than one |
-| [`jdbc/JdbcLedger.java`](till-jdbc/src/main/java/io/till/jdbc/JdbcLedger.java) | two transactions per attempt, and why they differ |
+| [`jdbc/JdbcLedger.java`](till-jdbc/src/main/java/io/till/jdbc/JdbcLedger.java) | one statement or two transactions per attempt, and why |
 | [`store/ledger/LedgerKeys.java`](till-store/src/main/java/io/till/store/ledger/LedgerKeys.java) | why a customer's idempotency key never reaches the ledger as it was sent |
 | [`store/orders/OrderService.java`](till-store/src/main/java/io/till/store/orders/OrderService.java) | no transaction across a call to another service, and why that is safe |
 | [`store/events/Projector.java`](till-store/src/main/java/io/till/store/events/Projector.java) | three read models, one transaction, and the inbox that makes at-least-once affordable |
