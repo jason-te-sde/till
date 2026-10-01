@@ -2,7 +2,9 @@ package io.till.kafka;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -10,8 +12,15 @@ import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.CreateTopicsResult;
+import org.apache.kafka.clients.admin.DescribeTopicsResult;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.TopicDescription;
+import org.apache.kafka.common.KafkaFuture;
+import org.apache.kafka.common.Node;
+import org.apache.kafka.common.TopicPartitionInfo;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
+import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -88,6 +97,72 @@ class KafkaTopicTest {
                 AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, 2_000,
                 AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, 1_000))) {
             assertThrows(IllegalStateException.class, () -> new KafkaTopic(nowhere, name(), 4, (short) 1, Duration.ofSeconds(3)).ensure());
+        }
+    }
+
+    @Test
+    @DisplayName("a topic it creates is declared only once every partition has a leader to take a record")
+    void waitsForLeaders() {
+        // A broker that has accepted the topic and not yet elected its leaders, as a busy one has not
+        // for a few hundred milliseconds. A record sent then gets NOT_LEADER_OR_FOLLOWER, and one CI
+        // run's idempotent producer never recovered from it: thirty seconds of out-of-order sequence
+        // numbers on one partition, and the record expired.
+        Electing broker = new Electing("till.events.electing", 12, 3);
+
+        assertEquals(12, new KafkaTopic(broker.admin(), "till.events.electing", 12, (short) 1, TIMEOUT).ensure());
+        assertTrue(broker.elected(), "declared while partitions had no leader");
+    }
+
+    /**
+     * Just enough of a cluster to create a topic and describe it: its partitions get leaders only once
+     * it has been described {@code after} times. Built from the client's own result types, so what
+     * {@link KafkaTopic} reads is what a real {@link Admin} returns.
+     */
+    private static final class Electing {
+
+        private final String name;
+        private final int partitions;
+        private final int after;
+        private boolean created;
+        private int looks;
+
+        Electing(String name, int partitions, int after) {
+            this.name = name;
+            this.partitions = partitions;
+            this.after = after;
+        }
+
+        boolean elected() {
+            return created && looks >= after;
+        }
+
+        Admin admin() {
+            return (Admin) Proxy.newProxyInstance(Admin.class.getClassLoader(), new Class<?>[] {Admin.class}, (self, method, args) ->
+                    switch (method.getName()) {
+                        case "createTopics" -> {
+                            created = true;
+                            yield new CreateTopicsResult(Map.of(name, KafkaFuture.completedFuture(null))) {};
+                        }
+                        case "describeTopics" -> new DescribeTopicsResult(null, Map.of(name, describe())) {};
+                        case "close" -> null;
+                        default -> throw new UnsupportedOperationException(method.getName());
+                    });
+        }
+
+        private KafkaFuture<TopicDescription> describe() {
+            KafkaFutureImpl<TopicDescription> answer = new KafkaFutureImpl<>();
+            if (!created) {
+                answer.completeExceptionally(new UnknownTopicOrPartitionException(name));
+                return answer;
+            }
+            looks++;
+            Node broker = new Node(1, "localhost", 9092);
+            List<TopicPartitionInfo> rows = new java.util.ArrayList<>();
+            for (int i = 0; i < partitions; i++) {
+                rows.add(new TopicPartitionInfo(i, elected() ? broker : null, List.of(broker), List.of(broker)));
+            }
+            answer.complete(new TopicDescription(name, false, rows));
+            return answer;
         }
     }
 

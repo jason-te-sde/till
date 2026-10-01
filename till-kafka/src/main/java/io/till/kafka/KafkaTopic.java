@@ -70,14 +70,22 @@ public final class KafkaTopic {
     }
 
     /**
-     * Makes sure the topic exists with at least the partitions asked for.
+     * Makes sure the topic exists with at least the partitions asked for, every one of them with a
+     * leader to take a record.
+     *
+     * <p>With a leader, because a broker accepts a topic before it has elected its partitions'
+     * leaders, and a record sent in between is refused with {@code NOT_LEADER_OR_FOLLOWER}. The
+     * producer should retry its way past that; on one CI run its idempotent producer did not, and spent
+     * thirty seconds on out-of-order sequence numbers for one partition before the record expired. A
+     * topic is declared when it can be written to, not when it has been accepted.
      *
      * <p>A topic somebody else has just created can exist and not yet be describable — the broker
-     * says it exists when asked to create it, and does not know it when asked what it is — so a
-     * creation that loses that race describes again, until the timeout, rather than assuming.
+     * says it exists when asked to create it, and does not know it when asked what it is — so that
+     * is looked at again too, until the timeout, rather than assumed.
      *
      * @return how many partitions it has
-     * @throws IllegalStateException if the cluster could not be asked, or refused
+     * @throws IllegalStateException if the cluster could not be asked, or refused, or the topic was
+     *     not ready to be written to within the timeout
      */
     public synchronized int ensure() {
         if (declared) {
@@ -92,18 +100,17 @@ public final class KafkaTopic {
                     if (have < partitions) {
                         await(admin.createPartitions(Map.of(name, NewPartitions.increaseTo(partitions))).all());
                         LOG.info("grew {} from {} to {} partitions", name, have, partitions);
-                        have = partitions;
+                    } else if (led(found.get())) {
+                        declared = true;
+                        return have;
                     }
-                    declared = true;
-                    return have;
-                }
-                if (create()) {
-                    declared = true;
-                    return partitions;
+                } else {
+                    create();
                 }
                 if (System.nanoTime() > giveUpAt) {
                     throw new IllegalStateException(
-                            "the topic " + name + " exists and could not be described within " + timeout);
+                            "the topic " + name + " was not ready to be written to within " + timeout
+                                    + ": it could not be described, or not every partition had a leader");
                 }
                 Thread.sleep(100);
             }
@@ -113,6 +120,12 @@ public final class KafkaTopic {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("interrupted declaring the topic " + name, e);
         }
+    }
+
+    /** Whether every partition has a leader: somewhere a record sent to it now would be taken. */
+    private static boolean led(TopicDescription description) {
+        return description.partitions().stream()
+                .allMatch(partition -> partition.leader() != null && !partition.leader().isEmpty());
     }
 
     private Optional<TopicDescription> describe() throws ExecutionException {
@@ -133,22 +146,15 @@ public final class KafkaTopic {
         }
     }
 
-    /**
-     * Creates the topic.
-     *
-     * @return true if this call created it; false if somebody else already had, which the caller
-     *     finds out about by describing it
-     */
-    private boolean create() throws ExecutionException {
+    /** Creates the topic, unless somebody else just has; either way, the caller describes it next. */
+    private void create() throws ExecutionException {
         try {
             await(admin.createTopics(List.of(new NewTopic(name, partitions, replicationFactor))).all());
             LOG.info("created {} with {} partitions and {} replicas of each", name, partitions, replicationFactor);
-            return true;
         } catch (ExecutionException e) {
-            if (e.getCause() instanceof TopicExistsException) {
-                return false;
+            if (!(e.getCause() instanceof TopicExistsException)) {
+                throw e;
             }
-            throw e;
         }
     }
 
