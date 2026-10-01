@@ -121,6 +121,6 @@ class EventConsumerTopicTest extends StoreTest {
         return new StoreProperties(
                 properties.till(),
                 new StoreProperties.Kafka(KAFKA.getBootstrapServers(), topic, "store-" + UUID.randomUUID(), Duration.ofMillis(200)),
-                properties.auth(), properties.checkout(), properties.demo(), properties.catalogue());
+                properties.auth(), properties.checkout(), properties.demo(), properties.catalogue(), properties.sales());
     }
 }

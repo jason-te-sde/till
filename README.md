@@ -428,7 +428,7 @@ because the alternative is a client that retried a timeout being told "out of st
 | Orders | placed by holding stock in the ledger, priced on the server from the catalogue, paid and cancelled through commit and release, and reconciled from the event stream so a lost response still ends up paid |
 | Sign-in | OpenID Connect code flow with PKCE on the server; tokens in Redis sessions; an `HttpOnly` `SameSite=Lax` cookie; CSRF by double submit; Cognito's groups claim turned into roles |
 | The operator console | stock with an available/reserved split, holds with their effective state, the outbox backlog, and stock adjustment — behind `/api/ops`, for the admin group only, enforced on the server |
-| Best sellers | a daily roll-up of the ledger's commit events, by the ledger's clock, in UTC |
+| Best sellers | a daily roll-up of the ledger's commit events, by the ledger's clock, in UTC, kept in a table partitioned by month so a seven-day read touches one or two partitions and a retired month is a dropped table |
 | An edge | nginx: the only public entry point; long-lived caching for hashed assets; a Content-Security-Policy with no inline script; rate limits answered as problems; a five-second catalogue microcache whose staleness the store bounds |
 | One error shape | every failure is an RFC 9457 problem with a `code` — the ledger's refusals with their shortfalls, validation with every bad field, the security layer's, the framework's, and a bug's |
 | Typed end to end | the storefront's TypeScript is generated from `openapi/store.json`, which the store's own test regenerates and fails on when it goes stale |

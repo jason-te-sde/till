@@ -49,7 +49,7 @@ class DemoStockTest extends StoreTest {
     }
 
     private StoreProperties with(StoreProperties.Demo demo) {
-        return new StoreProperties(
-                properties.till(), properties.kafka(), properties.auth(), properties.checkout(), demo, properties.catalogue());
+        return new StoreProperties(properties.till(), properties.kafka(), properties.auth(), properties.checkout(), demo,
+                properties.catalogue(), properties.sales());
     }
 }
