@@ -2,14 +2,36 @@
 # Cognito for Keycloak, RDS for postgres and ElastiCache for redis. ARM64, which Fargate bills about
 # a fifth below x86, and which is what the images are built as on the machine that pushes them.
 #
-# They start in order — the broker, the ledger, the store, the edge — each once the one before it is
-# healthy, which is what `depends_on: condition: service_healthy` does in the compose file.
+# Kafka is three of these services, not one — docker-compose.kafka-cluster.yml is the local
+# equivalent; see the comment above its task definition for why. They start together; the ledger
+# starts once all three are healthy, the store once the ledger is, the edge once the store is,
+# which is what `depends_on: condition: service_healthy` does in the compose file.
 
 locals {
-  namespace     = aws_service_discovery_private_dns_namespace.till.name
-  kafka_brokers = "kafka.${local.namespace}:9092"
-  ledger_url    = "http://ledger.${local.namespace}:8080"
-  jdbc          = "jdbc:postgresql://${local.db_endpoint}:5432"
+  namespace = aws_service_discovery_private_dns_namespace.till.name
+
+  # Three KRaft nodes, broker and controller together, each its own ECS service so it keeps a
+  # stable node id and a stable Cloud Map name across a replacement: kafka-2 is always kafka-2,
+  # whichever task is currently running under that name. Strings throughout rather than numbers,
+  # because for_each needs a string key for the name regardless, and a local that is a number in
+  # one place and a string in another is harder to follow than one that only ever is a string.
+  kafka_ids  = ["1", "2", "3"]
+  kafka_host = { for id in local.kafka_ids : id => "kafka-${id}.${local.namespace}" }
+
+  # The ledger and the store get every broker, not just one: a bootstrap list is only where a
+  # client connects first, and listing all three means that first connection does not depend on
+  # which one happens to be up.
+  kafka_brokers = join(",", [for id in local.kafka_ids : "${local.kafka_host[id]}:9092"])
+
+  # Every node's view of the controller quorum, identical on all three. Unlike the single-node
+  # setup this replaces, a voter cannot be `localhost`: each node dials the *other* two over the
+  # network, at the Cloud Map name that follows whichever task is currently running under it.
+  kafka_voters = join(",", [for id in local.kafka_ids : "${id}@${local.kafka_host[id]}:9093"])
+
+  ledger_url = "http://ledger.${local.namespace}:8080"
+  # local.db_endpoint (state.tf): RDS or Aurora, picked per deployment (var.database) — Kafka does
+  # not care which; it only needs an address to put after the scheme.
+  jdbc = "jdbc:postgresql://${local.db_endpoint}:5432"
 
   logs = { for name, group in var.log_groups : name => {
     logDriver = "awslogs"
@@ -63,10 +85,43 @@ resource "aws_ecs_cluster" "till" {
   }
 }
 
-# --- kafka ---------------------------------------------------------------------------------------
-
+# --- kafka -----------------------------------------------------------------------------------------
+#
+# Three nodes, each broker and controller together, so the topic the ledger declares — replication
+# factor 3, min.insync.replicas 2 below — can lose any one of them and still take an acknowledged
+# write. The offsets and transaction-log settings give Kafka's own internal topics the same 3-and-2
+# shape, so the cluster's bookkeeping has the guarantee the outbox does.
+#
+# One shared cluster id, generated once (below) rather than left unset: KRaft refuses to let a node
+# join a quorum under a different cluster id than the one already running, and each node formats
+# its own (empty, ephemeral) storage with whichever id it is given on first boot. Left unset, all
+# three would fall back to a value baked into the image — the same value for all three, so it would
+# even happen to work, but by accident of the base image rather than by a decision this reads.
+#
+# Fargate's disk is ephemeral: a replacement — a deployment, an OOM kill, a host Fargate retires —
+# comes back empty, both for the partition data a node held and for its share of the controller
+# quorum's metadata log. For partition data that is ordinary Kafka: the empty node rejoins out of
+# the in-sync set and re-replicates from the two that still have it, and min.insync.replicas=2 keeps
+# acknowledging writes throughout, because the other two are enough. The controller quorum works
+# the same way one level down — the rejoining node's metadata log is behind, and it catches up from
+# the current Raft leader as long as two of the three stay reachable. Losing two disks at once is
+# what it does not survive, and one way to do that is here: each node is a service of its own, and
+# Terraform updates the three together, so a change to these task definitions replaces all three
+# at once and the cluster starts again empty. The image is pinned and every setting is below, so
+# that is a deliberate change rather than a routine one; the outbox then sends again whatever it
+# had not published, but events published and not yet read by a store are gone from the stream.
+#
+# That is accepted here rather than engineered around with persistent storage (EFS, or MSK),
+# because this deployment is a session, not a fixture (infra/README.md): the worst case is a stale
+# `available` count until re-replication finishes, or, for the correlated loss above, restarting the
+# stack — and the ledger stays authoritative throughout, since nothing downstream can oversell no
+# matter what the storefront's projection currently shows (docker-compose.yml's comment says why).
+# Three brokers protect against losing one task. They do not protect against losing the zone they
+# all run in, which is the same zone the database and the cache are in ("One zone for everything
+# with state" below) — a cost trade-off made on purpose, not an oversight.
 resource "aws_ecs_task_definition" "kafka" {
-  family                   = "till-kafka"
+  for_each                 = toset(local.kafka_ids)
+  family                   = "till-kafka-${each.key}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.size.kafka.cpu
@@ -80,30 +135,36 @@ resource "aws_ecs_task_definition" "kafka" {
   }
 
   container_definitions = jsonencode([{
-    name         = "kafka"
-    image        = var.images.kafka
-    essential    = true
-    portMappings = [{ containerPort = 9092, protocol = "tcp" }]
+    name      = "kafka"
+    image     = var.images.kafka
+    essential = true
+    portMappings = [
+      { containerPort = 9092, protocol = "tcp" }, # clients, and the other two brokers' data fetch
+      { containerPort = 9093, protocol = "tcp" }, # the controller quorum, between brokers only
+    ]
 
-    # docker-compose.yml's broker, advertising the name the others resolve. Its log is the task's
-    # own disk: the outbox is the durable record, and a broker that restarts empty is sent whatever
-    # has not been published yet.
+    # docker-compose.kafka-cluster.yml's brokers, advertising the name the others resolve. This
+    # node's own id and advertised address; the cluster id, the quorum and the replication settings
+    # are the same on all three.
     environment = [for name, value in {
-      KAFKA_NODE_ID                                  = "1"
+      CLUSTER_ID                                     = random_id.kafka_cluster.b64_url
+      KAFKA_NODE_ID                                  = each.key
       KAFKA_PROCESS_ROLES                            = "broker,controller"
       KAFKA_LISTENERS                                = "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_ADVERTISED_LISTENERS                     = "PLAINTEXT://${local.kafka_brokers}"
-      KAFKA_CONTROLLER_QUORUM_VOTERS                 = "1@localhost:9093"
+      KAFKA_ADVERTISED_LISTENERS                     = "PLAINTEXT://${local.kafka_host[each.key]}:9092"
+      KAFKA_CONTROLLER_QUORUM_VOTERS                 = local.kafka_voters
       KAFKA_CONTROLLER_LISTENER_NAMES                = "CONTROLLER"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP           = "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR         = "1"
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR = "1"
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR            = "1"
+      KAFKA_DEFAULT_REPLICATION_FACTOR               = "3"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR         = "3"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR = "3"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR            = "2"
+      KAFKA_MIN_INSYNC_REPLICAS                      = "2"
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS         = "0"
       KAFKA_AUTO_CREATE_TOPICS_ENABLE                = "true"
     } : { name = name, value = value }]
 
-    # The compose file's check: the broker must list its topics, not merely listen.
+    # The compose file's check: this node must list its topics, not merely listen.
     healthCheck = {
       command     = ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list > /dev/null 2>&1"]
       interval    = 15
@@ -116,14 +177,22 @@ resource "aws_ecs_task_definition" "kafka" {
   }])
 }
 
+# One id shared by all three nodes. A separate resource rather than a literal because Terraform,
+# not a human, has to be the one who agrees with itself across three container definitions.
+resource "random_id" "kafka_cluster" {
+  byte_length = 16
+}
+
 resource "aws_ecs_service" "kafka" {
-  name            = "kafka"
+  for_each        = aws_ecs_task_definition.kafka
+  name            = "kafka-${each.key}"
   cluster         = aws_ecs_cluster.till.id
-  task_definition = aws_ecs_task_definition.kafka.arn
+  task_definition = each.value.arn
   desired_count   = 1
   launch_type     = "FARGATE"
 
-  # One broker, which must never briefly be two: they would share a node id.
+  # One node per service, which must never briefly be two: they would share a node id and collide
+  # over the same voter entry.
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
 
@@ -134,7 +203,7 @@ resource "aws_ecs_service" "kafka" {
   }
 
   service_registries {
-    registry_arn = aws_service_discovery_service.service["kafka"].arn
+    registry_arn = aws_service_discovery_service.service["kafka-${each.key}"].arn
   }
 
   deployment_circuit_breaker {
@@ -175,6 +244,10 @@ resource "aws_ecs_task_definition" "ledger" {
       TILL_DB_USER       = "till"
       TILL_DB_POOL       = tostring(var.db_pool.ledger)
       TILL_KAFKA_BROKERS = local.kafka_brokers
+      # Matches the cluster it is talking to: three brokers (above), so the topic this declares —
+      # till.kafka.partitions, TillProperties.Kafka — is created with three copies of each
+      # partition rather than the application default of one.
+      TILL_KAFKA_REPLICATION_FACTOR = "3"
     } : { name = name, value = value }]
 
     secrets = [for name, arn in {
@@ -230,6 +303,7 @@ resource "aws_ecs_service" "ledger" {
   propagate_tags         = "SERVICE"
   wait_for_steady_state  = true
 
+  # A bare reference to a for_each resource depends on every instance of it: all three brokers.
   depends_on = [aws_ecs_service.kafka]
 }
 

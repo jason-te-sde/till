@@ -21,9 +21,15 @@ locals {
     ledger_from_store = { to = "ledger", from = "store", port = 8080 }
     kafka_from_ledger = { to = "kafka", from = "ledger", port = 9092 }
     kafka_from_store  = { to = "kafka", from = "store", port = 9092 }
-    db_from_ledger    = { to = "db", from = "ledger", port = 5432 }
-    db_from_store     = { to = "db", from = "store", port = 5432 }
-    cache_from_store  = { to = "cache", from = "store", port = 6379 }
+    # The three brokers to each other: data replication on 9092, the controller quorum on 9093.
+    # Both are "kafka to kafka" — the tier admits itself — which a security group needs an explicit
+    # rule for, same as any other pair; being the same group does not imply they can reach each
+    # other.
+    kafka_from_kafka_data       = { to = "kafka", from = "kafka", port = 9092 }
+    kafka_from_kafka_controller = { to = "kafka", from = "kafka", port = 9093 }
+    db_from_ledger              = { to = "db", from = "ledger", port = 5432 }
+    db_from_store               = { to = "db", from = "store", port = 5432 }
+    cache_from_store            = { to = "cache", from = "store", port = 6379 }
   }
 
   # The containers go out for their images, their logs, their secrets and — the store — Cognito.

@@ -16,7 +16,11 @@ resource "time_offset" "auto_stop" {
 }
 
 locals {
-  stoppable = toset(concat(["kafka", "ledger", "store", "edge"], var.loadtest ? ["idp"] : []))
+  stoppable = toset(concat(
+    [for id in local.kafka_ids : "kafka-${id}"],
+    ["ledger", "store", "edge"],
+    var.loadtest ? ["idp"] : [],
+  ))
   auto_stop = formatdate("YYYY-MM-DD'T'hh:mm:ss", time_offset.auto_stop.rfc3339)
 }
 
@@ -48,6 +52,7 @@ resource "aws_scheduler_schedule" "stop" {
     }
   }
 
-  # Created with the services it stops, so it can never name one that does not exist yet.
+  # Created with the services it stops, so it can never name one that does not exist yet. A bare
+  # reference to a for_each resource (kafka) depends on every instance of it.
   depends_on = [aws_ecs_service.kafka, aws_ecs_service.ledger, aws_ecs_service.store, aws_ecs_service.edge, aws_ecs_service.idp]
 }
