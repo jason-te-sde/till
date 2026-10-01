@@ -11,6 +11,15 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **Monthly partitions for the sales roll-up** ([ADR 10](docs/design/0010-sales-partitions.md)).
+  `store_sales_daily` is now range-partitioned by `day` — one partition a month, plus a `default`
+  catch-all — so a seven-day best-seller read touches one or two partitions instead of the whole
+  table, and retiring a month is a dropped table instead of a delete sized to however many rows it
+  held. `V7__sales_partitions.sql` converts the existing table without losing a row.
+  `SalesPartitionMaintenance` creates this month's and next month's partitions on start-up and once a
+  day, moves rows out of `default` when a month's partition is created after they landed there, and
+  drops whole months past `store.sales.retention` (default 13 months; refused below the seven-day
+  best-seller window it would otherwise cut a partition out from under).
 - **The ledger honours the caller's deadline** ([ADR 11](docs/design/0011-request-deadlines.md)).
   `TillClient` sends, on every attempt, what is left of its call's deadline as `Till-Timeout-Ms` —
   milliseconds, relative rather than an absolute instant, so clock skew between hosts cannot matter.
