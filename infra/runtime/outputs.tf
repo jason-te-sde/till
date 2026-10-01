@@ -7,7 +7,10 @@ output "cluster" {
 }
 
 output "services" {
-  value = [for service in [aws_ecs_service.kafka, aws_ecs_service.ledger, aws_ecs_service.store, aws_ecs_service.edge] : service.name]
+  value = concat(
+    [for service in aws_ecs_service.kafka : service.name],
+    [for service in [aws_ecs_service.ledger, aws_ecs_service.store, aws_ecs_service.edge] : service.name],
+  )
 }
 
 output "distribution_id" {

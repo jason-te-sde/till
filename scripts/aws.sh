@@ -21,8 +21,8 @@
 # does not ask.
 #
 # Needs the AWS CLI, Terraform, Docker, jq and python3. Credentials are whatever AWS_PROFILE names —
-# till-deploy unless it says otherwise — and nothing here prints them. Running costs about $0.16 an
-# hour; infra/README.md has the arithmetic.
+# till-deploy unless it says otherwise — and nothing here prints them. Running costs about $0.22 an
+# hour, Kafka's three brokers included; infra/README.md has the arithmetic.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -31,8 +31,8 @@ export AWS_PROFILE="${AWS_PROFILE:-till-deploy}"
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 export AWS_PAGER=""
 
-HOURLY=0.16
-LOADTEST_HOURLY=1.15
+HOURLY=0.22
+LOADTEST_HOURLY=1.26
 yes=false
 loadtest=false
 catalogue_cache=true
@@ -307,7 +307,7 @@ cmd_status() {
     --query 'ReplicationGroups[0].[CacheNodeType, Status]'
   probe "service discovery" servicediscovery list-namespaces --output text \
     --query "Namespaces[?Name=='till.internal'].Name"
-  probe "ECS services, running" ecs describe-services --cluster till --services kafka ledger store edge idp --output text \
+  probe "ECS services, running" ecs describe-services --cluster till --services kafka-1 kafka-2 kafka-3 ledger store edge idp --output text \
     --query "services[?status=='ACTIVE'].join(':', [serviceName, to_string(runningCount)])"
   probe "safety net" scheduler get-schedule --name till-stop-store --output text \
     --query "join('', ['scales to zero at ', ScheduleExpression, ' UTC'])"
@@ -552,8 +552,8 @@ queries = [
     # not DBClusterIdentifier, the same as CPUUtilization above — AWS's own example for this metric
     # queries it that way (infra/runtime/state.tf has the link).
     stat("db_acu_max", "AWS/RDS", "ServerlessDatabaseCapacity", {"DBInstanceIdentifier": "till"}, "Maximum"),
-] + [stat(f"{service}_cpu_max", "AWS/ECS", "CPUUtilization", {"ClusterName": "till", "ServiceName": service}, "Maximum")
-     for service in ("edge", "store", "ledger", "kafka")]
+] + [stat(f"{service.replace('-', '_')}_cpu_max", "AWS/ECS", "CPUUtilization", {"ClusterName": "till", "ServiceName": service}, "Maximum")
+     for service in ("edge", "store", "ledger", "kafka-1", "kafka-2", "kafka-3")]
 print(json.dumps({"MetricDataQueries": queries, "StartTime": start.isoformat(), "EndTime": end.isoformat()}))
 PY
   aws cloudwatch get-metric-data --cli-input-json "file://${TMPDIR:-/tmp}/till-metrics.json" --output json |
@@ -570,7 +570,9 @@ PY
           edge_cpu_max_percent: ((.edge_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
           store_cpu_max_percent: ((.store_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
           ledger_cpu_max_percent: ((.ledger_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
-          kafka_cpu_max_percent: ((.kafka_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end)
+          kafka_1_cpu_max_percent: ((.kafka_1_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
+          kafka_2_cpu_max_percent: ((.kafka_2_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
+          kafka_3_cpu_max_percent: ((.kafka_3_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end)
         }'
   rm -f "${TMPDIR:-/tmp}/till-metrics.json"
 }

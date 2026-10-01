@@ -10,7 +10,7 @@ resource "aws_service_discovery_private_dns_namespace" "till" {
 }
 
 resource "aws_service_discovery_service" "service" {
-  for_each = toset(["ledger", "store", "kafka"])
+  for_each = toset(concat(["ledger", "store"], [for id in local.kafka_ids : "kafka-${id}"]))
 
   name          = each.key
   force_destroy = true
