@@ -444,8 +444,8 @@ because the alternative is a client that retried a timeout being told "out of st
 | Idempotency | keyed by the caller, with a fingerprint that ignores the server-minted id and the line order |
 | Optimistic concurrency | a version per row, no locks, no backoff, bounded attempts |
 | Hot-SKU shards | a busy SKU's stock split across up to 64 rows, so two holds on it contend only in the same row; answers stay the SKU's, and a hold is refused only when the whole SKU is short. Sixteen rows: 7% of decisions conflicting where one row had 54% |
-| Transactional outbox | events in the same transaction as the change, delivered at least once, with stable deduplication keys |
-| Kafka, and an idempotent reader | `acks=all` with producer idempotence, records keyed by entity so one reservation's lifecycle stays ordered, and an inbox on the consumer so a redelivery moves nothing |
+| Transactional outbox | events in the same transaction as the change, delivered at least once, with stable deduplication keys; drained until caught up, by one ledger instance at a time under an advisory lock, so they leave in order and are not sent twice by design |
+| Kafka, and an idempotent reader | `acks=all` with producer idempotence, records keyed by entity so one reservation's lifecycle stays ordered, a topic the ledger declares with twelve partitions so every store's consumer has some to read, and an inbox on the consumer so a redelivery moves nothing |
 | Oversell impossible at the database | `check (reserved >= 0 and on_hand >= 0 and reserved <= on_hand)` |
 | Two bearer tokens | separate, because ejecting stock is not the same privilege as holding it |
 | Secure by default | refuses to listen on a non-loopback address with no token, unless `--till.insecure` |
