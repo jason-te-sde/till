@@ -39,7 +39,10 @@ import org.springframework.test.context.TestPropertySource;
             "till.sweeper.enabled=true",
             "till.outbox.enabled=true",
             "till.sweeper.interval=1h",
-            "till.outbox.interval=1h"
+            "till.outbox.interval=1h",
+            // Small, so that draining more than a batch in one run needs only a handful of holds.
+            "till.sweeper.batch=2",
+            "till.sweeper.passes=10"
         })
 // JUnit does not inherit @ResourceLock from a superclass, so every class that shares the one
 // database names the lock itself. Without it two Spring contexts write the same tables at once and
@@ -87,6 +90,25 @@ class BackgroundJobsApiTest extends ApiTestBase {
         assertEquals(ReservationState.EXPIRED, till.reservation(stale.id()).state());
         assertEquals(ReservationState.HELD, till.reservation(live.id()).state());
         assertEquals(15, till.stock(Sku.of("widget")).available(), "five came back, five are still held");
+    }
+
+    @Test
+    @DisplayName("one run drains a backlog bigger than a batch, up to its passes, and the next run the rest")
+    void sweeperDrainsABacklog() {
+        TillClient till = client(ADMIN_TOKEN);
+        till.adjust(IdempotencyKey.of("d1"), Sku.of("widget"), 100);
+        for (int i = 0; i < 25; i++) {
+            till.reserve(IdempotencyKey.of("c" + i), List.of(Line.of("widget", 1)), Duration.ofMinutes(1));
+        }
+        clock.advance(Duration.ofMinutes(2));
+
+        assertEquals(75, till.stock(Sku.of("widget")).available());
+
+        sweeper.sweep();
+        assertEquals(95, till.stock(Sku.of("widget")).available(), "ten passes of two: twenty came back in one run");
+
+        sweeper.sweep();
+        assertEquals(100, till.stock(Sku.of("widget")).available(), "and the last five on the next");
     }
 
     @Test

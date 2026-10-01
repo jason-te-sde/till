@@ -127,18 +127,32 @@ public record TillProperties(
     /**
      * The background expiry job.
      *
-     * <p>Not required for correctness: a hold past its deadline stops counting the moment any
-     * command looks at it. This returns the stock to {@code available} sooner than the next command
-     * touching those SKUs would.
+     * <p>Not required for correctness: a command that would be short of stock writes off the
+     * expired holds on its SKUs first. This is what returns everybody else's expired stock to
+     * {@code available}, and since commands with stock to spare no longer write any off, it is the
+     * one that has to keep up.
      *
      * @param enabled whether to run it
      * @param interval how often
-     * @param batch how many holds to write off per run
+     * @param batch how many holds to write off per transaction
+     * @param passes batches per run while each comes back full, so a backlog drains in a few runs
+     *     rather than two hundred holds at a time
      */
     public record Sweeper(
             @DefaultValue("true") boolean enabled,
             @DefaultValue("5s") Duration interval,
-            @DefaultValue("200") int batch) {}
+            @DefaultValue("200") int batch,
+            @DefaultValue("10") int passes) {
+
+        public Sweeper {
+            if (batch < 1) {
+                throw new IllegalArgumentException("till.sweeper.batch must be at least 1");
+            }
+            if (passes < 1) {
+                throw new IllegalArgumentException("till.sweeper.passes must be at least 1");
+            }
+        }
+    }
 
     /**
      * The background publisher.

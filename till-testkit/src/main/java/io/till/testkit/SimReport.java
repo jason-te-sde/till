@@ -28,6 +28,7 @@ import java.time.Instant;
  * @param sweeps background sweeps run
  * @param rejections commands refused by the rules
  * @param outOfStock of those, ones refused for want of stock
+ * @param reloads decisions taken again with the expired holds, after one without them came up short
  * @param endedAt the simulated instant the run finished at
  */
 public record SimReport(
@@ -49,6 +50,7 @@ public record SimReport(
         long sweeps,
         long rejections,
         long outOfStock,
+        long reloads,
         Instant endedAt) {
 
     /**
@@ -72,6 +74,7 @@ public record SimReport(
                 + " expired=" + expired
                 + " adjusted=" + adjusted
                 + " sweeps=" + sweeps
-                + " rejections=" + rejections + " (outOfStock=" + outOfStock + ")";
+                + " rejections=" + rejections + " (outOfStock=" + outOfStock + ")"
+                + " reloads=" + reloads;
     }
 }

@@ -214,10 +214,19 @@ public final class Sim {
     }
 
     private void advanceOneCaller(boolean draining) {
-        Caller caller = callers.get(random.nextInt(callers.size()));
+        advance(callers.get(random.nextInt(callers.size())), draining);
+    }
+
+    /**
+     * One phase of one caller. The only place a phase is acted on, so that a phase added later is
+     * one this has to handle — the drain once had a copy of this that did not, and a run with a
+     * caller in the new phase never finished.
+     */
+    private void advance(Caller caller, boolean draining) {
         switch (caller.phase) {
             case IDLE -> begin(caller, draining);
             case LOADED -> decide(caller, draining);
+            case SHORT -> reload(caller);
             case DECIDED -> apply(caller, draining);
         }
     }
@@ -240,7 +249,21 @@ public final class Sim {
         }
         caller.clientRetry = false;
         caller.observedAt = now;
-        caller.snapshot = ledger.load(caller.command, now, 16);
+        // Without the expired holds, as Till loads first: they are brought only when a decision
+        // without them comes up short (reload, below).
+        caller.snapshot = ledger.load(caller.command, now, 0);
+        caller.withExpired = false;
+        caller.phase = Phase.LOADED;
+    }
+
+    /**
+     * The second load a command short of stock makes, with the expired holds in its way — a step of
+     * its own, so that other callers can commit, release and expire between the two, as they can
+     * between Till's two loads.
+     */
+    private void reload(Caller caller) {
+        caller.snapshot = ledger.load(caller.command, caller.observedAt, 16);
+        caller.withExpired = true;
         caller.phase = Phase.LOADED;
     }
 
@@ -255,6 +278,15 @@ public final class Sim {
             return;
         }
         caller.decision = decide(caller.snapshot, caller.command, caller.observedAt);
+        if (!caller.withExpired
+                && caller.decision.outcome() instanceof Outcome.Rejected rejected
+                && rejected.code() == RejectionCode.INSUFFICIENT_STOCK) {
+            // Short without the expired holds: Till decides again with them before answering.
+            counters.reloads++;
+            caller.decision = null;
+            caller.phase = Phase.SHORT;
+            return;
+        }
         caller.phase = Phase.DECIDED;
     }
 
@@ -377,11 +409,7 @@ public final class Sim {
                 return drainSteps;
             }
             drainSteps++;
-            switch (busy.phase) {
-                case IDLE -> begin(busy, true);
-                case LOADED -> decide(busy, true);
-                case DECIDED -> apply(busy, true);
-            }
+            advance(busy, true);
             invariants.check(config.steps() + drainSteps, now, inspector);
         }
         throw new IllegalStateException("callers would not drain in " + budget + " steps");
@@ -407,12 +435,15 @@ public final class Sim {
                 counters.sweeps,
                 counters.rejections,
                 counters.outOfStock,
+                counters.reloads,
                 now);
     }
 
     private enum Phase {
         IDLE,
         LOADED,
+        /** Decided short of stock on a snapshot without the expired holds; loads them next. */
+        SHORT,
         DECIDED
     }
 
@@ -427,6 +458,7 @@ public final class Sim {
         private Instant observedAt;
         private ReservationId holding;
         private boolean clientRetry;
+        private boolean withExpired;
         private int attempts;
 
         private Caller(int id) {
@@ -448,6 +480,7 @@ public final class Sim {
         private long sweeps;
         private long rejections;
         private long outOfStock;
+        private long reloads;
 
         private void observe(Outcome outcome) {
             switch (outcome) {

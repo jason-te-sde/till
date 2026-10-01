@@ -105,6 +105,7 @@ requests.
 | [30 Sep 2026, second](../till-loadtest/results/20260930T114312Z.json) | `e01bbeb` | as above, the edge with its own nginx.conf and 2 × 1 vCPU | 8,000 | 2,497 | 21.1 s | 4.6% | 3.2 | **missed**: throughput, latency, errors |
 | [30 Sep 2026, cache off](../till-loadtest/results/20260930T125908Z.json) | `b314cae` | as above, four stores at 8 connections each; the catalogue cache off | 8,000 | 2,518 | 20.9 s | 4.5% | 0 | **missed**: throughput, latency, errors |
 | [30 Sep 2026, cache on](../till-loadtest/results/20260930T133217Z.json) | `a699e06` | the same, the catalogue cache on | 8,000 | 2,500 | 20.8 s | 4.5% | 0 | **missed**: throughput, latency, errors |
+| [30 Sep 2026, lazy reclaim](../till-loadtest/results/20260930T221848Z.json) | `af0ce39` | the same; expired holds written off only when a command is short of stock | 8,000 | 2,513 | 20.8 s | 4.5% | 7.9 | **missed**: throughput, latency, errors |
 
 ### 30 September: the first run
 
@@ -171,3 +172,55 @@ That is the next thing: the store gives up on a reservation after five seconds, 
 and every checkout the store abandoned became a hold that nobody would pay for and the ledger would
 have to find and expire. The more of them there were, the longer each search for them took, and the
 fewer checkouts finished inside five seconds.
+
+### 30 September: expired holds written off when they are needed
+
+The change the previous run asked for: a command writes off expired holds only when the answer
+without them would be "not enough stock", and the sweeper writes off the rest, in batches, between
+commands. The storm went. The ledger changed the state of 43,393 reservations, at 3.1 ms each, where
+the run before changed 319,118 at 42 ms; the search for expired holds is no longer among the
+database's busiest statements; and orders completed under the full load for the first time, 7.9 a
+second.
+
+The targets did not move, and the database was at 97% CPU again. What it spent that on now is the
+checkout itself, and most of it was work thrown away:
+
+| Over the whole run | |
+| --- | ---: |
+| Stock updates | 278,525 |
+| — that found the row had moved since it was read | 148,896, 53% |
+| Reservations inserted | 197,426 |
+| — rolled back when the stock update after them failed | 125,681, 64% |
+| Transactions committed in the ledger's database | 1,484,087 |
+| Holds still held when the run ended | 50,394 of 71,745 |
+
+The statement counts are the result's. What survived them — the reservations that remained, the
+commits, the holds — was read from the database after the run and before it was taken down; the
+result does not record those yet.
+
+Three things compound:
+
+- **A conflict is found last.** The ledger inserts the reservation, then its lines, then updates the
+  stock row with the version it read. Under optimistic concurrency the stock update is the statement
+  that fails, and it came after two inserts that its failure rolled back.
+- **Every failure is retried twice over.** The ledger decides a command up to eight times before it
+  answers 503, and the store's client makes each call up to four times with a five-second timeout.
+  The p99 of every run so far, 20.8 s, is those four timeouts and the waits between them: a checkout
+  the ledger could not answer in time kept its customer waiting twenty seconds to be told to try
+  again, and kept the ledger busy all the while.
+- **A snapshot costs four statements that read nothing.** Each load asked the connection for its
+  isolation level, set it to repeatable read, began read-only, and set it back afterwards — 345,639
+  loads, four statements each, three of them a transaction of their own. They are most of the 1.48
+  million commits.
+
+The holds are the cost of the second. The ledger took 71,745 over the run's sixteen minutes, and
+the steady window's ten placed 4,740 orders: even pro rata, ten holds for every order a shopper saw.
+The difference is checkouts the store stopped waiting for while the ledger was still working on them. The ledger took the hold, and nobody was left to hear
+about it. No shopper was refused for want of stock, so they cost nothing until they expire; but each
+one is a customer who was told the checkout had failed.
+
+The next change takes the three in turn: the store's calls to the ledger get a deadline of five
+seconds in all, retries included; the ledger writes the rows it checks versions on first, so that a
+conflict costs one update rather than two inserts and a rollback; and a snapshot is read in a
+transaction that sets its own isolation, with nothing to set back. The conflicts themselves are what
+hot-SKU inventory sharding is for, which comes after and will be measured against this.
