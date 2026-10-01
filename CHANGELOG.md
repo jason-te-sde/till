@@ -121,6 +121,13 @@ explicitly not: it is a testing tool and it will change.
 
 ### Fixed
 
+- **A store or ledger deploy could roll back with `remaining connection slots are reserved`.** The
+  store and the ledger hold 64 database connections between them at steady state, and a
+  `db.t4g.micro` refuses new ones at around 70. The default ECS deployment (`maximumPercent` 200)
+  started a full set of replacement tasks before stopping the old ones, so a rolling deploy of either
+  service briefly doubled its share and tipped the total over — twice, on 2026-10-01, for a `store`
+  deploy that only changed `STORE_DEMO_SHARDS`. Both services now replace one task at a time
+  (`deployment_maximum_percent = 100`), which holds the total at steady state through a deploy.
 - **One customer's retry could be answered with another customer's hold.** The storefront passed
   browsers' idempotency keys straight into the ledger's global key space, so two customers sending the
   same string would have had the second handed the first one's reservation. Keys are now a digest of
