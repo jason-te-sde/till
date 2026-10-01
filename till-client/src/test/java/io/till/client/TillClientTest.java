@@ -192,6 +192,43 @@ class TillClientTest {
     }
 
     @Test
+    @DisplayName("the timeout header shrinks across attempts and never exceeds the attempt timeout")
+    void timeoutHeaderShrinksAcrossRetries() {
+        try (StubTill stub = new StubTill().always(StubTill.slowly(Duration.ofSeconds(30), 201, RESERVED))) {
+            TillClient client =
+                    TillClient.builder(stub.url())
+                            .timeout(Duration.ofSeconds(1))
+                            .deadline(Duration.ofMillis(1500))
+                            .backoff(Duration.ofMillis(1))
+                            .maxAttempts(4)
+                            .build();
+
+            assertThrows(
+                    UncheckedIOException.class, () -> client.reserve(KEY, List.of(Line.of("widget", 2)), null));
+
+            List<String> headers = stub.requests().stream().map(StubTill.Seen::timeoutHeader).toList();
+            assertEquals(2, headers.size());
+            long first = Long.parseLong(headers.get(0));
+            long second = Long.parseLong(headers.get(1));
+            assertTrue(first <= 1000, "the first attempt's budget is clamped by the attempt timeout: " + first);
+            assertTrue(second < first, "the second attempt has less of the deadline left: " + headers);
+            assertTrue(second >= 0, "a non-negative integer: " + headers);
+        }
+    }
+
+    @Test
+    @DisplayName("the timeout header is absent when the call has no deadline")
+    void noTimeoutHeaderWithoutADeadline() {
+        try (StubTill stub = new StubTill().always(201, RESERVED)) {
+            TillClient client = TillClient.builder(stub.url()).build();
+
+            client.reserve(KEY, List.of(Line.of("widget", 2)), null);
+
+            assertEquals(null, stub.requests().get(0).timeoutHeader());
+        }
+    }
+
+    @Test
     @DisplayName("a refusal carries the code and every shortfall")
     void rejection() {
         String body =

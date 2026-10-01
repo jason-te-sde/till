@@ -78,6 +78,8 @@ class StockController {
      * because those units are promised to somebody.
      *
      * @param key the caller's key for this attempt
+     * @param timeoutHeader how long the caller will still wait for this attempt, or null for no
+     *     deadline
      * @param sku which SKU
      * @param request how much to add or remove
      * @return the new level
@@ -86,16 +88,24 @@ class StockController {
     @Operation(operationId = "adjustStock", summary = "Change on-hand stock directly")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "the new level"),
+        @ApiResponse(responseCode = "400", description = "Till-Timeout-Ms, if sent, is not a usable budget"),
         @ApiResponse(responseCode = "403", description = "this needs the admin token"),
         @ApiResponse(responseCode = "404", description = "removing stock from a SKU that has no row"),
-        @ApiResponse(responseCode = "409", description = "this would take on-hand below what is reserved")
+        @ApiResponse(responseCode = "409", description = "this would take on-hand below what is reserved"),
+        @ApiResponse(
+                responseCode = "503",
+                description = "too much contention, or the caller's own deadline had already passed; retry")
     })
     Api.Stock adjust(
             @RequestHeader("Idempotency-Key") String key,
+            @RequestHeader(value = Commands.TIMEOUT_HEADER, required = false) String timeoutHeader,
             @PathVariable String sku,
             @Valid @RequestBody Api.AdjustRequest request) {
         Outcome.Adjusted adjusted =
-                Outcomes.adjusted(commands.run(new Command.Adjust(IdempotencyKey.of(key), Sku.of(sku), request.delta())));
+                Outcomes.adjusted(
+                        commands.run(
+                                new Command.Adjust(IdempotencyKey.of(key), Sku.of(sku), request.delta()),
+                                timeoutHeader));
         return Api.Stock.of(adjusted, shardsOf(adjusted.sku()));
     }
 
@@ -108,6 +118,8 @@ class StockController {
      * are changes nothing and says how many there are.
      *
      * @param key the caller's key for this attempt
+     * @param timeoutHeader how long the caller will still wait for this attempt, or null for no
+     *     deadline
      * @param sku which SKU
      * @param request how many rows at least
      * @return the level, and the rows it is kept in now
@@ -116,15 +128,23 @@ class StockController {
     @Operation(operationId = "shardStock", summary = "Split a SKU's stock across more rows")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "the level, and how many rows it is kept in"),
-        @ApiResponse(responseCode = "400", description = "fewer than 1 or more than 64 rows"),
+        @ApiResponse(
+                responseCode = "400",
+                description = "fewer than 1 or more than 64 rows, or Till-Timeout-Ms is not a usable budget"),
         @ApiResponse(responseCode = "403", description = "this needs the admin token"),
-        @ApiResponse(responseCode = "404", description = "this SKU has never been stocked")
+        @ApiResponse(responseCode = "404", description = "this SKU has never been stocked"),
+        @ApiResponse(
+                responseCode = "503",
+                description = "too much contention, or the caller's own deadline had already passed; retry")
     })
     Api.Stock shard(
             @RequestHeader("Idempotency-Key") String key,
+            @RequestHeader(value = Commands.TIMEOUT_HEADER, required = false) String timeoutHeader,
             @PathVariable String sku,
             @Valid @RequestBody Api.ShardRequest request) {
-        Outcomes.sharded(commands.run(new Command.Shard(IdempotencyKey.of(key), Sku.of(sku), request.shards())));
+        Outcomes.sharded(
+                commands.run(
+                        new Command.Shard(IdempotencyKey.of(key), Sku.of(sku), request.shards()), timeoutHeader));
         return get(sku);
     }
 

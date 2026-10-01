@@ -88,7 +88,7 @@ public final class Till {
     }
 
     /**
-     * Runs a command to completion.
+     * Runs a command to completion, for a caller that will wait however long it takes.
      *
      * @param command what to do
      * @return what happened, including a rejection if it was refused
@@ -96,18 +96,56 @@ public final class Till {
      * @throws IncompleteSnapshotException if the ledger did not load what the command needed
      */
     public Outcome execute(Command command) {
+        return execute(command, null);
+    }
+
+    /**
+     * Runs a command to completion, but never for a caller that has stopped waiting for it.
+     *
+     * <p>The deadline is checked twice an attempt: before the load, so a database already behind
+     * does not do a read for nobody, and again after deciding but before {@code apply}, so a
+     * decision is never written for a caller who is no longer there to hear it. Both checks use the
+     * same clock {@link #execute(Command)} does, so a caller embedding the kernel sees one notion of
+     * "now" throughout.
+     *
+     * <p>What this does not bound is {@code apply} itself: a decision can still be applied after the
+     * deadline if applying waits, for a pooled connection or for its statements. That gap is measured
+     * rather than closed here — see {@code till.late} in the server module — because closing it would
+     * mean the {@link Ledger} checking the deadline inside its write transaction, which is a cost on
+     * every command for a case this service's load tests have not yet shown to be common.
+     *
+     * @param command what to do
+     * @param deadline the instant, on this till's own clock, after which the caller is no longer
+     *     waiting; null for no deadline, which is what {@link #execute(Command)} passes
+     * @return what happened, including a rejection if it was refused
+     * @throws DeadlineExceededException if the deadline had already passed before the load, or
+     *     passed between deciding and applying
+     * @throws ConflictException if other callers kept winning the race for the rows
+     * @throws IncompleteSnapshotException if the ledger did not load what the command needed
+     */
+    public Outcome execute(Command command, Instant deadline) {
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             // Truncated to microseconds because that is the resolution PostgreSQL stores, and an
             // instant that loses precision on the way to disk is an instant that comes back
             // different. A deadline that moves by 400 nanoseconds between writing and reading is
             // harmless; a recorded outcome that no longer equals the one that was returned is not.
             Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+            if (deadline != null && !now.isBefore(deadline)) {
+                throw new DeadlineExceededException(command, deadline);
+            }
             Decision decision = decide(command, now);
 
             // A replay, or a sweep that found nothing. There is nothing to write, so there is
-            // nothing to conflict on and no transaction worth opening.
+            // nothing to conflict on, no transaction worth opening, and nothing the caller could
+            // be too late for.
             if (!decision.writes()) {
                 return decision.outcome();
+            }
+            // The clock is read again only when there is a deadline to read it for: a stepping
+            // clock in a test or the simulator sees exactly the reads it saw before deadlines
+            // existed.
+            if (deadline != null && !clock.instant().truncatedTo(ChronoUnit.MICROS).isBefore(deadline)) {
+                throw new DeadlineExceededException(command, deadline);
             }
             if (ledger.apply(decision)) {
                 return decision.outcome();

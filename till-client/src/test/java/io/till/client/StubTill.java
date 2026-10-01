@@ -26,7 +26,13 @@ import java.util.function.Function;
 final class StubTill implements AutoCloseable {
 
     /** One request, as the server saw it. */
-    record Seen(String method, String path, String idempotencyKey, String authorization, String body) {}
+    record Seen(
+            String method,
+            String path,
+            String idempotencyKey,
+            String authorization,
+            String timeoutHeader,
+            String body) {}
 
     private final HttpServer server;
     // A thread per exchange, so that an answer the client stopped waiting for does not hold up the
@@ -100,6 +106,7 @@ final class StubTill implements AutoCloseable {
                         exchange.getRequestURI().getPath(),
                         exchange.getRequestHeaders().getFirst("Idempotency-Key"),
                         exchange.getRequestHeaders().getFirst("Authorization"),
+                        exchange.getRequestHeaders().getFirst("Till-Timeout-Ms"),
                         new String(body, StandardCharsets.UTF_8));
         seen.add(request);
 
