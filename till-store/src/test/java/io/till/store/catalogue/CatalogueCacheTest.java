@@ -176,7 +176,8 @@ class CatalogueCacheTest extends StoreTest {
         StoreProperties off = new StoreProperties(
                 properties.till(), properties.kafka(), properties.auth(), properties.checkout(), properties.demo(),
                 new StoreProperties.Catalogue(new StoreProperties.Cache(false, Duration.ofMinutes(10), Duration.ofSeconds(60),
-                        Duration.ofSeconds(60), 0.1)));
+                        Duration.ofSeconds(60), 0.1)),
+                properties.sales());
         CatalogueCache cache = new CatalogueCache(redis, json, off, flyway, new SimpleMeterRegistry());
         try {
             AtomicInteger loads = new AtomicInteger();

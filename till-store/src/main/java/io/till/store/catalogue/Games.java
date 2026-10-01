@@ -25,8 +25,14 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class Games {
 
-    /** Seven days, today included, is what "best sellers this week" means here. */
-    static final int SALES_WINDOW_DAYS = 7;
+    /**
+     * Seven days, today included, is what "best sellers this week" means here.
+     *
+     * <p>Public so that {@code StoreProperties.Sales} can refuse a {@code store.sales.retention}
+     * shorter than it: a retention window that drops a partition this query still reads from would
+     * be a misconfiguration, not a valid small number.
+     */
+    public static final int SALES_WINDOW_DAYS = 7;
 
     private static final String COLUMNS =
             "g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, "

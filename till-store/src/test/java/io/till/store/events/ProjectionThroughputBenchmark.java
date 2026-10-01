@@ -73,7 +73,7 @@ class ProjectionThroughputBenchmark extends StoreTest {
             StoreProperties reading = new StoreProperties(
                     properties.till(),
                     new StoreProperties.Kafka(kafka.getBootstrapServers(), topic, "bench-" + UUID.randomUUID(), Duration.ofMillis(200)),
-                    properties.auth(), properties.checkout(), properties.demo(), properties.catalogue());
+                    properties.auth(), properties.checkout(), properties.demo(), properties.catalogue(), properties.sales());
             double before = applied();
             long started = System.nanoTime();
             List<EventConsumer> stores = new ArrayList<>();

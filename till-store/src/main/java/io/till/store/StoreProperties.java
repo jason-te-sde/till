@@ -1,6 +1,8 @@
 package io.till.store;
 
+import io.till.store.catalogue.Games;
 import java.time.Duration;
+import java.time.Period;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -19,6 +21,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param checkout the rules a basket has to satisfy
  * @param demo stock to seed on startup, for the demonstration stack only
  * @param catalogue how the catalogue's reads are cached
+ * @param sales how long the sales roll-up's monthly partitions are kept, and how its maintenance job runs
  */
 @ConfigurationProperties(prefix = "store")
 public record StoreProperties(
@@ -27,7 +30,8 @@ public record StoreProperties(
         @DefaultValue Auth auth,
         @DefaultValue Checkout checkout,
         @DefaultValue Demo demo,
-        @DefaultValue Catalogue catalogue) {
+        @DefaultValue Catalogue catalogue,
+        @DefaultValue Sales sales) {
 
     /**
      * The catalogue.
@@ -228,6 +232,32 @@ public record StoreProperties(
          */
         public long unitsFor(String sku) {
             return stock.getOrDefault(sku, defaultStock);
+        }
+    }
+
+    /**
+     * The sales roll-up, {@code store_sales_daily} ({@link io.till.store.sales.SalesPartitionMaintenance},
+     * {@code docs/design/0010-sales-partitions.md}).
+     *
+     * @param retention how long a month's partition is kept before it is dropped. Generous by
+     *     default, and the setting to raise rather than lower: every "best sellers" read depends on
+     *     the last {@link Games#SALES_WINDOW_DAYS} days still having a partition, so a shorter
+     *     retention is refused rather than quietly dropping a window a live query still needs
+     */
+    public record Sales(@DefaultValue("13m") Period retention) {
+
+        public Sales {
+            if (retention.isZero() || retention.isNegative()) {
+                throw new IllegalArgumentException("store.sales.retention must be positive");
+            }
+            // A deliberately rough conversion: it only has to catch a retention that is obviously
+            // too short (days, where months were meant), not measure the window to the day. The
+            // partition maintenance job itself compares real calendar dates, never this estimate.
+            long approxDays = retention.getDays() + 30L * retention.getMonths() + 365L * retention.getYears();
+            if (approxDays < Games.SALES_WINDOW_DAYS) {
+                throw new IllegalArgumentException("store.sales.retention must be at least " + Games.SALES_WINDOW_DAYS
+                        + " days, the best-seller window it would otherwise cut a partition out from under");
+            }
         }
     }
 }

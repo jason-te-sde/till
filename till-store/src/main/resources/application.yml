@@ -99,6 +99,11 @@ store:
       # On unless a load test is measuring what it is worth. The lifetimes are
       # store.catalogue.cache.{stable,sales,searches} and the spread .jitter; StoreProperties.Cache.
       enabled: ${STORE_CATALOGUE_CACHE:true}
+  sales:
+    # How long a month's partition of store_sales_daily survives before SalesPartitionMaintenance
+    # drops it. Generous, and the one to raise rather than lower: shorter than the seven-day
+    # best-seller window is refused at start-up (docs/design/0010-sales-partitions.md).
+    retention: ${STORE_SALES_RETENTION:13m}
 
 springdoc:
   api-docs:
