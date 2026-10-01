@@ -11,7 +11,7 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
-- **Kafka runs three brokers, not one** ([ADR 10](docs/design/0010-kafka-replication.md)):
+- **Kafka runs three brokers, not one** ([ADR 13](docs/design/0013-kafka-replication.md)):
   replication factor 3 and `min.insync.replicas` 2 on every topic, including the one the ledger
   declares, so an acknowledged write survives losing any single broker and a second one down is
   refused rather than silently accepted. `infra/runtime/services.tf` runs them as three ECS

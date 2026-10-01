@@ -104,9 +104,12 @@ resource "aws_ecs_cluster" "till" {
 # the in-sync set and re-replicates from the two that still have it, and min.insync.replicas=2 keeps
 # acknowledging writes throughout, because the other two are enough. The controller quorum works
 # the same way one level down — the rejoining node's metadata log is behind, and it catches up from
-# the current Raft leader as long as a majority of the three (two) stay reachable, which a
-# deployment that replaces one node at a time (deployment_minimum_healthy_percent below) never
-# threatens by itself. Only two of the three losing their disk at once would stall it.
+# the current Raft leader as long as two of the three stay reachable. Losing two disks at once is
+# what it does not survive, and one way to do that is here: each node is a service of its own, and
+# Terraform updates the three together, so a change to these task definitions replaces all three
+# at once and the cluster starts again empty. The image is pinned and every setting is below, so
+# that is a deliberate change rather than a routine one; the outbox then sends again whatever it
+# had not published, but events published and not yet read by a store are gone from the stream.
 #
 # That is accepted here rather than engineered around with persistent storage (EFS, or MSK),
 # because this deployment is a session, not a fixture (infra/README.md): the worst case is a stale

@@ -1,4 +1,4 @@
-# 10. Three brokers, so the event stream survives losing one
+# 13. Three brokers, so the event stream survives losing one
 
 **Status:** accepted
 
@@ -63,9 +63,12 @@ different mechanisms, same shape:
   the other two are enough.
 - **The controller quorum.** One level down, the same argument: the rejoining node's metadata log
   is behind, and it catches up from the current Raft leader as long as a *majority* of the three —
-  two — stay reachable. A deployment that replaces one node at a time
-  (`deployment_minimum_healthy_percent = 0`, `deployment_maximum_percent = 100`, unchanged from the
-  single-broker setup) never puts two of three controllers down for this reason by itself.
+  two — stay reachable. Each node is a service of its own with
+  `deployment_minimum_healthy_percent = 0` and `deployment_maximum_percent = 100`, unchanged from
+  the single-broker setup, so replacing a node never runs two tasks under one node id. But
+  Terraform updates the three services together: a change to the brokers' task definition replaces
+  all three at once, which is the correlated loss below. The image is pinned and every setting is
+  in Terraform, so that is a deliberate change rather than a routine one.
 
 Only two of the three losing their disks **at once** would stall either mechanism — the data
 side because there would be nothing left meeting `min.insync.replicas`, the quorum side because
@@ -152,8 +155,7 @@ decision about what "stopped" means for storage that is supposed to outlive the 
 everything else in this deployment is designed to be torn down between sessions
 (`infra/README.md`, "What is kept across a stop"). Worth doing if this ever becomes a deployment
 that is not stopped between sessions; adding it now would also touch `infra/network.tf` and
-`infra/roles.tf`, outside this change's otherwise Kafka-only footprint, at a time when two other
-engineers are editing `infra/` for unrelated reasons.
+`infra/roles.tf`, outside this change's otherwise Kafka-only footprint.
 
 **A Testcontainers cluster instead of the compose override.** Discussed under "Proving it" above.
 

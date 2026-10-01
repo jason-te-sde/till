@@ -106,7 +106,7 @@ On-demand prices in us-west-2, from the AWS Price List API:
 
 One Kafka broker at this size is $0.0233 an hour (0.5 × $0.03238/vCPU-hour + 2 × $0.00356/GB-hour);
 three are the $0.0699 above — three times one, because nothing is shared between them
-([ADR 10](design/0010-kafka-replication.md)). Round the total to $0.22 for what is metered rather
+([ADR 13](design/0013-kafka-replication.md)). Round the total to $0.22 for what is metered rather
 than reserved: CloudWatch Logs at $0.50 a GB written (a little more of it now, from two more
 containers), load balancer capacity units at $0.008 each, DNS queries. CloudFront's always-free
 allowance — 1 TB and 10 million requests a month — covers a session many times over, and so does
@@ -204,7 +204,7 @@ an hour each per zone. [`network.tf`](network.tf) says the same.
 topic — including the one the ledger declares — so losing any single broker loses neither an
 acknowledged write nor the ability to take the next one. Each node's log is still on its own
 task's disk, which Fargate does not keep across a replacement; that is accepted rather than
-engineered around with persistent storage, and [ADR 10](design/0010-kafka-replication.md) says
+engineered around with persistent storage, and [ADR 13](design/0013-kafka-replication.md) says
 why at length. The short version: the ledger's outbox is the durable record regardless of how many
 brokers exist, a broker that restarts empty re-replicates from the two that did not, and this
 deployment is a session that gets torn down, not a fixture that has to survive losing its zone.

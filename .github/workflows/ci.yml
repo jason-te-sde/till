@@ -442,7 +442,7 @@ jobs:
     # docker-compose.kafka-cluster.yml's three brokers instead of the one in docker-compose.yml —
     # the local equivalent of infra/'s three ECS services — so the replication factor 3,
     # min.insync.replicas 2 configuration is actually run somewhere, not only declared
-    # (docs/design/0010-kafka-replication.md). Only the ledger and what it needs: the storefront,
+    # (docs/design/0013-kafka-replication.md). Only the ledger and what it needs: the storefront,
     # Redis and Keycloak have nothing to do with replication, and not starting them is most of why
     # three Kafka JVMs here do not cost what they look like they should next to "the container
     # stack works".

@@ -47,7 +47,7 @@ which is on the publishing path only, never on a command's; whoever holds it pub
 order, and the others sit the round out and take over the moment it is free. The consumer still has
 to be idempotent: delivery is still at least once.
 
-*Later still:* `acks=all` is only as strong as how many copies exist. [ADR 10](0010-kafka-replication.md)
+*Later still:* `acks=all` is only as strong as how many copies exist. [ADR 13](0013-kafka-replication.md)
 runs the broker as three, so the copy a send was acknowledged against can be the one that
 disappears next without the record going with it.
 
