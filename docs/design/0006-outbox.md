@@ -38,6 +38,15 @@ Several instances may publish at once, and no attempt is made to stop them. Coor
 exactly-once at the cost of a lock on a path that does not need one, and the consumer has to be
 idempotent regardless.
 
+*Later:* one instance publishes at a time. While a publisher took one batch a second, a second
+instance taking the same batch cost a few duplicates; once a run drains the backlog until it has
+caught up — because one batch a second was a ceiling of about 200 events a second, below what a busy
+checkout writes — an uncoordinated second instance doubles everything the consumers do. Each round
+is now taken under a claim (`Outbox.publishNext`: a transaction-scoped advisory lock in PostgreSQL),
+which is on the publishing path only, never on a command's; whoever holds it publishes in sequence
+order, and the others sit the round out and take over the moment it is free. The consumer still has
+to be idempotent: delivery is still at least once.
+
 ## Consequences
 
 **The backlog is the metric that matters.** `till_outbox_backlog` growing means everything downstream

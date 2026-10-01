@@ -252,8 +252,11 @@ A forged one misdirects nobody's sign-in but the forger's.
 | `till.sweeper.interval` | 5s | almost nothing. The sweep is cheap and indexed |
 | `till.sweeper.batch` | 200 | a longer transaction per sweep, and more conflicts with live traffic |
 | `till.sweeper.passes` | 10 | batches a run while each comes back full. The sweeper is what writes off abandoned holds now, so it has to keep up: 2,000 every five seconds here |
-| `till.outbox.interval` | 1s | how stale the downstream view is allowed to be |
-| `till.outbox.batch` | 200 | a larger batch to redeliver when a publish fails |
+| `till.outbox.interval` | 1s | how stale the downstream view is allowed to be once the publisher has caught up; until then it does not wait |
+| `till.outbox.batch` | 500 | a larger batch to redeliver when a publish fails |
+| `till.outbox.passes` | 20 | batches a run publishes while each comes back full. One instance publishes at a time; the others count `till_outbox_standby_total` and take over when it stops |
+| `till.kafka.partitions` | 12 | how many of the store's consumers can read the topic at once. The ledger declares the topic before it publishes, creating or growing it to this; growing it moves some keys to new partitions, which the store's projection tolerates |
+| `till.kafka.replication-factor` | 1 | copies of each partition of a topic the ledger creates. Three on a cluster that should survive losing a broker; an existing topic's is only reported, because changing it is a reassignment |
 | `spring.datasource.hikari.maximum-pool-size` | 16 | PostgreSQL sessions. The useful shape of overload is a queue in front of the pool, not a thousand sessions fighting over the same rows |
 | `spring.datasource.hikari.connection-timeout` | 2000 ms | how long a command may queue for a connection before it is refused. Longer than the caller waits (the store: five seconds) is work done for nobody — in a load test, holds nobody would pay for |
 
@@ -389,7 +392,8 @@ There is one migration so far, so this is advice rather than experience.
 | The store refuses to start: "an identity provider" | `STORE_OIDC_ISSUER_URI` and `STORE_OIDC_CLIENT_ID` are required |
 | Refuses to start, Flyway validation | the database has a schema this build did not create, or a migration was edited after being applied |
 | `LedgerException` about an impossible stock level | a bug in till. The database refused a level the application should not have been able to produce. The stock row named in the message is the place to start, and it has **not** been corrupted — the transaction rolled back |
-| The outbox backlog grows and nothing errors | the publisher is not running. `till.outbox.enabled`, and whether the scheduler is alive. The gauge is read straight from the table, so it is right even when the publisher is the thing that is broken |
+| The outbox backlog grows and nothing errors | the publisher is not running. `till.outbox.enabled`, and whether the scheduler is alive. The gauge is read straight from the table, so it is right even when the publisher is the thing that is broken. If `till_outbox_standby_total` is rising on every instance, one of them holds the publishing claim and is stuck: its session in `pg_locks`, advisory lock `0x74696c6c6f757462` |
+| The store's stock lags while the outbox is empty | the consumers. How many partitions the topic has (`kafka-topics.sh --describe`): one partition is one consumer, however many stores are running |
 | `till_idempotency` keeps growing past its window | rows are only forgotten once the matching outbox event has gone. Check `till.retention.outbox` and whether the publisher is draining |
 | A caller reports an error you cannot find | ask for the `requestId` in the body. It is in every log line for that request |
 
