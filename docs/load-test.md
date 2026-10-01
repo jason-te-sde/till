@@ -111,6 +111,8 @@ requests.
 | [30 Sep 2026, cache off](../till-loadtest/results/20260930T125908Z.json) | `b314cae` | as above, four stores at 8 connections each; the catalogue cache off | 8,000 | 2,518 | 20.9 s | 4.5% | 0 | **missed**: throughput, latency, errors |
 | [30 Sep 2026, cache on](../till-loadtest/results/20260930T133217Z.json) | `a699e06` | the same, the catalogue cache on | 8,000 | 2,500 | 20.8 s | 4.5% | 0 | **missed**: throughput, latency, errors |
 | [30 Sep 2026, lazy reclaim](../till-loadtest/results/20260930T221848Z.json) | `af0ce39` | the same; expired holds written off only when a command is short of stock | 8,000 | 2,513 | 20.8 s | 4.5% | 7.9 | **missed**: throughput, latency, errors |
+| [1 Oct 2026, one row a game](../till-loadtest/results/20261001T024424Z.json) | `03e5385` | the same; a deadline on the store's calls to the ledger, stock rows written first, snapshots without session statements, the event stream draining to twelve partitions; every game's stock in one row | 8,000 | 3,177 | 5.0 s | 4.5% | 8.9 | **met**: throughput; **missed**: latency, errors |
+| [1 Oct 2026, sixteen rows a game](../till-loadtest/results/20261001T045708Z.json) | `03e5385` | the same, every game's stock split sixteen ways | 8,000 | 3,176 | 5.1 s | 4.5% | 10.1 | **met**: throughput; **missed**: latency, errors |
 
 ### 30 September: the first run
 
@@ -229,3 +231,53 @@ seconds in all, retries included; the ledger writes the rows it checks versions 
 conflict costs one update rather than two inserts and a rollback; and a snapshot is read in a
 transaction that sets its own isolation, with nothing to set back. The conflicts themselves are what
 hot-SKU inventory sharding is for, which comes after and will be measured against this.
+
+### 1 October: the checkout's waste, and then hot-SKU shards
+
+Two runs against one deployment of `03e5385`: first with every game's stock in one row, then with
+every game split sixteen ways ([ADR 9](design/0009-hot-sku-shards.md)) — the store splits them as it
+starts, so between the runs only the store's `STORE_DEMO_SHARDS` changed. The second deployment of
+the store had to be made one task at a time: ECS's default rollout started four new stores beside the
+four old ones, and the database ran out of connections (it refuses new ones at about seventy; the two
+services hold sixty-four). The deployment does that by itself now.
+
+| | Run 4 | One row a game | Sixteen rows a game |
+| --- | ---: | ---: | ---: |
+| Requests a second | 2,513 | **3,177** | **3,176** |
+| p95 / p99 | 1,163 ms / 20.8 s | 1,077 ms / 5.0 s | 867 ms / 5.1 s |
+| p99 of orders | 21.8 s | 6.2 s | 6.4 s |
+| Unexpected responses | 4.47% | 4.47% | 4.49% |
+| Orders placed, paid, a second | 7.9, 1.6 | 8.9, 1.6 | 10.1, 1.3 |
+| Stock updates that found the row had moved | 53.5% | 66.4% | **16.5%** |
+| Ledger transactions committed, rolled back | 1,484,087, 149,034 | 412,898, 220,863 | 157,393, **14,748** |
+| Ledger CPU, database CPU (maximum) | 79%, 97% | 47%, 98% | 23%, 98% |
+
+What moved:
+
+- **The deadline did what it was for.** A checkout the ledger could not answer in time used to wait
+  out four five-second attempts; it now waits five seconds in all. The p99 went from 20.8 s to 5.0 s,
+  and shoppers who are told sooner move on sooner: the same 8,000 made 3,177 requests a second, and
+  the throughput target was met for the first time.
+- **The snapshot change** shows in the ledger's transactions: 413 thousand where run 4 had 1.48 million.
+- **With one row a game, two stock updates in three found their row had moved** — more than run 4,
+  because the deadline let more checkouts in to fight over the same thirty-two rows. **Sixteen rows
+  took that to one in six**, the rollbacks from 220,863 to 14,748, the ledger's CPU from 47% to 23%,
+  and the p95 from 1,077 ms to 867 ms. The contention benchmark predicted the direction; here it is at
+  full scale.
+
+What did not:
+
+- **Latency and errors.** The database was at 98% CPU in both runs. With the conflicts gone the work
+  that is left is ordinary, and every piece of it waits for two CPUs: a reservation's line took 19 ms
+  to insert, setting a snapshot's isolation 9 ms, the store's order 38 ms. The store gives up on the
+  ledger after five seconds, the ledger is waiting on the database, and the 4.5% that fail — about 143
+  responses a second — are those checkouts: 10.1 orders a second were placed and 1.3 paid, so most
+  attempts to place or pay did not get through.
+- **The holds.** 41,259 of the second run's 48,744 holds were still held when it ended: checkouts the
+  store stopped waiting for while the ledger, behind the database, was still working on them.
+
+So the constraint is now the database itself: a `db.t4g.micro` — two burstable cores and a gigabyte,
+the largest the account's plan allows — serving the store's catalogue misses, availability, orders
+and projection, and all of the ledger, through sixty-four connections. Next: the store and the ledger
+on databases of their own, fewer connections queueing for the cores, and Aurora Serverless measured
+the same way.
