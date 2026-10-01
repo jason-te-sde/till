@@ -83,6 +83,18 @@ A figure of its own, measured the same way every time:
 - Both runs report the targets above as well, since the cache is also a change to everything that
   was waiting for the database behind the catalogue.
 
+## Against Aurora
+
+`scripts/aws.sh up --loadtest --database=aurora` runs the same protocol against Aurora PostgreSQL
+Serverless v2 instead of RDS — nothing else in [the sizes](../infra/loadtest.tfvars) or the protocol
+changes. The free plan caps it at 4 ACU and 1 GiB of storage per cluster
+([infra/README.md](../infra/README.md) has what that costs).
+
+Record the same figures as any other run, plus `database` and, from the saved result's
+`cloudwatch.db_acu_max_capacity` (`ServerlessDatabaseCapacity`), whether the run pinned the 4 ACU
+ceiling for its whole window — the Aurora equivalent of the 98% CPU the `db.t4g.micro` runs below
+were at throughout. No run against Aurora has been recorded yet.
+
 ## A run
 
 1. `scripts/aws.sh up --loadtest` deploys with the sizes in

@@ -1,8 +1,9 @@
 # till on AWS
 
 The compose stack, on AWS, for as long as it is needed: Fargate for the four services, RDS for
-PostgreSQL, ElastiCache for the sessions, Cognito for Keycloak, and CloudFront in front. Terraform
-describes it; `scripts/aws.sh` builds the images, starts it, checks it, and stops it again.
+PostgreSQL by default (or Aurora PostgreSQL Serverless v2 — [below](#the-database-rds-or-aurora)),
+ElastiCache for the sessions, Cognito for Keycloak, and CloudFront in front. Terraform describes it;
+`scripts/aws.sh` builds the images, starts it, checks it, and stops it again.
 
 It is built to be **started for a session and stopped after it**. Running costs about $0.16 an hour;
 stopped, it costs cents a month.
@@ -113,6 +114,33 @@ security groups and internet gateway, the Cognito user pool, the Parameter Store
 IAM roles cost nothing at rest. Cloud Map's hosted zone is $0.50 a month but is deleted with every
 stop, and a zone deleted within twelve hours of its creation is not billed.
 
+## The database: RDS or Aurora
+
+PostgreSQL is RDS or Aurora PostgreSQL Serverless v2, picked per deployment: `scripts/aws.sh up
+--database=aurora` runs against Aurora, and plain `up` or `--database=rds` keeps the default. Either
+way it is `till`'s one instance with the ledger's database and the store's, the same credentials, so
+switching is a deployment choice (`infra/variables.tf`'s `database`), not a code change.
+
+This account is on AWS's free plan, which caps each option on its own terms:
+
+- **RDS** allows only `db.t3.micro` or `db.t4g.micro` — anything bigger is refused with
+  `FreeTierRestrictionError`. $0.0192 an hour, in the table above, whether or not a connection is
+  open.
+- **Aurora PostgreSQL Serverless v2** allows at most 4 ACU and 1 GiB of storage per cluster. That is
+  charged against the account's credits rather than free: about $0.12 an ACU-hour — up to $0.48 an
+  hour at the 4 ACU ceiling — plus I/O on Aurora Standard storage. Unlike RDS, it can fall to nothing
+  between connections: `min_capacity = 0` in [`infra/runtime/state.tf`](runtime/state.tf) pauses the
+  instance entirely rather than floating at a minimum charge, and it resumes on the next connection
+  in about fifteen seconds.
+
+`scripts/aws.sh loadtest` records which one a run used, and, for Aurora, the
+`ServerlessDatabaseCapacity` CloudWatch metric's maximum alongside the usual database CPU — the ACU
+equivalent of the CPU figures above.
+
+Every `up` of a running deployment keeps the database it has. An `up` that names another, or none
+against one on Aurora, would replace the database with an empty one, so it stops and says so
+instead: switching is `scripts/aws.sh down`, then `up` with the other.
+
 ## Set up for a load test
 
 `scripts/aws.sh up --loadtest` runs it the way [`docs/load-test.md`](../docs/load-test.md) says a
@@ -143,7 +171,7 @@ comes to well under a dollar.
 | --- | --- | --- |
 | [`bootstrap/`](bootstrap/main.tf) | once per account, local state | the state bucket, the three image registries |
 | [the root](.) | always, state in S3 | the network, the security groups, Cognito's user pool and its accounts, the secrets, the IAM roles, the log groups |
-| [`runtime/`](runtime) | while `running = true` | CloudFront and its VPC origin, the load balancer, the Cognito app client, RDS, ElastiCache, Cloud Map, the ECS cluster and its services |
+| [`runtime/`](runtime) | while `running = true` | CloudFront and its VPC origin, the load balancer, the Cognito app client, the database (RDS or Aurora), ElastiCache, Cloud Map, the ECS cluster and its services |
 
 `runtime/` is a module the root instantiates with `count = var.running ? 1 : 0`, so stopping is an
 apply rather than a second stack kept in step with the first. `running` defaults to false: an apply
