@@ -53,6 +53,16 @@ explicitly not: it is a testing tool and it will change.
   cluster and able to pause at 0 ACU between connections, where RDS is billed whether or not a
   connection is open. RDS stays the default and is unchanged; `scripts/aws.sh loadtest` records
   which one a run used and, for Aurora, `ServerlessDatabaseCapacity` alongside the database's CPU.
+- **A database server of the store's own, picked per deployment**
+  (`infra/variables.tf`'s `database_per_service`, `infra/runtime/state.tf`'s `till-store`,
+  `scripts/aws.sh up --database-per-service`): the free plan caps an instance's class, not how many
+  instances exist, and the first load test's shared `db.t4g.micro` was at 98% CPU for the whole
+  window with one connection budget shared by both services' pools. Off (unchanged) keeps today's
+  one-server layout; on, the store gets a second server, the same engine, class or scaling as the
+  ledger's, its own CPUs and its own `db_pool`. `scripts/aws.sh up` refuses to switch a running
+  deployment's layout, the same way it already refuses to switch `database`; `loadtest` records
+  which layout a run used and merges both servers' `pg_stat_statements` and `pg_stat_database` into
+  one result.
 - **A hot SKU's stock in several rows** ([ADR 9](docs/design/0009-hot-sku-shards.md)).
   `Command.Shard` — `POST /v1/stock/{sku}/shards`, `TillClient.shard`, `tillctl shard` — splits a SKU
   across up to 64 rows. A hold takes its units from the row its reservation id points at, and from

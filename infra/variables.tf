@@ -67,7 +67,8 @@ variable "db_pool" {
   description = <<-EOT
     Connections each store and each ledger may hold. All of them together have to stay under what
     the database allows — about a hundred for a db.t4g.micro — and a few more than its cores is what
-    keeps it busiest.
+    keeps it busiest. Each budget is its own server's when database_per_service is true: the store's
+    pool no longer shares the ledger's connection limit, or its CPUs.
   EOT
   type = object({
     store  = number
@@ -96,6 +97,24 @@ variable "database" {
     condition     = contains(["rds", "aurora"], var.database)
     error_message = "database is either \"rds\" or \"aurora\"."
   }
+}
+
+variable "database_per_service" {
+  description = <<-EOT
+    Whether the store gets a PostgreSQL server of its own ("till-store") instead of sharing the
+    ledger's. Today both databases, till's and store's, live on one server (infra/runtime/state.tf);
+    on the free plan that is a db.t4g.micro, the biggest RDS instance class the account may create,
+    and in the last load test it was at 98% CPU — about three quarters of the statement time the
+    ledger's, the rest the store's — with one connection budget (db_pool, about 70 total) shared by
+    both services' pools. The free plan caps an instance's *class*, not how many instances exist, so
+    a second server gives the store its own CPUs and its own connection budget. false (the default,
+    unchanged) keeps today's one-server layout. infra/README.md has what a second server costs.
+    scripts/aws.sh up --database-per-service sets it; switching a running deployment is down, then
+    up (scripts/aws.sh's same_layout guard refuses to switch a layout underneath one, the same way
+    same_database already refuses to switch rds/aurora underneath one).
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "cache_node_type" {

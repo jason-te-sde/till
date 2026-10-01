@@ -32,6 +32,9 @@ locals {
   # local.db_endpoint (state.tf): RDS or Aurora, picked per deployment (var.database) — Kafka does
   # not care which; it only needs an address to put after the scheme.
   jdbc = "jdbc:postgresql://${local.db_endpoint}:5432"
+  # The store's own server when database_per_service, otherwise the same one as local.jdbc above
+  # (state.tf's local.store_db_endpoint). The ledger always uses local.jdbc, never this.
+  store_jdbc = "jdbc:postgresql://${local.store_db_endpoint}:5432"
 
   logs = { for name, group in var.log_groups : name => {
     logDriver = "awslogs"
@@ -324,7 +327,8 @@ resource "aws_ecs_task_definition" "store" {
   }
 
   container_definitions = jsonencode([
-    # What docker/initdb does for the compose stack: the store's own database, beside the ledger's.
+    # What docker/initdb does for the compose stack: the store's own database, beside the ledger's
+    # when they share a server, or alone on the store's own (local.store_db_endpoint, either way).
     # Every start asks, and creates it only if it is missing; two starting at once cannot both fail,
     # because the loser finds the winner's.
     {
@@ -336,9 +340,14 @@ resource "aws_ecs_task_definition" "store" {
         "exists || psql -qc 'create database store' || exists",
       ])]
       environment = [for name, value in {
-        PGHOST            = local.db_endpoint
-        PGUSER            = "till"
-        PGDATABASE        = "till"
+        PGHOST = local.store_db_endpoint
+        PGUSER = "till"
+        # "postgres", not "till": the database this connects to only to run the check and the create
+        # above, neither of which touches it. On a shared server "till" would also work, but the
+        # store's own server (state.tf) is named "till" to mirror the ledger's rather than for what
+        # it holds, and "postgres" is the one database every server has regardless, so this container
+        # is correct, unchanged, on either.
+        PGDATABASE        = "postgres"
         PGSSLMODE         = "require"
         PGCONNECT_TIMEOUT = "10"
       } : { name = name, value = value }]
@@ -354,7 +363,7 @@ resource "aws_ecs_task_definition" "store" {
       dependsOn    = [{ containerName = "create-database", condition = "SUCCESS" }]
 
       environment = [for name, value in merge(local.identity, {
-        STORE_DB_URL  = "${local.jdbc}/store?sslmode=require"
+        STORE_DB_URL  = "${local.store_jdbc}/store?sslmode=require"
         STORE_DB_USER = "till"
         STORE_DB_POOL = tostring(var.db_pool.store)
 

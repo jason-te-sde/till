@@ -13,6 +13,11 @@ output "database" {
   value       = var.database
 }
 
+output "database_per_service" {
+  description = "Whether the store is on a server of its own. scripts/aws.sh's same_layout guard reads this to refuse to switch layouts under a running deployment."
+  value       = var.database_per_service
+}
+
 output "cluster" {
   description = "The ECS cluster, while it is running."
   value       = one(module.runtime[*].cluster)

@@ -8,7 +8,9 @@
 #                  --no-catalogue-cache to measure the store without its catalogue cache,
 #                  --shards=N to keep each game's stock in N rows instead of the load test's 16,
 #                  --database=aurora to run Aurora PostgreSQL Serverless v2 instead of RDS
-#                  (infra/README.md has what each costs and is limited to on the free plan)
+#                  (infra/README.md has what each costs and is limited to on the free plan),
+#                  --database-per-service to give the store a PostgreSQL server of its own
+#                  instead of sharing the ledger's (infra/README.md has what a second one costs)
 #   scripts/aws.sh loadtest    one load test run: the protocol's, or --shoppers= --ramp= --hold=
 #   scripts/aws.sh accounts    the demonstration accounts' passwords
 #   scripts/aws.sh status      what is billed by the hour and still there, and since when
@@ -38,6 +40,7 @@ loadtest=false
 catalogue_cache=true
 shards=""
 database=""
+database_per_service=false
 shoppers=""
 ramp=""
 hold=""
@@ -159,6 +162,9 @@ running_vars() {
   if [[ -n $database ]]; then
     printf '%s\n' -var "database=$database"
   fi
+  if [[ $database_per_service == true ]]; then
+    printf '%s\n' -var database_per_service=true
+  fi
 }
 
 # An up that names no database means RDS, and against a deployment running on Aurora that is not a
@@ -168,10 +174,31 @@ running_vars() {
 same_database() {
   local deployed
   [[ $(output running) == true ]] || return 0
-  # Absent from a state written before the choice existed, and then it was RDS.
-  deployed=$(output database 2> /dev/null) || return 0
-  [[ -z $deployed || $deployed == "${database:-rds}" ]] ||
+  # Absent from a state written before the choice existed, and then it was RDS — which an up asking
+  # for Aurora would replace like any other.
+  deployed=$(output database 2> /dev/null) || deployed=rds
+  deployed=${deployed:-rds}
+  [[ $deployed == "${database:-rds}" ]] ||
     fail "It is running on $deployed. scripts/aws.sh up --database=$deployed keeps it; to switch, scripts/aws.sh down first."
+}
+
+# The same guard, for the orthogonal choice: shared (the default) or a server of its own for the
+# store. Switching either direction loses something an up should never lose quietly — shared to
+# per-service would move the store onto an empty database, and per-service to shared would destroy
+# the store's own server — so an up keeps the layout a running deployment has, or says so.
+same_layout() {
+  local deployed
+  [[ $(output running) == true ]] || return 0
+  # output()'s "jq -r '. // empty'" prints nothing for a literal false, the same as for null — so a
+  # layout recorded shared and a state written before the choice existed (which errors, caught by
+  # the fallback here) arrive the same way, empty, and ${deployed:-false} reads both as shared. That
+  # is the right reading for both, so there is no need to tell them apart.
+  deployed=$(output database_per_service 2> /dev/null) || deployed=false
+  [[ ${deployed:-false} == "$database_per_service" ]] || {
+    [[ ${deployed:-false} == true ]] &&
+      fail "It is running with the store on a server of its own. scripts/aws.sh up --database-per-service keeps it; to switch, scripts/aws.sh down first."
+    fail "It is running with the store sharing the ledger's server. scripts/aws.sh up (without --database-per-service) keeps it; to switch, scripts/aws.sh down first."
+  }
 }
 
 cmd_plan() {
@@ -190,6 +217,7 @@ cmd_up() {
   [[ $loadtest == true ]] && hourly=$LOADTEST_HOURLY
   init
   same_database
+  same_layout
   push_images "$tag"
 
   local vars=()
@@ -363,10 +391,16 @@ run_once() {
 }
 
 # One SQL statement against the database, in the load test's psql task; prints what it returned.
+# pghost overrides which server: empty keeps the task definition's own default, the server the
+# ledger is on (loadtest.tf's dbstat task, local.db_endpoint) — every call before database_per_service
+# existed, and still every call that does not pass one. With database_per_service, cmd_loadtest passes
+# the store's own server's address (the loadgen output's store_db_host) to ask it the same questions.
 dbstat() {
-  local loadgen="$1" sql="$2" log overrides
+  local loadgen="$1" sql="$2" pghost="${3:-}" log overrides
   log=$(mktemp)
-  overrides=$(jq -nc --arg sql "$sql" '{containerOverrides: [{name: "dbstat", environment: [{name: "SQL", value: $sql}]}]}')
+  overrides=$(jq -nc --arg sql "$sql" --arg pghost "$pghost" '
+    {containerOverrides: [{name: "dbstat", environment:
+      ([{name: "SQL", value: $sql}] + (if $pghost == "" then [] else [{name: "PGHOST", value: $pghost}] end))}]}')
   run_once "$(jq -r .dbstat_task_definition <<< "$loadgen")" "$(jq -r .dbstat_security_group <<< "$loadgen")" \
     "$(jq -r '.subnets | join(",")' <<< "$loadgen")" "$overrides" "$log" dbstat
   [[ $task_exit == 0 ]] || fail "psql failed ($task_reason, exit $task_exit): $(tail -3 "$log")"
@@ -399,10 +433,17 @@ STOCK_ROWS="select jsonb_build_object('skus', count(distinct sku), 'rows', count
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached split database
+  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached split database database_per_service store_db_host store_before store_after
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
   database=$(output database)
+  # Empty reads as shared, the same as same_layout's guard: output()'s "jq -r '. // empty'" prints
+  # nothing for a recorded false, the same as for null.
+  database_per_service=$(output database_per_service)
+  database_per_service=${database_per_service:-false}
+  # Null, not empty, when the store shares the ledger's server: the store's own server's address
+  # (infra/runtime/outputs.tf's loadgen.store_db_host) when there is one to ask.
+  store_db_host=$(jq -r '.store_db_host // empty' <<< "$loadgen")
   family=$(jq -r .task_definition <<< "$loadgen")
   subnets=$(jq -r '.subnets | join(",")' <<< "$loadgen")
   group=$(jq -r .security_group <<< "$loadgen")
@@ -418,10 +459,19 @@ cmd_loadtest() {
 
   say "Load test: ${shoppers:-8000} shoppers, ${ramp:-5m} to ramp up, ${hold:-10m} held"
   # The database's statement statistics from zero, so that what it reports afterwards is this run, and
-  # the counts that cannot be reset, so that the run's share of them can be worked out.
+  # the counts that cannot be reset, so that the run's share of them can be worked out. pg_stat_statements
+  # and pg_stat_database are per server, so with database_per_service this is two servers to reset and
+  # read, not one; reservations and stock stay queries against the ledger's alone, below, since those
+  # tables exist only there, on either layout.
   before=$(dbstat "$loadgen" "create extension if not exists pg_stat_statements; select pg_stat_statements_reset();
     select jsonb_build_object('transactions', ($DATABASE_TRANSACTIONS), 'reservations', ($RESERVATIONS))" | tail -1)
   jq -e . <<< "$before" > /dev/null 2>&1 || before=null
+  store_before=null
+  if [[ -n $store_db_host ]]; then
+    store_before=$(dbstat "$loadgen" "create extension if not exists pg_stat_statements; select pg_stat_statements_reset();
+      select jsonb_build_object('transactions', ($DATABASE_TRANSACTIONS))" "$store_db_host" | tail -1)
+    jq -e . <<< "$store_before" > /dev/null 2>&1 || store_before=null
+  fi
 
   log=$(mktemp)
   run_once "$family" "$group" "$subnets" "$overrides" "$log" loadgen
@@ -444,6 +494,12 @@ cmd_loadtest() {
   after=$(dbstat "$loadgen" "select jsonb_build_object('statements', ($TOP_STATEMENTS),
     'transactions', ($DATABASE_TRANSACTIONS), 'reservations', ($RESERVATIONS), 'stock', ($STOCK_ROWS))" | tail -1) || after=null
   jq -e . <<< "$after" > /dev/null 2>&1 || after=null
+  store_after=null
+  if [[ -n $store_db_host ]]; then
+    store_after=$(dbstat "$loadgen" "select jsonb_build_object('statements', ($TOP_STATEMENTS),
+      'transactions', ($DATABASE_TRANSACTIONS))" "$store_db_host" | tail -1) || store_after=null
+    jq -e . <<< "$store_after" > /dev/null 2>&1 || store_after=null
+  fi
 
   # Nothing is written until everything is known, and a CloudWatch that cannot be read costs the
   # CloudWatch figures only: the run's own result is saved regardless.
@@ -453,14 +509,19 @@ cmd_loadtest() {
   mkdir -p till-loadtest/results
   jq -n --argjson result "$result" --argjson before "$before" --argjson after "$after" --argjson cloudwatch "$cloudwatch" \
     --argjson reads "$reads" --arg cached "$cached" --arg split "$split" --arg database "$database" \
+    --argjson database_per_service "$database_per_service" \
+    --argjson store_before "$store_before" --argjson store_after "$store_after" \
     --arg commit "$deployed" --arg code "$code" \
-    '{commit: $commit, exit_code: ($code | tonumber? // $code), store_catalogue_cache: ($cached == "true"),
-      stock_shards: ($split | tonumber? // null), database: $database,
+    'def diff(b; a): if b == null or a == null then {} else
+        a.transactions | with_entries(.key as $db | .value |= with_entries(.key as $count
+          | .value -= (b.transactions[$db][$count] // 0))) end;
+      {commit: $commit, exit_code: ($code | tonumber? // $code), store_catalogue_cache: ($cached == "true"),
+      stock_shards: ($split | tonumber? // null), database: $database, database_per_service: $database_per_service,
       k6: $result, catalogue_reads: $reads, cloudwatch: $cloudwatch,
-      database_top_statements: ($after.statements // null),
-      database_transactions: (if $before == null or $after == null then null else
-        $after.transactions | with_entries(.key as $db | .value |= with_entries(.key as $count
-          | .value -= ($before.transactions[$db][$count] // 0))) end),
+      database_top_statements: (if $after == null and $store_after == null then null else
+        ($after.statements // []) + ($store_after.statements // []) end),
+      database_transactions: (diff($before; $after) as $ledger | diff($store_before; $store_after) as $store |
+        if $ledger == {} and $store == {} then null else ($store * $ledger) end),
       reservations: (if $after == null then null else {before: ($before.reservations // null), after: $after.reservations} end),
       stock_rows: ($after.stock // null)}' > "$file"
   say "Server side, over the same window"
@@ -552,6 +613,11 @@ queries = [
     # not DBClusterIdentifier, the same as CPUUtilization above — AWS's own example for this metric
     # queries it that way (infra/runtime/state.tf has the link).
     stat("db_acu_max", "AWS/RDS", "ServerlessDatabaseCapacity", {"DBInstanceIdentifier": "till"}, "Maximum"),
+    # Empty on a shared deployment: "till-store" (infra/runtime/state.tf) exists only with
+    # database_per_service, and the same "no data points for a dimension that does not exist" as
+    # db_acu_max above is what makes asking unconditionally safe either way.
+    stat("store_db_cpu_max", "AWS/RDS", "CPUUtilization", {"DBInstanceIdentifier": "till-store"}, "Maximum"),
+    stat("store_db_acu_max", "AWS/RDS", "ServerlessDatabaseCapacity", {"DBInstanceIdentifier": "till-store"}, "Maximum"),
 ] + [stat(f"{service.replace('-', '_')}_cpu_max", "AWS/ECS", "CPUUtilization", {"ClusterName": "till", "ServiceName": service}, "Maximum")
      for service in ("edge", "store", "ledger", "kafka-1", "kafka-2", "kafka-3")]
 print(json.dumps({"MetricDataQueries": queries, "StartTime": start.isoformat(), "EndTime": end.isoformat()}))
@@ -567,6 +633,8 @@ PY
           alb_own_5xx: ((.alb_own_5xx // []) | add // 0),
           db_cpu_max_percent: ((.db_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
           db_acu_max_capacity: ((.db_acu_max // []) | max // null),
+          store_db_cpu_max_percent: ((.store_db_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
+          store_db_acu_max_capacity: ((.store_db_acu_max // []) | max // null),
           edge_cpu_max_percent: ((.edge_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
           store_cpu_max_percent: ((.store_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
           ledger_cpu_max_percent: ((.ledger_cpu_max // []) | max // null | if . == null then null else . * 10 | round / 10 end),
@@ -698,6 +766,7 @@ for arg in "$@"; do
     --no-catalogue-cache) catalogue_cache=false ;;
     --shards=*) shards=${arg#*=} ;;
     --database=*) database=${arg#*=} ;;
+    --database-per-service) database_per_service=true ;;
     --shoppers=*) shoppers=${arg#*=} ;;
     --ramp=*) ramp=${arg#*=} ;;
     --hold=*) hold=${arg#*=} ;;
