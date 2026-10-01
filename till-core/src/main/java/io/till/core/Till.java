@@ -88,7 +88,7 @@ public final class Till {
     }
 
     /**
-     * Runs a command to completion.
+     * Runs a command to completion, for a caller that will wait however long it takes.
      *
      * @param command what to do
      * @return what happened, including a rejection if it was refused
@@ -96,25 +96,7 @@ public final class Till {
      * @throws IncompleteSnapshotException if the ledger did not load what the command needed
      */
     public Outcome execute(Command command) {
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            // Truncated to microseconds because that is the resolution PostgreSQL stores, and an
-            // instant that loses precision on the way to disk is an instant that comes back
-            // different. A deadline that moves by 400 nanoseconds between writing and reading is
-            // harmless; a recorded outcome that no longer equals the one that was returned is not.
-            Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
-            Decision decision = decide(command, now);
-
-            // A replay, or a sweep that found nothing. There is nothing to write, so there is
-            // nothing to conflict on and no transaction worth opening.
-            if (!decision.writes()) {
-                return decision.outcome();
-            }
-            if (ledger.apply(decision)) {
-                return decision.outcome();
-            }
-            LOG.debug("conflict applying {} on attempt {} of {}", command, attempt, maxAttempts);
-        }
-        throw new ConflictException(command, maxAttempts);
+        return execute(command, null);
     }
 
     /**
@@ -134,8 +116,7 @@ public final class Till {
      *
      * @param command what to do
      * @param deadline the instant, on this till's own clock, after which the caller is no longer
-     *     waiting; null for no deadline, in which case this behaves exactly like {@link
-     *     #execute(Command)}
+     *     waiting; null for no deadline, which is what {@link #execute(Command)} passes
      * @return what happened, including a rejection if it was refused
      * @throws DeadlineExceededException if the deadline had already passed before the load, or
      *     passed between deciding and applying
@@ -143,22 +124,27 @@ public final class Till {
      * @throws IncompleteSnapshotException if the ledger did not load what the command needed
      */
     public Outcome execute(Command command, Instant deadline) {
-        if (deadline == null) {
-            return execute(command);
-        }
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            // Truncated to microseconds because that is the resolution PostgreSQL stores, and an
+            // instant that loses precision on the way to disk is an instant that comes back
+            // different. A deadline that moves by 400 nanoseconds between writing and reading is
+            // harmless; a recorded outcome that no longer equals the one that was returned is not.
             Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
-            if (!now.isBefore(deadline)) {
+            if (deadline != null && !now.isBefore(deadline)) {
                 throw new DeadlineExceededException(command, deadline);
             }
             Decision decision = decide(command, now);
 
-            // A replay, or a sweep that found nothing. Nothing is written, so there is nothing the
-            // caller could be too late for.
+            // A replay, or a sweep that found nothing. There is nothing to write, so there is
+            // nothing to conflict on, no transaction worth opening, and nothing the caller could
+            // be too late for.
             if (!decision.writes()) {
                 return decision.outcome();
             }
-            if (!clock.instant().truncatedTo(ChronoUnit.MICROS).isBefore(deadline)) {
+            // The clock is read again only when there is a deadline to read it for: a stepping
+            // clock in a test or the simulator sees exactly the reads it saw before deadlines
+            // existed.
+            if (deadline != null && !clock.instant().truncatedTo(ChronoUnit.MICROS).isBefore(deadline)) {
                 throw new DeadlineExceededException(command, deadline);
             }
             if (ledger.apply(decision)) {

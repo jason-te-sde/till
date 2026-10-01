@@ -37,7 +37,8 @@ without one and see no change on the wire.
 
 **In the ledger**, the command endpoints read the header and turn it into an instant on the server's
 own clock: `till.clock().instant()` plus the budget (`Commands.deadlineFrom`). A missing header means
-no deadline — `Till.execute(Command)` is unchanged and is what every caller without one still runs.
+no deadline — `Till.execute(Command)`, which is the same loop with no deadline to check, reading the
+clock exactly as often as it did before deadlines existed.
 A header that cannot be a budget — not a non-negative integer, or one so large that adding it would
 overflow what an `Instant` can represent — is a 400, in the existing problem shape for a bad request
 (`IllegalArgumentException`, the same path a bad `ttlSeconds` already takes).
