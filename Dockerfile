@@ -34,7 +34,7 @@ RUN mvn -B -ntp -q package -DskipTests
 # The storefront. Its own stage because it shares nothing with the Java build but the repository, and
 # the lock file is copied first for the same reason the poms are: an ordinary code change re-uses the
 # cached `npm ci` layer.
-FROM node:24-alpine AS web
+FROM node:26-alpine AS web
 WORKDIR /web
 COPY till-web/package.json till-web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
