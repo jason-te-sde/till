@@ -356,12 +356,21 @@ TOP_STATEMENTS="select coalesce(jsonb_agg(t order by t.total_ms desc), '[]') fro
   left(regexp_replace(s.query, '\s+', ' ', 'g'), 240) as query
   from pg_stat_statements s join pg_database d on d.oid = s.dbid order by s.total_exec_time desc limit 15) t"
 
+# Transactions committed and rolled back in each database, since it started: the run's are the
+# difference between this after it and this before it.
+DATABASE_TRANSACTIONS="select coalesce(jsonb_object_agg(datname, jsonb_build_object('commits', xact_commit,
+  'rollbacks', xact_rollback)), '{}') from pg_stat_database where datname in ('till', 'store')"
+
+# The ledger's reservations by state: how many holds a run took, and how many nobody finished.
+RESERVATIONS="select coalesce(jsonb_object_agg(state, n), '{}') from (select state, count(*) as n
+  from till_reservation group by state) s"
+
 # One run of the load generator (docs/load-test.md). Without options it is the protocol's run; with
 # them, a shorter one to try things with. Its summary is printed, and saved with what CloudWatch says
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen family subnets group overrides code reason log result file deployed statements cloudwatch reads cached
+  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
   family=$(jq -r .task_definition <<< "$loadgen")
@@ -378,8 +387,11 @@ cmd_loadtest() {
       | map(select(.value != "")))}]}')
 
   say "Load test: ${shoppers:-8000} shoppers, ${ramp:-5m} to ramp up, ${hold:-10m} held"
-  # The database's statement statistics from zero, so that what it reports afterwards is this run.
-  dbstat "$loadgen" "create extension if not exists pg_stat_statements; select pg_stat_statements_reset()" > /dev/null
+  # The database's statement statistics from zero, so that what it reports afterwards is this run, and
+  # the counts that cannot be reset, so that the run's share of them can be worked out.
+  before=$(dbstat "$loadgen" "create extension if not exists pg_stat_statements; select pg_stat_statements_reset();
+    select jsonb_build_object('transactions', ($DATABASE_TRANSACTIONS), 'reservations', ($RESERVATIONS))" | tail -1)
+  jq -e . <<< "$before" > /dev/null 2>&1 || before=null
 
   log=$(mktemp)
   run_once "$family" "$group" "$subnets" "$overrides" "$log" loadgen
@@ -397,8 +409,9 @@ cmd_loadtest() {
     --query "taskDefinition.containerDefinitions[?name=='store'].environment[] | [?name=='STORE_CATALOGUE_CACHE'].value | [0]")
 
   # The run happened whether or not psql can say what the database did in it.
-  statements=$(dbstat "$loadgen" "$TOP_STATEMENTS" | tail -1) || statements=null
-  jq -e . <<< "$statements" > /dev/null 2>&1 || statements=null
+  after=$(dbstat "$loadgen" "select jsonb_build_object('statements', ($TOP_STATEMENTS),
+    'transactions', ($DATABASE_TRANSACTIONS), 'reservations', ($RESERVATIONS))" | tail -1) || after=null
+  jq -e . <<< "$after" > /dev/null 2>&1 || after=null
 
   # Nothing is written until everything is known, and a CloudWatch that cannot be read costs the
   # CloudWatch figures only: the run's own result is saved regardless.
@@ -406,10 +419,15 @@ cmd_loadtest() {
   jq -e . <<< "$cloudwatch" > /dev/null 2>&1 || cloudwatch=null
   file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
   mkdir -p till-loadtest/results
-  jq -n --argjson result "$result" --argjson statements "$statements" --argjson cloudwatch "$cloudwatch" \
+  jq -n --argjson result "$result" --argjson before "$before" --argjson after "$after" --argjson cloudwatch "$cloudwatch" \
     --argjson reads "$reads" --arg cached "$cached" --arg commit "$deployed" --arg code "$code" \
     '{commit: $commit, exit_code: ($code | tonumber? // $code), store_catalogue_cache: ($cached == "true"),
-      k6: $result, catalogue_reads: $reads, cloudwatch: $cloudwatch, database_top_statements: $statements}' > "$file"
+      k6: $result, catalogue_reads: $reads, cloudwatch: $cloudwatch,
+      database_top_statements: ($after.statements // null),
+      database_transactions: (if $before == null or $after == null then null else
+        $after.transactions | with_entries(.key as $db | .value |= with_entries(.key as $count
+          | .value -= ($before.transactions[$db][$count] // 0))) end),
+      reservations: (if $after == null then null else {before: ($before.reservations // null), after: $after.reservations} end)}' > "$file"
   say "Server side, over the same window"
   jq -r '(.cloudwatch // {}) | to_entries[] | "  \(.key | gsub("_"; " "))\(" " * (26 - (.key | length)))\(.value)"' "$file"
   say "The store's catalogue reads, over the same window (its cache $([[ $cached == true ]] && echo on || echo off))"
@@ -418,6 +436,8 @@ cmd_loadtest() {
     "  on average         \(.mean_ms // "-") ms"' "$file"
   say "What the database spent its time on, over the whole run"
   jq -r '(.database_top_statements // [])[:8][] | "  \(.total_ms) ms  \(.calls) calls  \(.mean_ms) ms each  [\(.db)]  \(.query[:110])"' "$file"
+  jq -r '(.database_transactions // {}) | to_entries[] | "  \(.key): \(.value.commits) transactions committed, \(.value.rollbacks) rolled back"' "$file"
+  jq -r '.reservations // empty | "  reservations when it ended: \(.after | to_entries | map("\(.value) \(.key | ascii_downcase)") | join(", "))"' "$file"
   echo
   echo "Saved to $file."
   # k6 exits 99 when a target was missed; the run still happened, and its numbers are the result.

@@ -121,6 +121,77 @@ class TillClientTest {
     }
 
     @Test
+    @DisplayName("a service that has stopped answering costs the deadline, not every attempt's timeout")
+    void givesUpAtTheDeadline() {
+        try (StubTill stub = new StubTill().always(StubTill.slowly(Duration.ofSeconds(30), 201, RESERVED))) {
+            TillClient client =
+                    TillClient.builder(stub.url())
+                            .timeout(Duration.ofSeconds(1))
+                            .deadline(Duration.ofMillis(1500))
+                            .backoff(Duration.ofMillis(1))
+                            .maxAttempts(4)
+                            .build();
+
+            long started = System.nanoTime();
+            assertThrows(
+                    UncheckedIOException.class, () -> client.reserve(KEY, List.of(Line.of("widget", 2)), null));
+            Duration took = Duration.ofNanos(System.nanoTime() - started);
+
+            // Without the deadline, four one-second timeouts. With it, the first attempt's second and
+            // the half second that is left for the next one — which still carries the same key.
+            assertTrue(took.compareTo(Duration.ofMillis(1500)) >= 0, took::toString);
+            assertTrue(took.compareTo(Duration.ofMillis(2500)) < 0, took::toString);
+            assertEquals(
+                    List.of("checkout-8123", "checkout-8123"),
+                    stub.requests().stream().map(StubTill.Seen::idempotencyKey).toList());
+        }
+    }
+
+    @Test
+    @DisplayName("a backoff that would outlast the deadline is not waited, and the caller hears what the service said")
+    void doesNotWaitPastTheDeadline() {
+        try (StubTill stub = new StubTill().always(503, "{\"code\":\"CONTENTION\",\"detail\":\"try again\"}")) {
+            TillClient client =
+                    TillClient.builder(stub.url())
+                            .deadline(Duration.ofSeconds(1))
+                            .backoff(Duration.ofSeconds(4))
+                            .maxAttempts(4)
+                            .build();
+
+            long started = System.nanoTime();
+            TillApiException thrown =
+                    assertThrows(
+                            TillApiException.class,
+                            () -> client.reserve(KEY, List.of(Line.of("widget", 2)), null));
+            Duration took = Duration.ofNanos(System.nanoTime() - started);
+
+            // The first wait would have been two to six seconds, all of it past the deadline.
+            assertEquals(503, thrown.status());
+            assertEquals(1, stub.requests().size());
+            assertTrue(took.compareTo(Duration.ofMillis(900)) < 0, took::toString);
+        }
+    }
+
+    @Test
+    @DisplayName("inside the deadline, a quick 503 is still retried")
+    void retriesInsideTheDeadline() {
+        try (StubTill stub =
+                new StubTill()
+                        .then(503, "{\"code\":\"CONTENTION\",\"detail\":\"try again\"}")
+                        .then(503, "{\"code\":\"CONTENTION\",\"detail\":\"try again\"}")
+                        .always(201, RESERVED)) {
+            TillClient client =
+                    TillClient.builder(stub.url())
+                            .deadline(Duration.ofSeconds(5))
+                            .backoff(Duration.ofMillis(1))
+                            .build();
+
+            assertEquals(ReservationId.of("r-1"), client.reserve(KEY, List.of(Line.of("widget", 2)), null).id());
+            assertEquals(3, stub.requests().size());
+        }
+    }
+
+    @Test
     @DisplayName("a refusal carries the code and every shortfall")
     void rejection() {
         String body =
@@ -224,5 +295,8 @@ class TillClientTest {
     void configuration() {
         assertThrows(IllegalArgumentException.class, () -> TillClient.builder(""));
         assertThrows(IllegalArgumentException.class, () -> TillClient.builder("http://x").maxAttempts(0));
+        assertThrows(IllegalArgumentException.class, () -> TillClient.builder("http://x").deadline(Duration.ZERO));
+        assertThrows(
+                IllegalArgumentException.class, () -> TillClient.builder("http://x").deadline(Duration.ofSeconds(-1)));
     }
 }

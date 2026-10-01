@@ -69,13 +69,17 @@ public record StoreProperties(
      * @param adminToken the admin token, used only behind {@code /api/ops}, which only an operator can
      *     reach. Held as a separate client of a separate type, so that no code path can pick up the
      *     admin credential by accident when it meant the customer one
-     * @param timeout per-request timeout
+     * @param timeout how long one attempt may take
+     * @param deadline how long one call may take in all, retries included: what a customer at the
+     *     checkout is kept waiting before being told to try again. Without it, a ledger that has stopped
+     *     answering costs every retry its full timeout
      */
     public record Till(
             @DefaultValue("http://127.0.0.1:8080") String baseUrl,
             @DefaultValue("") String token,
             @DefaultValue("") String adminToken,
-            @DefaultValue("5s") Duration timeout) {}
+            @DefaultValue("5s") Duration timeout,
+            @DefaultValue("5s") Duration deadline) {}
 
     /**
      * The event stream.

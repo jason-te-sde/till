@@ -20,13 +20,20 @@ import io.till.core.Sku;
 import io.till.core.Snapshot;
 import io.till.core.StockItem;
 import io.till.core.Till;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.sql.Connection;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -268,6 +275,30 @@ class JdbcLedgerTest {
     }
 
     @Test
+    @DisplayName("a snapshot is one instant, and loading one leaves the connection's settings alone")
+    void aSnapshotIsOneInstant() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 2)), TTL);
+
+        // A commit's snapshot takes four reads. After the first, another connection changes the stock
+        // and commits; the fourth, which reads the stock, must not see it.
+        List<String> settings = new CopyOnWriteArrayList<>();
+        DataSource interfering = interfering(dataSource, settings, "select sku, on_hand", () -> {
+            try (Connection other = dataSource.getConnection();
+                    Statement statement = other.createStatement()) {
+                statement.executeUpdate(
+                        "update till_stock set on_hand = on_hand + 5, version = version + 1 where sku = 'widget'");
+            }
+        });
+
+        Snapshot snapshot = new JdbcLedger(interfering).load(new Command.Commit(key("p1"), rid("r1")), T0, 0);
+
+        assertEquals(10, snapshot.require(sku("widget")).onHand(), "read at the instant the snapshot began");
+        assertEquals(15, ledger.stock(sku("widget")).orElseThrow().onHand(), "although the change was made");
+        assertEquals(List.of(), settings, "each costs the database a statement, to ask, to set or to put back");
+    }
+
+    @Test
     @DisplayName("an empty ledger answers rather than failing")
     void emptyLedger() {
         assertTrue(ledger.listStock(Optional.empty(), 10).isEmpty());
@@ -280,6 +311,59 @@ class JdbcLedgerTest {
 
         Outcome outcome = till.reserve(key("k1"), rid("r1"), List.of(Line.of("ghost", 1)), TTL);
         assertEquals(io.till.core.RejectionCode.UNKNOWN_SKU, ((Outcome.Rejected) outcome).code());
+    }
+
+    /** Something done to the database, from the test's side. */
+    @FunctionalInterface
+    private interface Interference {
+        void run() throws SQLException;
+    }
+
+    /**
+     * A pool whose connections run {@code interference} once, just before preparing the first
+     * statement that starts with {@code before}, and note every connection setting they are asked for
+     * or asked to change.
+     */
+    private static DataSource interfering(DataSource real, List<String> settings, String before, Interference interference) {
+        AtomicBoolean done = new AtomicBoolean();
+        return proxy(DataSource.class, (method, args) -> {
+            Object result = forward(real, method, args);
+            if (!method.getName().equals("getConnection")) {
+                return result;
+            }
+            Connection connection = (Connection) result;
+            return proxy(Connection.class, (call, callArgs) -> {
+                switch (call.getName()) {
+                    case "getTransactionIsolation", "setTransactionIsolation", "isReadOnly", "setReadOnly" ->
+                            settings.add(call.getName());
+                    case "prepareStatement" -> {
+                        if (((String) callArgs[0]).startsWith(before) && done.compareAndSet(false, true)) {
+                            interference.run();
+                        }
+                    }
+                    default -> {}
+                }
+                return forward(connection, call, callArgs);
+            });
+        });
+    }
+
+    @FunctionalInterface
+    private interface Handler {
+        Object handle(Method method, Object[] args) throws Throwable;
+    }
+
+    private static <T> T proxy(Class<T> type, Handler handler) {
+        return type.cast(Proxy.newProxyInstance(
+                JdbcLedgerTest.class.getClassLoader(), new Class<?>[] {type}, (self, method, args) -> handler.handle(method, args)));
+    }
+
+    private static Object forward(Object target, Method method, Object[] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
     }
 
     private static Sku sku(String value) {

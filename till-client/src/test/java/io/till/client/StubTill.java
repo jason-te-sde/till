@@ -6,9 +6,13 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 /**
@@ -25,10 +29,14 @@ final class StubTill implements AutoCloseable {
     record Seen(String method, String path, String idempotencyKey, String authorization, String body) {}
 
     private final HttpServer server;
+    // A thread per exchange, so that an answer the client stopped waiting for does not hold up the
+    // attempt that follows it.
+    private final ExecutorService handlers = Executors.newVirtualThreadPerTaskExecutor();
     private final List<Seen> seen = new CopyOnWriteArrayList<>();
     private final List<Function<Seen, Reply>> script = new ArrayList<>();
-    private Function<Seen, Reply> fallback = request -> new Reply(404, "{\"detail\":\"no stub for " + request.path() + "\"}");
-    private int served;
+    private volatile Function<Seen, Reply> fallback =
+            request -> new Reply(404, "{\"detail\":\"no stub for " + request.path() + "\"}");
+    private final AtomicInteger served = new AtomicInteger();
 
     /** What the stub answers with. */
     record Reply(int status, String body) {}
@@ -40,6 +48,7 @@ final class StubTill implements AutoCloseable {
             throw new UncheckedIOException(e);
         }
         server.createContext("/", this::handle);
+        server.setExecutor(handlers);
         server.start();
     }
 
@@ -58,9 +67,25 @@ final class StubTill implements AutoCloseable {
     }
 
     /** Used once the queue is empty. */
-    StubTill always(int status, String body) {
-        this.fallback = request -> new Reply(status, body);
+    StubTill always(Function<Seen, Reply> reply) {
+        this.fallback = reply;
         return this;
+    }
+
+    StubTill always(int status, String body) {
+        return always(request -> new Reply(status, body));
+    }
+
+    /** An answer that takes {@code delay} to arrive: a service that is up, and too busy to say so. */
+    static Function<Seen, Reply> slowly(Duration delay, int status, String body) {
+        return request -> {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return new Reply(status, body);
+        };
     }
 
     List<Seen> requests() {
@@ -78,8 +103,8 @@ final class StubTill implements AutoCloseable {
                         new String(body, StandardCharsets.UTF_8));
         seen.add(request);
 
-        Function<Seen, Reply> responder = served < script.size() ? script.get(served) : fallback;
-        served++;
+        int index = served.getAndIncrement();
+        Function<Seen, Reply> responder = index < script.size() ? script.get(index) : fallback;
         Reply reply = responder.apply(request);
 
         if (reply.status() == 0) {
@@ -98,5 +123,7 @@ final class StubTill implements AutoCloseable {
     @Override
     public void close() {
         server.stop(0);
+        // Wakes any answer still being slow, for a client that has long stopped waiting for it.
+        handlers.shutdownNow();
     }
 }

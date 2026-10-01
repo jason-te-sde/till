@@ -405,10 +405,16 @@ public final class Kernel {
 
         /**
          * Turns the working state into a decision: the stock rows that actually changed, in SKU
-         * order, followed by the idempotency record if the command had a key.
+         * order, then the reservations, and the idempotency record if the command had a key.
+         *
+         * <p>Stock first, because a stock row is the row most likely to have moved since the
+         * snapshot — every command on its SKU writes it. A ledger that applies the mutations in order
+         * finds that out before it has written anything else, rather than after inserting a
+         * reservation and its lines only to roll them back, which is what 64% of the reservations
+         * the fourth load test inserted came to (docs/load-test.md).
          */
         private Decision finish(Command command, Outcome outcome) {
-            List<Mutation> all = new ArrayList<>(mutations);
+            List<Mutation> all = new ArrayList<>();
             for (Map.Entry<Sku, StockItem> entry : new TreeMap<>(levels).entrySet()) {
                 StockItem before = snapshot.require(entry.getKey());
                 StockItem after = entry.getValue();
@@ -418,6 +424,7 @@ public final class Kernel {
                                     after.sku(), after.onHand(), after.reserved(), before.version()));
                 }
             }
+            all.addAll(mutations);
             Optional<OutcomeRecord> record =
                     command.idempotencyKey().isPresent()
                             ? Optional.of(OutcomeRecord.of(command, outcome, now))

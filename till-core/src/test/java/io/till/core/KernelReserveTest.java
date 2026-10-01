@@ -46,6 +46,25 @@ class KernelReserveTest {
     }
 
     @Test
+    @DisplayName("the stock rows come first, so a ledger finds a moved row before it has inserted anything")
+    void stockBeforeTheReservation() {
+        Snapshot snapshot =
+                Fixtures.snapshot().stock(sku("widget"), 10, 0, 4).stock(sku("gadget"), 10, 0, 7).build();
+
+        Decision decision =
+                Kernel.decide(
+                        snapshot,
+                        new Command.Reserve(key("k1"), rid("r1"), List.of(line("widget", 3), line("gadget", 1)), TTL),
+                        T0);
+
+        assertEquals(
+                List.of(Mutation.PutStock.class, Mutation.PutStock.class, Mutation.InsertReservation.class),
+                decision.mutations().stream().map(Object::getClass).toList(),
+                "a stock row is the row every command on its SKU writes: " + decision.mutations());
+        assertEquals(sku("gadget"), ((Mutation.PutStock) decision.mutations().get(0)).sku(), "and in SKU order");
+    }
+
+    @Test
     @DisplayName("a reservation over several SKUs takes all of them or none")
     void isAllOrNothing() {
         Snapshot snapshot =
