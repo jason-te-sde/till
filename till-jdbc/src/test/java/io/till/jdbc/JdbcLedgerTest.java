@@ -24,6 +24,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Clock;
@@ -35,6 +37,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -319,15 +325,23 @@ class JdbcLedgerTest {
     }
 
     @Test
-    @DisplayName("a snapshot is one instant, and loading one leaves the connection's settings alone")
+    @DisplayName("a reclaiming snapshot is one instant, and loading one leaves the connection's settings alone")
     void aSnapshotIsOneInstant() {
         till.adjust(key("d1"), sku("widget"), 10);
         till.reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 2)), TTL);
 
-        // A commit's snapshot takes four reads. After the first, another connection changes the stock
-        // and commits; the fourth, which reads the stock, must not see it.
+        // Only a reclaiming load still takes this path: a lean one (reclaimLimit 0, every reserve,
+        // commit and release's first try) is one statement end to end, so there is only one read left
+        // to interfere with and this mechanism — interfering between an earlier read and a later one —
+        // no longer has a seam. aLeanCommitLoadIsOneStatement below covers that one instead; this test
+        // keeps covering the transactional path, which a reclaiming load (and the sweep) still use
+        // unchanged, with a reclaim limit standing in for both. A commit's reclaiming snapshot takes
+        // five reads: record, reservation, lines, reclaimable, then stock. After the first four,
+        // another connection changes the stock and commits; the fifth, which reads the stock, must not
+        // see it.
         List<String> settings = new CopyOnWriteArrayList<>();
-        DataSource interfering = interfering(dataSource, settings, "select sku, shard, on_hand", () -> {
+        List<String> statements = new CopyOnWriteArrayList<>();
+        DataSource interfering = interfering(dataSource, settings, statements, "select sku, shard, on_hand", () -> {
             try (Connection other = dataSource.getConnection();
                     Statement statement = other.createStatement()) {
                 statement.executeUpdate(
@@ -335,11 +349,116 @@ class JdbcLedgerTest {
             }
         });
 
-        Snapshot snapshot = new JdbcLedger(interfering).load(new Command.Commit(key("p1"), rid("r1")), T0, 0);
+        Snapshot snapshot = new JdbcLedger(interfering).load(new Command.Commit(key("p1"), rid("r1")), T0, 32);
 
         assertEquals(10, snapshot.require(sku("widget")).onHand(), "read at the instant the snapshot began");
         assertEquals(15, ledger.stock(sku("widget")).orElseThrow().onHand(), "although the change was made");
         assertEquals(List.of(), settings, "each costs the database a statement, to ask, to set or to put back");
+    }
+
+    @Test
+    @DisplayName("a lean reserve's load is one statement, with no SET, BEGIN or COMMIT")
+    void aLeanReserveLoadIsOneStatement() {
+        till.adjust(key("d1"), sku("widget"), 10);
+
+        List<String> settings = new CopyOnWriteArrayList<>();
+        List<String> statements = new CopyOnWriteArrayList<>();
+        DataSource observed = interfering(dataSource, settings, statements, null, () -> {});
+
+        Command command = new Command.Reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 1)), TTL);
+        new JdbcLedger(observed).load(command, T0, 0);
+
+        assertEquals(
+                1,
+                statements.size(),
+                "one statement and nothing to set, begin or commit around it, got " + statements);
+        assertTrue(statements.get(0).contains("till_stock"), "must be the snapshot query, got " + statements);
+        assertFalse(statements.get(0).contains("set transaction"), "no isolation level either: " + statements);
+    }
+
+    @Test
+    @DisplayName("a lean commit's load is one statement, with no SET, BEGIN or COMMIT")
+    void aLeanCommitLoadIsOneStatement() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.adjust(key("d2"), sku("gadget"), 10);
+        till.reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 1), Line.of("gadget", 2)), TTL);
+
+        List<String> settings = new CopyOnWriteArrayList<>();
+        List<String> statements = new CopyOnWriteArrayList<>();
+        DataSource observed = interfering(dataSource, settings, statements, null, () -> {});
+
+        Command command = new Command.Commit(key("p1"), rid("r1"));
+        Snapshot snapshot = new JdbcLedger(observed).load(command, T0, 0);
+
+        assertEquals(
+                1,
+                statements.size(),
+                "one statement and nothing to set, begin or commit around it, got " + statements);
+        assertTrue(statements.get(0).contains("till_stock"), "must be the snapshot query, got " + statements);
+        assertFalse(statements.get(0).contains("set transaction"), "no isolation level either: " + statements);
+        // Not just one statement: the right one, that found what a commit needs — both SKUs, scoped
+        // through the reservation it names, although Commit declares none of its own — in that one
+        // statement rather than in a second read once the reservation's lines were known.
+        assertEquals(2, snapshot.stock().size());
+        assertEquals(2, snapshot.reservation().orElseThrow().lines().size());
+    }
+
+    @Test
+    @DisplayName("one statement's snapshot is one instant even when one of its arms is slow")
+    void aSingleStatementSnapshotIsOneInstant() throws Exception {
+        till.adjust(key("d1"), sku("widget"), 10);
+
+        // aLeanCommitLoadIsOneStatement proves the real load is one statement; this proves that one
+        // statement is still one instant, the property aSnapshotIsOneInstant proves for the
+        // transactional path by interfering between two of its reads. A single statement has no such
+        // seam from the JDBC side — prepareStatement and executeQuery each run once — so this goes
+        // underneath JdbcLedger entirely, to PostgreSQL's own guarantee that every arm of one
+        // statement, UNION ALL included, runs against the snapshot taken when the statement began. A
+        // first arm takes two seconds to produce its one (unused) row; a second arm reads the stock
+        // row a concurrent transaction updates and commits well within those two seconds. If
+        // PostgreSQL gave the second arm a fresher snapshot than the first because it physically runs
+        // later, this reads 15 instead of 10 — which is exactly the failure this test existed to catch
+        // when the two arms were temporarily issued as two separate statements while writing it.
+        ExecutorService thread = Executors.newSingleThreadExecutor();
+        try {
+            Future<Long> slow = thread.submit(() -> {
+                try (Connection connection = dataSource.getConnection();
+                        Statement guard = connection.createStatement()) {
+                    // Belt and suspenders: a parallel worker could otherwise run the second arm in a
+                    // process with a snapshot of its own. The table is far too small for the planner
+                    // to want one anyway.
+                    guard.execute("set max_parallel_workers_per_gather = 0");
+                    try (PreparedStatement statement = connection.prepareStatement(
+                                    "select null::bigint as on_hand from pg_sleep(2) "
+                                            + "union all "
+                                            + "select on_hand from till_stock where sku = 'widget'");
+                            ResultSet rows = statement.executeQuery()) {
+                        long onHand = -1;
+                        while (rows.next()) {
+                            long value = rows.getLong("on_hand");
+                            if (!rows.wasNull()) {
+                                onHand = value;
+                            }
+                        }
+                        return onHand;
+                    }
+                }
+            });
+
+            // Generous relative to the statement's own two-second sleep: opening a connection and
+            // sending one update on an otherwise idle pool takes milliseconds, not hundreds of them.
+            Thread.sleep(500);
+            try (Connection other = dataSource.getConnection();
+                    Statement update = other.createStatement()) {
+                update.executeUpdate(
+                        "update till_stock set on_hand = on_hand + 5, version = version + 1 where sku = 'widget'");
+            }
+
+            assertEquals(
+                    10, slow.get(10, TimeUnit.SECONDS), "the committed update must not reach an arm still running");
+        } finally {
+            thread.shutdown();
+        }
     }
 
     @Test
@@ -365,10 +484,15 @@ class JdbcLedgerTest {
 
     /**
      * A pool whose connections run {@code interference} once, just before preparing the first
-     * statement that starts with {@code before}, and note every connection setting they are asked for
-     * or asked to change.
+     * statement that starts with {@code before} (never, if {@code before} is {@code null}); note
+     * every connection setting they are asked for or asked to change into {@code settings}; and
+     * record the text of every statement prepared, plus every {@code commit}, {@code rollback} or
+     * {@code setAutoCommit} call, into {@code statements}, in order — so that a test can tell how
+     * many statements a load issued and whether any of them opened or closed a transaction of its
+     * own, without the database itself ever seeing more than one connection's worth of calls change.
      */
-    private static DataSource interfering(DataSource real, List<String> settings, String before, Interference interference) {
+    private static DataSource interfering(
+            DataSource real, List<String> settings, List<String> statements, String before, Interference interference) {
         AtomicBoolean done = new AtomicBoolean();
         return proxy(DataSource.class, (method, args) -> {
             Object result = forward(real, method, args);
@@ -380,8 +504,12 @@ class JdbcLedgerTest {
                 switch (call.getName()) {
                     case "getTransactionIsolation", "setTransactionIsolation", "isReadOnly", "setReadOnly" ->
                             settings.add(call.getName());
+                    case "commit", "rollback" -> statements.add(call.getName());
+                    case "setAutoCommit" -> statements.add("setAutoCommit(" + callArgs[0] + ")");
                     case "prepareStatement" -> {
-                        if (((String) callArgs[0]).startsWith(before) && done.compareAndSet(false, true)) {
+                        String sql = (String) callArgs[0];
+                        statements.add(sql);
+                        if (before != null && sql.startsWith(before) && done.compareAndSet(false, true)) {
                             interference.run();
                         }
                     }

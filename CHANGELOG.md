@@ -137,6 +137,19 @@ explicitly not: it is a testing tool and it will change.
 
 ### Changed
 
+- **A snapshot that reclaims nothing is one statement**, in autocommit, with no `SET`, `BEGIN` or
+  `COMMIT` ([ADR 12](docs/design/0012-one-statement-snapshot.md)) — the lean first decision of every
+  reserve, commit and release, which is the common case by far. A load test found the `SET
+  TRANSACTION` this replaces responsible for 10% of the database's statement time
+  ([docs/load-test.md](docs/load-test.md)); PostgreSQL already gives one statement one instant, so
+  the common load needs no transaction to say so, and only a load that reclaims expired holds, or the
+  sweep, still opens one. The contention benchmark (`-Dbench.dbcpus=2 -Dbench.shards=16
+  -Dbench.seconds=30`, three interleaved runs a side against the commit this branched from) did not
+  show a measurable throughput change on a laptop — 930 checkouts/s before, 951 after, both inside
+  the ±25% run-to-run spread this benchmark already has — which this records plainly rather than
+  rounding up: the round-trip count is halved regardless (proved directly by watching the connection),
+  but this local benchmark's bottleneck is mostly the apply path's conflicts, which this does not
+  touch. The next AWS load test is what should actually show it.
 - **The event stream keeps up.** The outbox publisher drains until it has caught up
   (`till.outbox.passes`), one instance at a time under a publishing claim, and the ledger declares its
   topic with `till.kafka.partitions` (12) before it publishes. One batch of 200 a second had capped the

@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Optional;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -80,6 +81,15 @@ final class TestDatabase {
             password = orElse("TILL_TEST_DB_PASSWORD", "till");
         } else {
             PostgreSQLContainer container = new PostgreSQLContainer("postgres:17-alpine");
+            // Unset for every ordinary test run, so the shared container stays uncapped; set only for
+            // ContentionBenchmark, so its database is the bottleneck under contention the way a
+            // db.t4g.micro's two burstable cores are, rather than however many the laptop happens to
+            // have (see ContentionBenchmark's javadoc).
+            cpuLimitNanos()
+                    .ifPresent(
+                            nanos ->
+                                    container.withCreateContainerCmdModifier(
+                                            cmd -> cmd.getHostConfig().withNanoCPUs(nanos)));
             container.start();
             serverUrl = container.getJdbcUrl();
             username = container.getUsername();
@@ -106,6 +116,17 @@ final class TestDatabase {
                             + "; " + URL_ENV + " must name a server whose user may create databases",
                     e);
         }
+    }
+
+    /**
+     * The started container's CPU limit, from {@code -Dbench.dbcpus}, in nanoCPUs — Docker's unit, a
+     * billion to a whole core, for {@code HostConfig.NanoCpus} ({@code docker run --cpus}).
+     *
+     * @return empty if the property is unset, which leaves a container this starts uncapped
+     */
+    static Optional<Long> cpuLimitNanos() {
+        Integer cpus = Integer.getInteger("bench.dbcpus");
+        return cpus == null ? Optional.empty() : Optional.of(cpus * 1_000_000_000L);
     }
 
     /** Replaces the database in a JDBC URL, keeping the host, the port and any parameters. */

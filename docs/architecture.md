@@ -143,16 +143,33 @@ one that was returned is not a recorded outcome.
 
 ## The adapter
 
-`till-jdbc` does two transactions per attempt, and the difference between them is the point.
+`till-jdbc` reads a snapshot and writes a decision. A snapshot has to be one instant — at read
+committed, several statements taken to assemble one would each see a different instant, each row
+correct, the set of them describing a state that never existed, and no version check catches that
+because every row individually is at the version it was read at — but how a load gets there depends
+on what it needs.
 
-Reading happens in a **read-only repeatable-read** transaction. A snapshot has to be one instant: at
-read committed, the four statements it takes to assemble one would each see a different instant —
-each row correct, the set of them describing a state that never existed. No version check catches
-that, because every row individually is at the version it was read at. The transaction says so
-itself, with `SET TRANSACTION` as its first statement; changing the connection around it instead
-cost three statements a load, each a transaction of its own.
+Most loads reclaim nothing: the lean first decision of every reserve, commit and release
+(`reclaimLimit == 0`; "The loop", above), which never asks for expired holds and so has nothing
+whose scope depends on what a read finds. That load is **one statement, in autocommit, with no
+transaction of its own** ([ADR 12](design/0012-one-statement-snapshot.md)): a `union all` of the
+idempotency record, the named reservation and its lines, and the stock of every SKU in scope,
+including the SKUs the reservation's lines add. PostgreSQL takes one snapshot per statement, not per
+row scanned, so every arm of one statement — subqueries and `union all` branches alike — already
+sees the one instant a snapshot needs, without a transaction to say so. A load test found a `SET
+TRANSACTION` that read nothing responsible for 10% of the database's statement time
+([`docs/load-test.md`](load-test.md)); the common load now sends no `SET`, no `BEGIN` and no `COMMIT`
+at all.
 
-Writing happens at **read committed**, with every statement carrying the version it expects. If the
+A load that reclaims, and the sweep, still open a **read-only repeatable-read** transaction. What
+they read next depends on what the first read found — a reclaim limit widens the set of expired
+holds a decision might write off, and the sweep does not know which rows those are until it asks —
+so their later statements cannot be folded into the first the way the lean load's `scope` CTE folds
+a reservation's lines into its stock read. The transaction sets its own isolation, as its first
+statement, rather than the connection's being changed around it; changing the connection instead cost
+three statements a load, each a transaction of its own.
+
+Writing always happens at **read committed**, with every statement carrying the version it expects. If the
 row moved, the update matches no row, the transaction rolls back, and `apply` returns `false`. The
 stock rows go first, because they are the rows most likely to have moved: every command on a SKU
 writes its row. Finding that out before inserting the reservation saves the inserts a conflict would
