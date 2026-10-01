@@ -1,0 +1,214 @@
+{
+  "commit": "03e538582409",
+  "exit_code": 99,
+  "store_catalogue_cache": true,
+  "stock_shards": 1,
+  "k6": {
+    "window": {
+      "from": "2026-10-01T02:30:36.031Z",
+      "to": "2026-10-01T02:40:36.031Z"
+    },
+    "shoppers": 8000,
+    "concurrent_max": 8000,
+    "steady_seconds": 600,
+    "requests": 1906344,
+    "requests_per_second": 3177.2,
+    "latency_ms": {
+      "p50": 1.5,
+      "p95": 1077.1,
+      "p99": 5046.9,
+      "max": 30007.7
+    },
+    "p99_ms_by_class": {
+      "page": 2,
+      "session": 228.2,
+      "catalogue": 205.7,
+      "search": 201.3,
+      "signin": 152.8,
+      "order": 6217.2
+    },
+    "unexpected_rate": 0.04469602548123529,
+    "per_second": {
+      "orders_placed": 8.9,
+      "orders_paid": 1.6,
+      "orders_cancelled": 0.2,
+      "refusals": 0,
+      "sign_ins": 2.4
+    },
+    "targets": {
+      "p99_under_1s": false,
+      "errors_under_0_1_percent": false
+    }
+  },
+  "catalogue_reads": {
+    "cache": {
+      "reads": 24359,
+      "mean_ms": 0.79
+    },
+    "database": {
+      "reads": 1461,
+      "mean_ms": 1504.93
+    },
+    "mean_ms": 85.9,
+    "store_minutes": 36
+  },
+  "cloudwatch": {
+    "window_seconds": 540,
+    "alb_requests_per_second": 3177.4,
+    "alb_target_p99_ms": 5041,
+    "alb_target_5xx": 76762,
+    "alb_own_5xx": 0,
+    "db_cpu_max_percent": 97.5,
+    "edge_cpu_max_percent": 40.8,
+    "store_cpu_max_percent": 54.1,
+    "ledger_cpu_max_percent": 46.9,
+    "kafka_cpu_max_percent": 33.4
+  },
+  "database_top_statements": [
+    {
+      "db": "till",
+      "rows": 111422,
+      "calls": 332027,
+      "query": "update till_stock set on_hand = $1, reserved = $2, version = version + 1, updated_at = now() where sku = $3 and shard = $4 and version = $5",
+      "mean_ms": 14.72,
+      "total_ms": 4886166
+    },
+    {
+      "db": "till",
+      "rows": 78054,
+      "calls": 78054,
+      "query": "insert into till_reservation_line (reservation_id, sku, shard, quantity) values ($1, $2, $3, $4)",
+      "mean_ms": 8.49,
+      "total_ms": 663015
+    },
+    {
+      "db": "till",
+      "rows": 63838,
+      "calls": 63838,
+      "query": "insert into till_reservation (id, idem_key, state, created_at, expires_at, version) values ($1, $2, $3, $4, $5, $6) on conflict (id) do nothing",
+      "mean_ms": 8.28,
+      "total_ms": 528884
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 328479,
+      "query": "set transaction isolation level repeatable read, read only",
+      "mean_ms": 1.58,
+      "total_ms": 518912
+    },
+    {
+      "db": "till",
+      "rows": 81333,
+      "calls": 81333,
+      "query": "insert into till_outbox (dedupe_key, payload, recorded_at) values ($1, $2, $3) on conflict (dedupe_key) do nothing",
+      "mean_ms": 5.49,
+      "total_ms": 446836
+    },
+    {
+      "db": "till",
+      "rows": 447075,
+      "calls": 328169,
+      "query": "select sku, shard, on_hand, reserved, version from till_stock where sku = any($1) order by sku collate \"C\", shard",
+      "mean_ms": 1.33,
+      "total_ms": 436488
+    },
+    {
+      "db": "store",
+      "rows": 81333,
+      "calls": 81333,
+      "query": "insert into store_consumed_event (dedupe_key, sequence, consumed_at) values ($1, $2, $3) on conflict (dedupe_key) do nothing",
+      "mean_ms": 3.42,
+      "total_ms": 278426
+    },
+    {
+      "db": "till",
+      "rows": 81333,
+      "calls": 81333,
+      "query": "insert into till_idempotency (idem_key, fingerprint, outcome, recorded_at) values ($1, $2, $3, $4) on conflict (idem_key) do nothing",
+      "mean_ms": 2.94,
+      "total_ms": 238912
+    },
+    {
+      "db": "store",
+      "rows": 99753,
+      "calls": 99753,
+      "query": "insert into store_availability (sku, on_hand, reserved, available, updated_at) values ($1, $2, $3, $4, $5) on conflict (sku) do update set on_hand = store_availability.on_hand + excluded.on_hand, reserved = store_availability.reserved + exc",
+      "mean_ms": 2.11,
+      "total_ms": 210675
+    },
+    {
+      "db": "store",
+      "rows": 1925,
+      "calls": 1469,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank, count(*) over () as total, ts_rank_cd(g.search, websearch_to_tsquery($7, $1)) ",
+      "mean_ms": 115.99,
+      "total_ms": 170389
+    },
+    {
+      "db": "store",
+      "rows": 25459,
+      "calls": 25459,
+      "query": "insert into store_order_line (order_id, sku, title, unit_price_cents, quantity) values ($1, $2, $3, $4, $5)",
+      "mean_ms": 6.33,
+      "total_ms": 161082
+    },
+    {
+      "db": "store",
+      "rows": 20325,
+      "calls": 20325,
+      "query": "insert into store_order (id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (customer, idem_key) do nothing",
+      "mean_ms": 7.84,
+      "total_ms": 159400
+    },
+    {
+      "db": "store",
+      "rows": 20325,
+      "calls": 130432,
+      "query": "select id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at from store_order where customer = $1 and idem_key = $2",
+      "mean_ms": 1.11,
+      "total_ms": 145334
+    },
+    {
+      "db": "store",
+      "rows": 5961,
+      "calls": 1469,
+      "query": "select t.tag as value, count(*) as count from store_game g cross join lateral unnest(g.tags) as t(tag) where true and (g.search @@ websearch_to_tsquery('english', $1) or g.title ilike $2 escape '\\') group by t.tag order by count(*) desc, t.",
+      "mean_ms": 97.64,
+      "total_ms": 143438
+    },
+    {
+      "db": "store",
+      "rows": 103708,
+      "calls": 103708,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank from store_game g where g.sku in ($1)",
+      "mean_ms": 1.13,
+      "total_ms": 116728
+    }
+  ],
+  "database_transactions": {
+    "till": {
+      "commits": 412898,
+      "rollbacks": 220863
+    },
+    "store": {
+      "commits": 521882,
+      "rollbacks": 0
+    }
+  },
+  "reservations": {
+    "before": {
+      "RELEASED": 17,
+      "COMMITTED": 169
+    },
+    "after": {
+      "HELD": 46343,
+      "RELEASED": 1698,
+      "COMMITTED": 15983
+    }
+  },
+  "stock_rows": {
+    "rows": 32,
+    "skus": 32
+  }
+}
