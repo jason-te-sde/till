@@ -99,6 +99,11 @@ variable "database" {
   type        = string
 }
 
+variable "database_per_service" {
+  description = "Whether the store gets a PostgreSQL server of its own, \"till-store\" (state.tf), instead of sharing the ledger's."
+  type        = bool
+}
+
 variable "cache_node_type" {
   type = string
 }

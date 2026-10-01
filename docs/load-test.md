@@ -95,6 +95,23 @@ Record the same figures as any other run, plus `database` and, from the saved re
 ceiling for its whole window — the Aurora equivalent of the 98% CPU the `db.t4g.micro` runs below
 were at throughout. No run against Aurora has been recorded yet.
 
+## With the store on a server of its own
+
+`scripts/aws.sh up --loadtest --database-per-service` runs the same protocol with the store on a
+PostgreSQL server of its own instead of sharing the ledger's — nothing else in
+[the sizes](../infra/loadtest.tfvars) or the protocol changes, and it composes with
+`--database=aurora` the same way `--shards` and `--no-catalogue-cache` do.
+[infra/README.md](../infra/README.md) has what a second server costs.
+
+Record the same figures as any other run, plus `database_per_service` and, from the saved result's
+`cloudwatch`, `store_db_cpu_max_percent` (and, against Aurora, `store_db_acu_max_capacity`) beside
+the ledger's own `db_cpu_max_percent` — the point of a second server is whether either one stops
+being the 98% CPU the one shared `db.t4g.micro` ran at for the whole window below, now that the
+store's statement time no longer shares the ledger's cores or its connection budget.
+`database_top_statements` carries both servers' statements either way, each row already naming its
+`db`, and `database_transactions` is still keyed by database name regardless of which server it came
+from. No run with the store on a server of its own has been recorded yet.
+
 ## A run
 
 1. `scripts/aws.sh up --loadtest` deploys with the sizes in

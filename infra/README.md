@@ -145,6 +145,29 @@ Every `up` of a running deployment keeps the database it has. An `up` that names
 against one on Aurora, would replace the database with an empty one, so it stops and says so
 instead: switching is `scripts/aws.sh down`, then `up` with the other.
 
+## One database server, or one each
+
+By default the ledger and the store share the server above. `scripts/aws.sh up
+--database-per-service` gives the store a second server of its own instead — the same engine, class
+or scaling as the ledger's, named `till-store` — so each service gets its own CPUs and its own
+connection budget (`db_pool`) rather than queuing behind the other's. The free plan caps an
+instance's *class*, not how many instances exist, which is why this is the next lever once one
+server is the bottleneck: in the load test run recorded in
+[`docs/load-test.md`](../docs/load-test.md), the one shared `db.t4g.micro` was at 98% CPU for the
+whole window, about three quarters of the statement time the ledger's and the rest the store's.
+`infra/variables.tf`'s `database_per_service` defaults to `false`, unchanged, so nothing about
+today's layout changes unless asked.
+
+A second server costs the same as the first, again: two `db.t4g.micro`s at $0.0192 an hour each on
+RDS, or two Aurora clusters at up to $0.48 an hour each at the 4 ACU ceiling — the free plan's cap is
+per cluster, so a second cluster does not share or halve the first's.
+
+Every `up` of a running deployment keeps the layout it has, the same as it keeps RDS or Aurora: an
+`up` that would move the store between a server of its own and the ledger's stops and says so
+instead, because shared to per-service would move the store onto an empty database and per-service
+to shared would destroy the store's own server. Switching is `scripts/aws.sh down`, then `up` with
+`--database-per-service` or without it.
+
 ## Set up for a load test
 
 `scripts/aws.sh up --loadtest` runs it the way [`docs/load-test.md`](../docs/load-test.md) says a
@@ -180,7 +203,7 @@ share of it being minutes, not an hour.
 | --- | --- | --- |
 | [`bootstrap/`](bootstrap/main.tf) | once per account, local state | the state bucket, the three image registries |
 | [the root](.) | always, state in S3 | the network, the security groups, Cognito's user pool and its accounts, the secrets, the IAM roles, the log groups |
-| [`runtime/`](runtime) | while `running = true` | CloudFront and its VPC origin, the load balancer, the Cognito app client, the database (RDS or Aurora), ElastiCache, Cloud Map, the ECS cluster and its services |
+| [`runtime/`](runtime) | while `running = true` | CloudFront and its VPC origin, the load balancer, the Cognito app client, the database (RDS or Aurora, shared or one server each), ElastiCache, Cloud Map, the ECS cluster and its services |
 
 `runtime/` is a module the root instantiates with `count = var.running ? 1 : 0`, so stopping is an
 apply rather than a second stack kept in step with the first. `running` defaults to false: an apply

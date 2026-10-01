@@ -33,5 +33,9 @@ output "loadgen" {
     security_group         = aws_security_group.loadtest["loadgen"].id
     dbstat_task_definition = aws_ecs_task_definition.dbstat[0].family
     dbstat_security_group  = aws_security_group.loadtest["dbstat"].id
+    # Null when the store shares the ledger's server: scripts/aws.sh's dbstat has only the one
+    # server to ask then, exactly as before. Set, it is where to override PGHOST to ask the store's
+    # own server the same questions (state.tf's local.store_db_endpoint).
+    store_db_host = var.database_per_service ? local.store_db_endpoint : null
   } : null
 }

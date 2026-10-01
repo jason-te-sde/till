@@ -1,12 +1,18 @@
-# Where the state lives: one PostgreSQL instance with the ledger's database and the store's, as in
-# the compose stack, and one Valkey node for the store's sessions.
+# Where the state lives: PostgreSQL, for the ledger's database and the store's, and one Valkey node
+# for the store's sessions.
 #
 # PostgreSQL is RDS or Aurora PostgreSQL Serverless v2, picked per deployment by var.database
 # (infra/variables.tf; default "rds", unchanged). The AWS free plan caps each differently: RDS to
 # db.t3.micro or db.t4g.micro, Aurora to 4 ACU and 1 GiB of storage per cluster — infra/README.md has
 # what both cost. Exactly one of the two resources below exists at a time (count); local.db_endpoint
-# is what services.tf and loadtest.tf connect to either way, and both are identified "till" so a
-# CloudWatch query (scripts/aws.sh server_side) never has to know which one is live.
+# is what the ledger connects to either way, and both are identified "till" so a CloudWatch query
+# (scripts/aws.sh server_side) never has to know which one is live.
+#
+# var.database_per_service (infra/variables.tf; default false, unchanged) gives the store a second
+# server of the same kind, "till-store", below — the free plan caps an instance's class, not how many
+# instances exist, so this is the lever once one server is the shared bottleneck. local.store_db_endpoint
+# is what services.tf's store connects to: the store's own server when per-service, otherwise
+# local.db_endpoint, the same server the ledger is on. The ledger always stays on local.db_endpoint.
 #
 # Both single-instance, no replicas, no backups beyond what the engine insists on: this deployment
 # is started for a session and destroyed after it, and the store stocks itself on start. What a
@@ -131,6 +137,98 @@ locals {
   # they would start against an endpoint with nothing behind it. With one instance, its address is
   # the writer's.
   db_endpoint = var.database == "aurora" ? aws_rds_cluster_instance.till[0].endpoint : aws_db_instance.till[0].address
+}
+
+# --- the store's own server, when database_per_service asks for one ------------------------------
+#
+# The same engine, class or scaling, and settings as the ledger's pair above — db_name "till" rather
+# than "store" included, mirroring them on purpose rather than naming this one for what it actually
+# holds. services.tf's create-database init container connects to "postgres" (always present,
+# whatever a server's initial database is named) to check for and create "store", so it works
+# unchanged whichever server it is pointed at, and nothing here has to special-case which database a
+# fresh server was given. "till-store" is a resource of its own, not a rename of the resources
+# above: var.database_per_service does not change what the ledger is on.
+resource "aws_db_instance" "store" {
+  count = var.database == "rds" && var.database_per_service ? 1 : 0
+
+  identifier     = "till-store"
+  engine         = "postgres"
+  engine_version = "17"
+  instance_class = var.db_instance_class
+
+  allocated_storage = 20
+  storage_type      = "gp3"
+  storage_encrypted = true
+
+  db_name  = "till"
+  username = "till"
+  password = var.db_password
+
+  db_subnet_group_name   = var.db_subnet_group
+  vpc_security_group_ids = [var.security_groups.db]
+  availability_zone      = var.zone
+  publicly_accessible    = false
+  multi_az               = false
+
+  backup_retention_period      = 0
+  skip_final_snapshot          = true
+  deletion_protection          = false
+  apply_immediately            = true
+  auto_minor_version_upgrade   = true
+  performance_insights_enabled = false
+}
+
+# Aurora's free-plan cap (4 ACU, 1 GiB of storage) is per cluster, so a second cluster at the same
+# 0-4 ACU scaling as the ledger's does not share or halve either server's ceiling.
+resource "aws_rds_cluster" "store" {
+  count = var.database == "aurora" && var.database_per_service ? 1 : 0
+
+  cluster_identifier = "till-store"
+  engine             = "aurora-postgresql"
+  engine_version     = "17.9"
+  engine_mode        = "provisioned"
+
+  database_name   = "till"
+  master_username = "till"
+  master_password = var.db_password
+
+  # No availability_zones: the same reason as the ledger's cluster above.
+  db_subnet_group_name   = var.db_subnet_group
+  vpc_security_group_ids = [var.security_groups.db]
+  storage_encrypted      = true
+
+  serverlessv2_scaling_configuration {
+    min_capacity = 0
+    max_capacity = 4
+  }
+
+  backup_retention_period = 1
+  skip_final_snapshot     = true
+  deletion_protection     = false
+  apply_immediately       = true
+}
+
+resource "aws_rds_cluster_instance" "store" {
+  count = var.database == "aurora" && var.database_per_service ? 1 : 0
+
+  identifier         = "till-store"
+  cluster_identifier = aws_rds_cluster.store[0].id
+  instance_class     = "db.serverless"
+  engine             = aws_rds_cluster.store[0].engine
+  engine_version     = aws_rds_cluster.store[0].engine_version
+
+  availability_zone            = var.zone
+  publicly_accessible          = false
+  auto_minor_version_upgrade   = true
+  performance_insights_enabled = false
+}
+
+locals {
+  # The store's own server once it has one; otherwise the one the ledger is already on. services.tf's
+  # store connects here; the ledger always stays on local.db_endpoint above, whichever this is.
+  store_db_endpoint = var.database_per_service ? (
+    var.database == "aurora" ? aws_rds_cluster_instance.store[0].endpoint : aws_db_instance.store[0].address
+  ) : local.db_endpoint
 }
 
 resource "aws_elasticache_replication_group" "sessions" {
