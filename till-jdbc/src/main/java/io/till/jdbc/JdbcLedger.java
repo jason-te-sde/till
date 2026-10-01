@@ -36,7 +36,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
+import java.util.function.Consumer;
 import javax.sql.DataSource;
 
 /**
@@ -141,6 +143,15 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
 
     private static final String MARK_PUBLISHED =
             "update till_outbox set published_at = ? where sequence = any(?) and published_at is null";
+
+    /**
+     * The publishing claim: a transaction-scoped advisory lock, so it goes with the transaction —
+     * committed, rolled back, or dropped with the connection of a publisher that died holding it.
+     */
+    private static final String CLAIM_PUBLISHING = "select pg_try_advisory_xact_lock(?)";
+
+    /** "tilloutb" in ASCII. Any fixed number would do; this one says whose it is in {@code pg_locks}. */
+    private static final long PUBLISHING_LOCK = 0x74696c6c6f757462L;
 
     /** A SKU's level is its shards added up; the version too, so it moves when any of them does. */
     private static final String LEVELS =
@@ -527,8 +538,15 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
 
     @Override
     public List<OutboxEntry> unpublished(int limit) {
-        try (Connection connection = dataSource.getConnection();
-                PreparedStatement statement = connection.prepareStatement(SELECT_UNPUBLISHED)) {
+        try (Connection connection = dataSource.getConnection()) {
+            return readUnpublished(connection, limit);
+        } catch (SQLException e) {
+            throw new LedgerException("reading the outbox", e);
+        }
+    }
+
+    private static List<OutboxEntry> readUnpublished(Connection connection, int limit) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_UNPUBLISHED)) {
             statement.setInt(1, limit);
             List<OutboxEntry> entries = new ArrayList<>();
             try (ResultSet rows = statement.executeQuery()) {
@@ -541,8 +559,56 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 }
             }
             return entries;
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The batch is read, published and marked in one transaction, which holds its connection while
+     * the batch is sent — the one place the ledger does, because the claim has to last exactly as
+     * long as the send. It locks no row: the command path only ever inserts into the outbox, and
+     * another publisher that finds the claim taken goes away rather than waiting.
+     */
+    @Override
+    public OptionalInt publishNext(int limit, Instant at, Consumer<List<OutboxEntry>> publish) {
+        try (Connection connection = dataSource.getConnection()) {
+            boolean autoCommit = connection.getAutoCommit();
+            connection.setAutoCommit(false);
+            try {
+                if (!claim(connection)) {
+                    connection.rollback();
+                    return OptionalInt.empty();
+                }
+                List<OutboxEntry> batch = readUnpublished(connection, limit);
+                if (!batch.isEmpty()) {
+                    publish.accept(batch);
+                    try (PreparedStatement statement = connection.prepareStatement(MARK_PUBLISHED)) {
+                        statement.setObject(1, offset(at));
+                        statement.setArray(
+                                2, connection.createArrayOf("bigint", batch.stream().map(OutboxEntry::sequence).toArray()));
+                        statement.executeUpdate();
+                    }
+                }
+                connection.commit();
+                return OptionalInt.of(batch.size());
+            } catch (SQLException | RuntimeException e) {
+                connection.rollback();
+                throw e;
+            } finally {
+                connection.setAutoCommit(autoCommit);
+            }
         } catch (SQLException e) {
-            throw new LedgerException("reading the outbox", e);
+            throw new LedgerException("publishing the outbox", e);
+        }
+    }
+
+    private static boolean claim(Connection connection) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(CLAIM_PUBLISHING)) {
+            statement.setLong(1, PUBLISHING_LOCK);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() && rows.getBoolean(1);
+            }
         }
     }
 

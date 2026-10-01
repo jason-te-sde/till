@@ -13,8 +13,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
+import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -127,6 +130,14 @@ class KafkaOutboxApiTest extends ApiTestBase {
             Thread.onSpinWait();
         }
         assertEquals(0, ledger.backlog(), "the publisher marked what it delivered");
+
+        // The topic is the one the ledger declared, not one the broker made on first use with its
+        // default of a single partition: the store's consumers can read twelve at once.
+        try (Admin admin = Admin.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
+            assertEquals(12, admin.describeTopics(List.of(TOPIC)).allTopicNames().get().get(TOPIC).partitions().size());
+        } catch (Exception e) {
+            throw new AssertionError("could not describe " + TOPIC, e);
+        }
     }
 
     private List<ConsumerRecord<String, String>> drain(List<String> wanted) {

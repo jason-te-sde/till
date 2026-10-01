@@ -30,8 +30,10 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.sql.DataSource;
@@ -190,6 +192,48 @@ class JdbcLedgerTest {
 
         ledger.markPublished(pending.stream().map(OutboxEntry::sequence).limit(2).toList(), Instant.now());
         assertEquals(List.of("committed:r1"), ledger.unpublished(10).stream().map(OutboxEntry::dedupeKey).toList());
+    }
+
+    @Test
+    @DisplayName("one publisher at a time: a second finds the claim taken, and a failed publish marks nothing")
+    void publishingIsClaimed() throws Exception {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.adjust(key("d2"), sku("widget"), 5);
+
+        List<List<Long>> sent = new ArrayList<>();
+        List<OptionalInt> meanwhile = new ArrayList<>();
+        OptionalInt first = ledger.publishNext(1, T0, batch -> {
+            // While this round holds the claim, a round on another thread finds it taken.
+            meanwhile.add(elsewhere(() -> ledger.publishNext(10, T0, ignored -> {
+                throw new AssertionError("a second publisher sent while the first held the claim");
+            })));
+            sent.add(batch.stream().map(OutboxEntry::sequence).toList());
+        });
+
+        assertEquals(OptionalInt.of(1), first);
+        assertEquals(List.of(OptionalInt.empty()), meanwhile);
+        assertEquals(List.of(List.of(1L)), sent);
+        assertEquals(List.of(2L), ledger.unpublished(10).stream().map(OutboxEntry::sequence).toList());
+
+        assertThrows(IllegalStateException.class, () -> ledger.publishNext(10, T0, batch -> {
+            throw new IllegalStateException("the broker is down");
+        }));
+        assertEquals(List.of(2L), ledger.unpublished(10).stream().map(OutboxEntry::sequence).toList(), "nothing was marked");
+        assertEquals(OptionalInt.of(1), ledger.publishNext(10, T0, batch -> {}), "and the claim was given up");
+        assertEquals(OptionalInt.of(0), ledger.publishNext(10, T0, batch -> {
+            throw new AssertionError("nothing was waiting");
+        }));
+    }
+
+    /** Runs on another thread, as a second publisher would, and waits for it. */
+    private static <T> T elsewhere(java.util.concurrent.Callable<T> work) {
+        try (java.util.concurrent.ExecutorService other = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            return other.submit(work).get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw new IllegalStateException(e.getCause());
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     @Test

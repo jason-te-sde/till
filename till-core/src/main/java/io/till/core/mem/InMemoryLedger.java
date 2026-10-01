@@ -28,9 +28,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 
 /**
  * A ledger in a few maps.
@@ -60,6 +62,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Retention {
 
     private final ReentrantLock lock = new ReentrantLock();
+    /** The publishing claim: held across a publish, which the lock above must never be. */
+    private final ReentrantLock publishing = new ReentrantLock();
 
     /** Each SKU's shards, by index. */
     private final Map<Sku, List<StockShard>> stock = new LinkedHashMap<>();
@@ -249,6 +253,23 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
             published.addAll(sequences);
         } finally {
             lock.unlock();
+        }
+    }
+
+    @Override
+    public OptionalInt publishNext(int limit, Instant at, Consumer<List<OutboxEntry>> publish) {
+        if (!publishing.tryLock()) {
+            return OptionalInt.empty();
+        }
+        try {
+            List<OutboxEntry> batch = unpublished(limit);
+            if (!batch.isEmpty()) {
+                publish.accept(batch);
+                markPublished(batch.stream().map(OutboxEntry::sequence).toList(), at);
+            }
+            return OptionalInt.of(batch.size());
+        } finally {
+            publishing.unlock();
         }
     }
 

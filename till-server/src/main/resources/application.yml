@@ -90,8 +90,11 @@ till:
     passes: 10
   outbox:
     enabled: true
+    # How long the publisher waits once it has caught up; until then it publishes batch after batch,
+    # up to `passes` of them a run. One instance publishes at a time, under the outbox's claim.
     interval: 1s
-    batch: 200
+    batch: 500
+    passes: 20
   kafka:
     # Blank means the outbox is published as log lines instead. Setting this is the whole switch:
     # there is no separate enabled flag to disagree with it.
@@ -100,6 +103,11 @@ till:
     # Shorter than the default two minutes, because the outbox offers the batch again on the next
     # tick anyway. A broker outage should make the publisher retry from the top, not hang in a send.
     delivery-timeout: 30s
+    # The ledger declares the topic before it publishes to it: as many partitions as the store's
+    # consumers can use at once, rather than a broker's default of one. One replica for a single
+    # broker; three for a cluster that should survive losing one.
+    partitions: ${TILL_KAFKA_PARTITIONS:12}
+    replication-factor: ${TILL_KAFKA_REPLICATION_FACTOR:1}
     # Merged last into the producer config, for security settings and tuning.
     # properties:
     #   security.protocol: SASL_SSL

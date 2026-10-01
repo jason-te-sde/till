@@ -86,8 +86,8 @@ class ExposureCheckTest {
                 insecure,
                 new TillProperties.Auth(clientToken, adminToken),
                 new TillProperties.Sweeper(true, Duration.ofSeconds(5), 200, 10),
-                new TillProperties.Outbox(true, Duration.ofSeconds(1), 200),
-                new TillProperties.Kafka("", "till.events", Duration.ofSeconds(30), Map.of()),
+                new TillProperties.Outbox(true, Duration.ofSeconds(1), 200, 20),
+                new TillProperties.Kafka("", "till.events", Duration.ofSeconds(30), Map.of(), 12, (short) 1),
                 new TillProperties.RetentionPolicy(
                         true,
                         Duration.ofHours(1),
