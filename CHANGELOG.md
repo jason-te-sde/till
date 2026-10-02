@@ -11,6 +11,10 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **Database Insights on every database server** (`infra/runtime/state.tf`), in its standard mode:
+  the load by wait event and by statement, sampled every second and kept seven days at no charge.
+  The load tests' `pg_stat_statements` accounted for a small part of the CPU the ledger's server was
+  busy with; this is what says where the rest goes.
 - **A ledger out of connections says so in one line, with an answer the client already retries.**
   When a `LedgerException`'s cause is Hikari's `SQLTransientConnectionException` — the pool
   refusing to grow, not a fault (`LedgerException.poolExhaustion()`) — `ApiExceptionHandler` now
