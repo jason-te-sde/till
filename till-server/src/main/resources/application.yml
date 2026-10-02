@@ -20,6 +20,16 @@ spring:
       # seconds; the store gives up on the ledger after five, and a command still queued after that
       # is a hold nobody will pay for (docs/load-test.md). Milliseconds.
       connection-timeout: ${TILL_DB_CONNECTION_TIMEOUT:2000}
+      data-source-properties:
+        # pgjdbc's own bound on opening a brand new connection, separate from connection-timeout
+        # above. Hikari tries to hand the driver a login timeout derived from connection-timeout
+        # (PoolBase.setLoginTimeout), but for a jdbcUrl-configured pool that only ever reaches
+        # DriverManager's global setting, which pgjdbc's Driver.connect does not read back once this
+        # property is set — and without either, a login that hangs rather than merely runs long
+        # could block a pool-filling thread forever. Ten seconds is generous next to the database
+        # taking about three to accept a session that a load test found (docs/load-test.md); a
+        # queued command is still bounded by connection-timeout above, unchanged. Seconds.
+        loginTimeout: ${TILL_DB_LOGIN_TIMEOUT:10}
   flyway:
     enabled: true
     # Ships inside till-jdbc, so the schema and the code that expects it are versioned together.
