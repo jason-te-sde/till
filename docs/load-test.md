@@ -110,7 +110,7 @@ being the 98% CPU the one shared `db.t4g.micro` ran at for the whole window belo
 store's statement time no longer shares the ledger's cores or its connection budget.
 `database_top_statements` carries both servers' statements either way, each row already naming its
 `db`, and `database_transactions` is still keyed by database name regardless of which server it came
-from. No run with the store on a server of its own has been recorded yet.
+from. The first run like this is [below](#1-and-2-october-work-for-nobody-and-then-the-store-on-a-server-of-its-own).
 
 ## A run
 
@@ -142,6 +142,8 @@ requests.
 | [30 Sep 2026, lazy reclaim](../till-loadtest/results/20260930T221848Z.json) | `af0ce39` | the same; expired holds written off only when a command is short of stock | 8,000 | 2,513 | 20.8 s | 4.5% | 7.9 | **missed**: throughput, latency, errors |
 | [1 Oct 2026, one row a game](../till-loadtest/results/20261001T024424Z.json) | `03e5385` | the same; a deadline on the store's calls to the ledger, stock rows written first, snapshots without session statements, the event stream draining to twelve partitions; every game's stock in one row | 8,000 | 3,177 | 5.0 s | 4.5% | 8.9 | **met**: throughput; **missed**: latency, errors |
 | [1 Oct 2026, sixteen rows a game](../till-loadtest/results/20261001T045708Z.json) | `03e5385` | the same, every game's stock split sixteen ways | 8,000 | 3,176 | 5.1 s | 4.5% | 10.1 | **met**: throughput; **missed**: latency, errors |
+| [1 Oct 2026, work for nobody](../till-loadtest/results/20261001T105202Z.json) | `6966502` | the same; the ledger refusing work its caller stopped waiting for, a lean snapshot in one statement, three Kafka brokers | 8,000 | 3,175 | 5.2 s | 4.5% | 11.7 | **met**: throughput; **missed**: latency, errors |
+| [2 Oct 2026, the store on its own server](../till-loadtest/results/20261002T063658Z.json) | `6966502` | the same, the store's database on a db.t4g.micro of its own | 8,000 | 3,312 | 5.0 s | 1.6% | 103.3 | **met**: throughput; **missed**: latency, errors |
 
 ### 30 September: the first run
 
@@ -310,3 +312,54 @@ the largest the account's plan allows — serving the store's catalogue misses, 
 and projection, and all of the ledger, through sixty-four connections. Next: the store and the ledger
 on databases of their own, fewer connections queueing for the cores, and Aurora Serverless measured
 the same way.
+
+### 1 and 2 October: work for nobody, and then the store on a server of its own
+
+Two deployments of `6966502`. The first ran with everything the 1 October runs had, sixteen rows a
+game included, and three changes since: the ledger refuses a command its caller has stopped waiting
+for ([ADR 11](design/0011-request-deadlines.md)), reads a command's snapshot in one statement
+([ADR 12](design/0012-one-statement-snapshot.md)), and Kafka runs three brokers
+([ADR 13](design/0013-kafka-replication.md)). The second was the same with the store's database on a
+`db.t4g.micro` of its own (`--database-per-service`). It ran the next morning, on a deployment of its
+own: the first attempt lost its connection to AWS four minutes in.
+
+| | Run 6 | One server | The store on its own |
+| --- | ---: | ---: | ---: |
+| Requests a second | 3,176 | 3,175 | **3,312** |
+| p95 / p99 | 867 ms / 5.1 s | 935 ms / 5.2 s | **208 ms** / 5.0 s |
+| p99 of orders | 6.4 s | 6.6 s | 5.0 s |
+| Unexpected responses | 4.49% | 4.45% | **1.63%** |
+| Orders placed, paid, a second | 10.1, 1.3 | 11.7, 2.3 | **103.3, 82.0** |
+| Stock updates that found the row had moved | 16.5% | 11.7% | 3.2% |
+| Holds still held when the run ended | 41,259 of 48,744 | 53,951 of 77,077 | **11,429 of 91,225** |
+| Time the database spent on statements | 8,858 s | 7,035 s | 3,981 s |
+| Database CPU (maximum) | 97.9% | 98.1% | the ledger's 86.2%, the store's 41.0% |
+
+On one server, the database did more for less: 58% more holds taken, every common statement about
+twice as fast as in run 6 (a stock update 14.7 ms to 6.8, a reservation's line 18.9 to 9.4), and a
+snapshot in one statement at 10.1 ms where the three it replaced had taken about 20. But the server
+was at 98% again, and nothing a shopper sees moved.
+
+With the store on its own server, it did. The p95 fell from 935 to 208 ms and the errors from 4.45%
+to 1.63%; nine times as many orders were placed and thirty-six times as many paid; and most holds now
+became orders: 11,429 of 91,225 were still held when the run ended, where on one server 53,951 of
+77,077 had been.
+
+What did not move is the p99, and it is one kind of request. Every class but orders had its p99 well
+under a second — pages 1.2 ms, the catalogue 30 ms, search 31 ms, sessions 114 ms, sign-ins 106 ms —
+and orders 5.0 s: the store's five-second deadline on its calls to the ledger.
+
+The ledger's own logs say where the five seconds go. Each ledger had about 180 requests waiting for
+its sixteen connections throughout both runs, and its pool refused 35,000 commands on one server and
+51,000 with the store on its own after two seconds without a connection — more in the second because
+nine times as many checkouts got as far as the ledger. At the peak the pools lost connections, down
+to ten or eleven of sixteen, and could not replace them: new connections timed out logging in (`SSL
+error: Read timed out`), and Hikari gives a new connection the same two seconds to log in as a
+request has to get one (it derives the driver's login timeout from `connection-timeout`). The
+deadline check refused 1,307 and 1,548 commands; the rest of the waiting is for a connection, which
+the deadline does not bound, as ADR 11 records. Every refusal also logged a full stack trace, one
+record a line: 2.8 and 3.6 million log records in the two windows.
+
+So the next work is the ledger's pool: connections that can still be opened under load, the ledger
+turning away at once what it cannot serve rather than after two seconds of queueing, and one line for
+each refusal. Then Aurora, measured the same way.

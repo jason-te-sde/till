@@ -1,0 +1,341 @@
+{
+  "commit": "6966502ae775",
+  "exit_code": 0,
+  "store_catalogue_cache": true,
+  "stock_shards": 16,
+  "database": "rds",
+  "database_per_service": true,
+  "k6": {
+    "window": {
+      "from": "2026-10-02T06:09:35.763Z",
+      "to": "2026-10-02T06:10:35.763Z"
+    },
+    "shoppers": 100,
+    "concurrent_max": 100,
+    "steady_seconds": 60,
+    "requests": 2697,
+    "requests_per_second": 45,
+    "latency_ms": {
+      "p50": 1.7,
+      "p95": 40.5,
+      "p99": 261.2,
+      "max": 909.2
+    },
+    "p99_ms_by_class": {
+      "page": 1.3,
+      "session": 235.4,
+      "catalogue": 259.3,
+      "search": 228,
+      "signin": 464.5,
+      "order": 257.7
+    },
+    "unexpected_rate": 0,
+    "per_second": {
+      "orders_placed": 1.8,
+      "orders_paid": 1.6,
+      "orders_cancelled": 0.2,
+      "refusals": 0,
+      "sign_ins": 1.1
+    },
+    "targets": {
+      "p99_under_1s": true,
+      "errors_under_0_1_percent": true
+    }
+  },
+  "catalogue_reads": {
+    "cache": {
+      "reads": 0,
+      "mean_ms": null
+    },
+    "database": {
+      "reads": 0,
+      "mean_ms": null
+    },
+    "mean_ms": null,
+    "store_minutes": 0
+  },
+  "cloudwatch": {
+    "window_seconds": 120,
+    "alb_requests_per_second": 34.4,
+    "alb_target_p99_ms": 236,
+    "alb_target_5xx": 0,
+    "alb_own_5xx": 0,
+    "db_cpu_max_percent": 4.9,
+    "db_acu_max_capacity": null,
+    "store_db_cpu_max_percent": 5.3,
+    "store_db_acu_max_capacity": null,
+    "edge_cpu_max_percent": 1.5,
+    "store_cpu_max_percent": 27.3,
+    "ledger_cpu_max_percent": 3.9,
+    "kafka_1_cpu_max_percent": 30.5,
+    "kafka_2_cpu_max_percent": 32.8,
+    "kafka_3_cpu_max_percent": 29.3
+  },
+  "database_top_statements": [
+    {
+      "db": "till",
+      "rows": 6915,
+      "calls": 335,
+      "query": "with target_lines as ( select sku, shard, quantity from till_reservation_line where reservation_id = $1), scope as ( select sku from unnest($2::varchar[]) as sku union select sku from target_lines) select kind, text1, text2, text3, int1, nu",
+      "mean_ms": 0.30,
+      "total_ms": 102
+    },
+    {
+      "db": "till",
+      "rows": 205,
+      "calls": 205,
+      "query": "insert into till_reservation_line (reservation_id, sku, shard, quantity) values ($1, $2, $3, $4)",
+      "mean_ms": 0.14,
+      "total_ms": 29
+    },
+    {
+      "db": "till",
+      "rows": 409,
+      "calls": 409,
+      "query": "update till_stock set on_hand = $1, reserved = $2, version = version + $6, updated_at = now() where sku = $3 and shard = $4 and version = $5",
+      "mean_ms": 0.07,
+      "total_ms": 27
+    },
+    {
+      "db": "till",
+      "rows": 335,
+      "calls": 335,
+      "query": "insert into till_outbox (dedupe_key, payload, recorded_at) values ($1, $2, $3) on conflict (dedupe_key) do nothing",
+      "mean_ms": 0.07,
+      "total_ms": 24
+    },
+    {
+      "db": "till",
+      "rows": 167,
+      "calls": 167,
+      "query": "update till_reservation set state = $1, version = version + $4 where id = $2 and version = $3",
+      "mean_ms": 0.13,
+      "total_ms": 21
+    },
+    {
+      "db": "till",
+      "rows": 335,
+      "calls": 335,
+      "query": "insert into till_idempotency (idem_key, fingerprint, outcome, recorded_at) values ($1, $2, $3, $4) on conflict (idem_key) do nothing",
+      "mean_ms": 0.06,
+      "total_ms": 19
+    },
+    {
+      "db": "till",
+      "rows": 168,
+      "calls": 168,
+      "query": "insert into till_reservation (id, idem_key, state, created_at, expires_at, version) values ($1, $2, $3, $4, $5, $6) on conflict (id) do nothing",
+      "mean_ms": 0.10,
+      "total_ms": 17
+    },
+    {
+      "db": "till",
+      "rows": 335,
+      "calls": 107,
+      "query": "update till_outbox set published_at = $1 where sequence = any($2) and published_at is null",
+      "mean_ms": 0.11,
+      "total_ms": 12
+    },
+    {
+      "db": "till",
+      "rows": 335,
+      "calls": 520,
+      "query": "select sequence, payload, recorded_at from till_outbox where published_at is null order by sequence limit $1",
+      "mean_ms": 0.02,
+      "total_ms": 10
+    },
+    {
+      "db": "till",
+      "rows": 575,
+      "calls": 575,
+      "query": "select pg_try_advisory_xact_lock($1)",
+      "mean_ms": 0.01,
+      "total_ms": 4
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 116,
+      "query": "select id, idem_key, state, created_at, expires_at, version from till_reservation where state = 'HELD' and expires_at <= $1 order by id collate \"C\" limit $2",
+      "mean_ms": 0.03,
+      "total_ms": 3
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 1026,
+      "query": "BEGIN",
+      "mean_ms": 0.00,
+      "total_ms": 3
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 116,
+      "query": "set transaction isolation level repeatable read, read only",
+      "mean_ms": 0.02,
+      "total_ms": 2
+    },
+    {
+      "db": "till",
+      "rows": 1,
+      "calls": 1,
+      "query": "select jsonb_build_object($1, (select coalesce(jsonb_object_agg(datname, jsonb_build_object($2, xact_commit, $3, xact_rollback)), $4) from pg_stat_database where datname in ($5, $6)), $7, (select coalesce(jsonb_object_agg(state, n), $8) fro",
+      "mean_ms": 1.57,
+      "total_ms": 2
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 20,
+      "calls": 20,
+      "query": "SELECT COUNT(*) FROM pg_class WHERE relname = $1 AND relkind = 'r' AND relnamespace::regnamespace::text = 'pg_catalog'",
+      "mean_ms": 0.03,
+      "total_ms": 1
+    },
+    {
+      "db": "store",
+      "rows": 168,
+      "calls": 168,
+      "query": "insert into store_order (id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (customer, idem_key) do nothing",
+      "mean_ms": 0.18,
+      "total_ms": 30
+    },
+    {
+      "db": "store",
+      "rows": 205,
+      "calls": 205,
+      "query": "insert into store_order_line (order_id, sku, title, unit_price_cents, quantity) values ($1, $2, $3, $4, $5)",
+      "mean_ms": 0.14,
+      "total_ms": 29
+    },
+    {
+      "db": "store",
+      "rows": 3170,
+      "calls": 634,
+      "query": "select sku, on_hand, reserved, available, updated_at from store_availability where sku in ($1, $2, $3, $4, $5)",
+      "mean_ms": 0.04,
+      "total_ms": 27
+    },
+    {
+      "db": "store",
+      "rows": 335,
+      "calls": 335,
+      "query": "insert into store_consumed_event (dedupe_key, sequence, consumed_at) values ($1, $2, $3) on conflict (dedupe_key) do nothing",
+      "mean_ms": 0.08,
+      "total_ms": 27
+    },
+    {
+      "db": "store",
+      "rows": 167,
+      "calls": 167,
+      "query": "update store_order set status = $1, closed_at = $2 where id = $3 and status = $4",
+      "mean_ms": 0.11,
+      "total_ms": 18
+    },
+    {
+      "db": "store",
+      "rows": 181,
+      "calls": 181,
+      "query": "insert into store_sales_daily (sku, day, units) values ($1, $2, $3) on conflict (sku, day) do update set units = store_sales_daily.units + excluded.units",
+      "mean_ms": 0.09,
+      "total_ms": 17
+    },
+    {
+      "db": "store",
+      "rows": 409,
+      "calls": 409,
+      "query": "insert into store_availability (sku, on_hand, reserved, available, updated_at) values ($1, $2, $3, $4, $5) on conflict (sku) do update set on_hand = store_availability.on_hand + excluded.on_hand, reserved = store_availability.reserved + exc",
+      "mean_ms": 0.04,
+      "total_ms": 15
+    },
+    {
+      "db": "store",
+      "rows": 424,
+      "calls": 424,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank from store_game g where g.sku = $1",
+      "mean_ms": 0.03,
+      "total_ms": 14
+    },
+    {
+      "db": "store",
+      "rows": 170,
+      "calls": 132,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank, count(*) over () as total, ts_rank_cd(g.search, websearch_to_tsquery($7, $1)) ",
+      "mean_ms": 0.10,
+      "total_ms": 13
+    },
+    {
+      "db": "store",
+      "rows": 613,
+      "calls": 502,
+      "query": "select order_id, sku, title, unit_price_cents, quantity from store_order_line where order_id in ($1) order by order_id, sku",
+      "mean_ms": 0.02,
+      "total_ms": 12
+    },
+    {
+      "db": "store",
+      "rows": 1172,
+      "calls": 293,
+      "query": "select sku, on_hand, reserved, available, updated_at from store_availability where sku in ($1, $2, $3, $4)",
+      "mean_ms": 0.04,
+      "total_ms": 12
+    },
+    {
+      "db": "store",
+      "rows": 168,
+      "calls": 336,
+      "query": "select id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at from store_order where customer = $1 and idem_key = $2",
+      "mean_ms": 0.03,
+      "total_ms": 12
+    },
+    {
+      "db": "store",
+      "rows": 334,
+      "calls": 334,
+      "query": "select id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at from store_order where id = $1 and customer = $2",
+      "mean_ms": 0.03,
+      "total_ms": 11
+    },
+    {
+      "db": "store",
+      "rows": 252,
+      "calls": 64,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank from store_game g left join (select sku, sum(units) as units from store_sales_d",
+      "mean_ms": 0.16,
+      "total_ms": 10
+    },
+    {
+      "db": "store",
+      "rows": 532,
+      "calls": 132,
+      "query": "select t.tag as value, count(*) as count from store_game g cross join lateral unnest(g.tags) as t(tag) where $3 and (g.search @@ websearch_to_tsquery($4, $1) or g.title ilike $2 escape $5) group by t.tag order by count(*) desc, t.tag",
+      "mean_ms": 0.08,
+      "total_ms": 10
+    }
+  ],
+  "database_transactions": {
+    "till": {
+      "commits": 2059,
+      "rollbacks": 55
+    },
+    "store": {
+      "commits": 4600,
+      "rollbacks": 0
+    }
+  },
+  "reservations": {
+    "before": {
+      "RELEASED": 14,
+      "COMMITTED": 111
+    },
+    "after": {
+      "HELD": 1,
+      "RELEASED": 32,
+      "COMMITTED": 260
+    }
+  },
+  "stock_rows": {
+    "rows": 512,
+    "skus": 32
+  }
+}

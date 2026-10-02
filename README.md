@@ -464,9 +464,12 @@ reserving a specific unit, scheduled availability, read replicas, and any databa
 [`infra/`](infra/README.md) is the deployment — Terraform, and a script that checks what it
 deployed — and it was deployed and checked on 30 September 2026. A sign-in through Cognito has not
 yet been completed end to end, only up to Cognito accepting the store's redirect. The load test has
-been run on AWS and has not yet met its targets: [`docs/load-test.md`](docs/load-test.md) records every
-run, what it found and what changed because of it — the edge's connections, the catalogue's Redis read
-cache, writing off expired holds when they are needed, the checkout's waste, and hot-SKU shards.
+been run on AWS and meets its throughput target — 8,000 shoppers, 3,312 requests a second, a p95 of
+208 ms — but not yet its latency or error targets: a checkout's p99 is still the store's five-second
+deadline on the ledger. [`docs/load-test.md`](docs/load-test.md) records every run, what it found and
+what changed because of it — the edge's connections, the catalogue's Redis read cache, writing off
+expired holds when they are needed, the checkout's waste, hot-SKU shards, the ledger refusing work
+nobody is waiting for, and the store on a database of its own.
 
 ## Numbers
 
