@@ -13,6 +13,11 @@ output "database" {
   value       = var.database
 }
 
+output "db_pool" {
+  description = "The connections each store and each ledger may hold. scripts/aws.sh loadtest records them with a run's result."
+  value       = var.db_pool
+}
+
 output "database_per_service" {
   description = "Whether the store is on a server of its own. scripts/aws.sh's same_layout guard reads this to refuse to switch layouts under a running deployment."
   value       = var.database_per_service

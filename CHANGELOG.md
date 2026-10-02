@@ -11,6 +11,10 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **`scripts/aws.sh up --db-pool=STORE,LEDGER`**: the connections each store and each ledger may
+  hold, in place of the deployment's own `db_pool`, so that one deployment measures more than one
+  pool size; `scripts/aws.sh loadtest` records the sizes a run used. An invalid value is refused
+  before anything is built or applied.
 - **Monthly partitions for the sales roll-up** ([ADR 10](docs/design/0010-sales-partitions.md)).
   `store_sales_daily` is now range-partitioned by `day` — one partition a month, plus a `default`
   catch-all — so a seven-day best-seller read touches one or two partitions instead of the whole
