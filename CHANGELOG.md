@@ -11,6 +11,16 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **A low fillfactor on `till_stock`** ([ADR 9](docs/design/0009-hot-sku-shards.md)). Shards divide a
+  hot SKU's contention by row, not by page: 512 rows (32 games × 16 shards) pack onto five 8 KB pages
+  at the default fillfactor of 100, so shards still share a buffer pin and an update has little room
+  to be a HOT update. `V4__stock_fillfactor.sql` sets the fillfactor to 10 — the same rows on about
+  fifty pages — and rebuilds the table, because setting the parameter moves no row already on disk
+  and `VACUUM FULL` cannot run inside a Flyway migration; `StockFillfactorTest` runs the migration
+  against 512 rows that predate it. Measured with the contention benchmark, five alternating
+  before/after pairs: 1,004.9 checkouts a second without the migration and 960.3 with it, a 4.4% gap
+  inside the 13.1% spread of the runs with it — a null result, reported as one. The conflict rate and
+  the transactions per checkout, which fillfactor cannot change, did not move.
 - **Database Insights on every database server** (`infra/runtime/state.tf`), in its standard mode:
   the load by wait event and by statement, sampled every second and kept seven days at no charge.
   The load tests' `pg_stat_statements` accounted for a small part of the CPU the ledger's server was

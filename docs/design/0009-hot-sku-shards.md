@@ -88,3 +88,53 @@ contends for would pay for shards it does not need. Splitting is a decision abou
 
 **A shard per caller or per instance.** Stable, and it would leave a hold's shard unrelated to where
 the stock is. The reservation id is enough, and it is already in the command.
+
+## Later
+
+**A low fillfactor, to divide the page too.** Shards divide the row: with sixteen of them 7% of
+decisions conflicted where 54% did, measured above. They do not divide the page underneath. 512
+rows — 32 games × 16 shards — pack onto five 8 KB pages at the default fillfactor of 100, about a
+hundred to a page, so whichever shards share a page share its buffer pin, and an update has little
+free space on its own page to be a HOT update, one that leaves the indexes alone.
+`V4__stock_fillfactor.sql` sets the table's fillfactor to 10: about ten rows to a page, the same 512
+rows on about fifty pages. Ten rather than twenty because the table is bounded by games × shards
+rather than by traffic — a few hundred KB anywhere in that range — so there is nothing to trade
+against fewer rows to a page.
+
+Setting the parameter does not move a row already on disk, and `VACUUM FULL`, which would, cannot run
+inside the transaction Flyway runs a migration in. So the migration rebuilds the table: a copy under
+the new fillfactor, made from whatever `till_stock` holds when it runs, then the original dropped and
+the copy renamed into its place with the same constraints and the same index. Every deployment here
+migrates an empty table and stocks it afterwards, so none of them takes that path with rows in it;
+`StockFillfactorTest` runs the migration against 512 rows that predate it, and that is the only
+coverage the path has.
+
+Measured as above — `ContentionBenchmark`, PostgreSQL limited to two CPUs, 64 callers on 32 SKUs
+through 32 connections, sixteen shards, 30 s measured after a 5 s warm-up — on `c98eea6` without this
+migration and with it, alternating, the build without it first in each pair, five pairs:
+
+| Pair | Checkouts/s, without | Checkouts/s, with | Conflicts, without | Conflicts, with | Transactions per checkout |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 970.9 | 891.9 | 6.5% | 6.6% | 4.3 / 4.3 |
+| 2 | 1,010.1 | 904.4 | 6.8% | 6.6% | 4.3 / 4.3 |
+| 3 | 999.8 | 977.8 | 6.3% | 6.5% | 4.3 / 4.3 |
+| 4 | 1,032.9 | 1,009.6 | 6.8% | 6.6% | 4.4 / 4.3 |
+| 5 | 1,010.8 | 1,018.0 | 6.5% | 6.8% | 4.3 / 4.3 |
+| **Mean** | **1,004.9** | **960.3** | **6.58%** | **6.62%** | **4.3** |
+| **Spread, max − min** | 62.0 (6.2%) | 126.1 (13.1%) | | | |
+
+A null result. The means are 4.4% apart, and the five runs with the migration span nearly three
+times that. The gap inside a pair went 79, 106, 22, 23 and −7 in the order the pairs ran, which does
+not look like a steady cost of the migration, but five pairs cannot say more than that. Two runs of
+the build without it, back to back, gave 984.8 and 965.0, 2% apart where the first two pairs were 8%
+and 10% apart, so running second is not by itself the explanation. What does explain it was not
+found. The one-minute load average, read five times around the last two pairs, ran from 3.6 to 12.6
+on eight CPUs — a figure that includes this benchmark's own two-CPU database and its 64 callers —
+and was not read during the first three; Consequences above already says that throughput on a laptop
+moves by a quarter between identical runs. The conflict rate (6.58% and 6.62%, against 6.9–7.1%
+above at the same sixteen shards) and the transactions per checkout (4.3 on both sides) are what
+fillfactor has no mechanism to change, and they did not change.
+
+This benchmark does not show whether updates became HOT updates — `n_tup_hot_upd` was not read — or
+whether a page was ever the resource the callers waited on. The load test's database, which serves only
+the platform's own traffic, is where that would show if it is real.

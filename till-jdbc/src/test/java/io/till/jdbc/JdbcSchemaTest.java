@@ -51,9 +51,12 @@ class JdbcSchemaTest {
 
         assertFalse(statements.isEmpty());
         for (String statement : statements) {
+            // V4 rewrites till_stock under a temporary name and drops the original to free its
+            // constraint names for reuse (see its comment), which is where "drop" joins the list.
             assertTrue(
-                    statement.startsWith("create") || statement.startsWith("alter"),
-                    "a statement that is not a create or an alter: " + statement.lines().findFirst().orElse(""));
+                    statement.startsWith("create") || statement.startsWith("alter") || statement.startsWith("drop"),
+                    "a statement that is not a create, an alter or a drop: "
+                            + statement.lines().findFirst().orElse(""));
             assertFalse(statement.contains("--"), "a comment survived into: " + statement);
         }
     }

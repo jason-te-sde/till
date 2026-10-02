@@ -27,7 +27,8 @@ public final class JdbcSchema {
     public static final List<String> RESOURCES = List.of(
             "db/migration/V1__till_schema.sql",
             "db/migration/V2__listing_indexes.sql",
-            "db/migration/V3__stock_shards.sql");
+            "db/migration/V3__stock_shards.sql",
+            "db/migration/V4__stock_fillfactor.sql");
 
     private JdbcSchema() {}
 
@@ -70,11 +71,26 @@ public final class JdbcSchema {
     static List<String> statements() {
         List<String> statements = new ArrayList<>();
         for (String resource : RESOURCES) {
-            for (String candidate : stripComments(read(resource)).split(";")) {
-                String trimmed = candidate.trim();
-                if (!trimmed.isEmpty()) {
-                    statements.add(trimmed);
-                }
+            statements.addAll(statements(resource));
+        }
+        return statements;
+    }
+
+    /**
+     * One migration, split into statements the way the whole schema is.
+     *
+     * <p>For a test that needs the schema as it was before a migration, or that one migration on its
+     * own, without a second copy of the splitting logic.
+     *
+     * @param resource a classpath resource, one of {@link #RESOURCES}
+     * @return the resource's statements, in the order they must run
+     */
+    static List<String> statements(String resource) {
+        List<String> statements = new ArrayList<>();
+        for (String candidate : stripComments(read(resource)).split(";")) {
+            String trimmed = candidate.trim();
+            if (!trimmed.isEmpty()) {
+                statements.add(trimmed);
             }
         }
         return statements;
