@@ -42,12 +42,16 @@ resource "aws_db_instance" "till" {
   publicly_accessible    = false
   multi_az               = false
 
-  backup_retention_period      = 0
-  skip_final_snapshot          = true
-  deletion_protection          = false
-  apply_immediately            = true
-  auto_minor_version_upgrade   = true
-  performance_insights_enabled = false
+  backup_retention_period    = 0
+  skip_final_snapshot        = true
+  deletion_protection        = false
+  apply_immediately          = true
+  auto_minor_version_upgrade = true
+  # Database Insights' standard mode: the database's load by wait event and by statement, a
+  # sample a second, kept seven days at no charge. The load tests needed it: pg_stat_statements
+  # accounted for a small part of the CPU the server was busy with (docs/load-test.md).
+  performance_insights_enabled          = true
+  performance_insights_retention_period = 7
 }
 
 # count alone would otherwise replace this instance: Terraform addresses a counted resource as
@@ -125,10 +129,12 @@ resource "aws_rds_cluster_instance" "till" {
   engine             = aws_rds_cluster.till[0].engine
   engine_version     = aws_rds_cluster.till[0].engine_version
 
-  availability_zone            = var.zone
-  publicly_accessible          = false
-  auto_minor_version_upgrade   = true
-  performance_insights_enabled = false
+  availability_zone          = var.zone
+  publicly_accessible        = false
+  auto_minor_version_upgrade = true
+  # Database Insights, as on the ledger's RDS instance above.
+  performance_insights_enabled          = true
+  performance_insights_retention_period = 7
 }
 
 locals {
@@ -170,12 +176,14 @@ resource "aws_db_instance" "store" {
   publicly_accessible    = false
   multi_az               = false
 
-  backup_retention_period      = 0
-  skip_final_snapshot          = true
-  deletion_protection          = false
-  apply_immediately            = true
-  auto_minor_version_upgrade   = true
-  performance_insights_enabled = false
+  backup_retention_period    = 0
+  skip_final_snapshot        = true
+  deletion_protection        = false
+  apply_immediately          = true
+  auto_minor_version_upgrade = true
+  # Database Insights, as on the ledger's RDS instance above.
+  performance_insights_enabled          = true
+  performance_insights_retention_period = 7
 }
 
 # Aurora's free-plan cap (4 ACU, 1 GiB of storage) is per cluster, so a second cluster at the same
@@ -217,10 +225,12 @@ resource "aws_rds_cluster_instance" "store" {
   engine             = aws_rds_cluster.store[0].engine
   engine_version     = aws_rds_cluster.store[0].engine_version
 
-  availability_zone            = var.zone
-  publicly_accessible          = false
-  auto_minor_version_upgrade   = true
-  performance_insights_enabled = false
+  availability_zone          = var.zone
+  publicly_accessible        = false
+  auto_minor_version_upgrade = true
+  # Database Insights, as on the ledger's RDS instance above.
+  performance_insights_enabled          = true
+  performance_insights_retention_period = 7
 }
 
 locals {
