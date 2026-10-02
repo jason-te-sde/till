@@ -251,6 +251,11 @@ resource "aws_ecs_task_definition" "ledger" {
       # till.kafka.partitions, TillProperties.Kafka — is created with three copies of each
       # partition rather than the application default of one.
       TILL_KAFKA_REPLICATION_FACTOR = "3"
+      # Under a load test, the pool says what it does: its figures every thirty seconds, and every
+      # connection it adds or closes, with the reason. The last runs found each pool down to ten or
+      # eleven of sixteen at the peak with nothing at INFO or WARN saying why (docs/load-test.md);
+      # Hikari logs a closed connection's reason only at DEBUG. A few dozen lines a minute.
+      LOGGING_LEVEL_COM_ZAXXER_HIKARI = var.loadtest ? "DEBUG" : "INFO"
     } : { name = name, value = value }]
 
     secrets = [for name, arn in {

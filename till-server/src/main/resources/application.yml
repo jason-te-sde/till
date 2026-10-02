@@ -22,13 +22,13 @@ spring:
       connection-timeout: ${TILL_DB_CONNECTION_TIMEOUT:2000}
       data-source-properties:
         # pgjdbc's own bound on opening a brand new connection, separate from connection-timeout
-        # above. Hikari tries to hand the driver a login timeout derived from connection-timeout
-        # (PoolBase.setLoginTimeout), but for a jdbcUrl-configured pool that only ever reaches
-        # DriverManager's global setting, which pgjdbc's Driver.connect does not read back once this
-        # property is set — and without either, a login that hangs rather than merely runs long
-        # could block a pool-filling thread forever. Ten seconds is generous next to the database
-        # taking about three to accept a session that a load test found (docs/load-test.md); a
-        # queued command is still bounded by connection-timeout above, unchanged. Seconds.
+        # above. Hikari hands the driver a login timeout derived from connection-timeout
+        # (PoolBase.setLoginTimeout), but for a jdbcUrl-configured pool that only reaches
+        # DriverManager's global setting, and pgjdbc never reads it: this property's own default,
+        # "0", is no limit at all. So until this was set, a login that hung rather than merely ran
+        # long could hold a pool-filling thread forever. Ten seconds leaves a busy database room to
+        # accept a session; a queued command is still bounded by connection-timeout above,
+        # unchanged. Seconds.
         loginTimeout: ${TILL_DB_LOGIN_TIMEOUT:10}
   flyway:
     enabled: true

@@ -30,18 +30,17 @@ explicitly not: it is a testing tool and it will change.
 - **pgjdbc gets its own login timeout, separate from how long a command queues for a connection.**
   `spring.datasource.hikari.data-source-properties.loginTimeout` (ten seconds,
   `TILL_DB_LOGIN_TIMEOUT` / `STORE_DB_LOGIN_TIMEOUT`) is now set for both services. Until now, the
-  only number either had was `connection-timeout` (2 s): Hikari tries to hand the driver a login
-  timeout derived from it (`PoolBase.setLoginTimeout`), but for a `jdbcUrl`-configured pool that
-  call only reaches `DriverManager`'s global setting, and pgjdbc's `Driver.connect` never reads that
-  back once `loginTimeout` is set as a connection property — which it was not, so the two were
-  conflated in name only: opening a brand new connection was, in fact, unbounded. The last load test
+  only number either had was `connection-timeout` (2 s): Hikari hands the driver a login timeout
+  derived from it (`PoolBase.setLoginTimeout`), but for a `jdbcUrl`-configured pool that only
+  reaches `DriverManager`'s global setting, which pgjdbc never reads — its own `loginTimeout`
+  defaults to `"0"`, no limit — so opening a brand new connection was, in fact, unbounded. The last load test
   found each ledger's pool down to ten or eleven of its sixteen connections and unable to replace
   the rest, with `SSL error: Read timed out` against a database at 86–98% CPU
   (docs/load-test.md) — a hang, not merely a slow login, could previously have blocked a
   pool-filling thread forever. `LoginTimeoutTest` proves the property is actually wired through
   end to end — a login one second slower than a one-second override fails promptly instead of
   waiting it out — and that the ten-second default survives a real login slowed to about three
-  seconds by a PostgreSQL 17 `on login` event trigger, the same shape of delay the load test saw.
+  seconds by a PostgreSQL 17 `on login` event trigger.
 - **`scripts/aws.sh up --db-pool=STORE,LEDGER`**: the connections each store and each ledger may
   hold, in place of the deployment's own `db_pool`, so that one deployment measures more than one
   pool size; `scripts/aws.sh loadtest` records the sizes a run used. An invalid value is refused
