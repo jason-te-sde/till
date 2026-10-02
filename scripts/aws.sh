@@ -10,7 +10,9 @@
 #                  --database=aurora to run Aurora PostgreSQL Serverless v2 instead of RDS
 #                  (infra/README.md has what each costs and is limited to on the free plan),
 #                  --database-per-service to give the store a PostgreSQL server of its own
-#                  instead of sharing the ledger's (infra/README.md has what a second one costs)
+#                  instead of sharing the ledger's (infra/README.md has what a second one costs),
+#                  --db-pool=STORE,LEDGER for the connections each store and each ledger holds
+#                  instead of the deployment's own sizes (loadtest.tfvars for a load test)
 #   scripts/aws.sh loadtest    one load test run: the protocol's, or --shoppers= --ramp= --hold=
 #   scripts/aws.sh accounts    the demonstration accounts' passwords
 #   scripts/aws.sh status      what is billed by the hour and still there, and since when
@@ -41,6 +43,7 @@ catalogue_cache=true
 shards=""
 database=""
 database_per_service=false
+db_pool=""
 shoppers=""
 ramp=""
 hold=""
@@ -165,6 +168,18 @@ running_vars() {
   if [[ $database_per_service == true ]]; then
     printf '%s\n' -var database_per_service=true
   fi
+  pool_vars
+}
+
+# --db-pool=STORE,LEDGER: the connections each store and each ledger may hold, in place of the
+# deployment's own sizes. Changing only this needs no new database — the services are replaced, the
+# servers stay — so it is how one deployment measures more than one pool size. Printed after
+# running_vars' -var-file, so that it wins over loadtest.tfvars.
+pool_vars() {
+  [[ -n $db_pool ]] || return 0
+  [[ $db_pool =~ ^[1-9][0-9]*,[1-9][0-9]*$ ]] ||
+    fail "--db-pool is STORE,LEDGER, each a whole number of connections above zero, e.g. --db-pool=8,16; got '$db_pool'."
+  printf '%s\n' -var "db_pool={ store = ${db_pool%,*}, ledger = ${db_pool#*,} }"
 }
 
 # An up that names no database means RDS, and against a deployment running on Aurora that is not a
@@ -433,13 +448,16 @@ STOCK_ROWS="select jsonb_build_object('skus', count(distinct sku), 'rows', count
 # about the same window to till-loadtest/results/, which is where a result has to be to count.
 cmd_loadtest() {
   init
-  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached split database database_per_service store_db_host store_before store_after
+  local loadgen family subnets group overrides code reason log result file deployed before after cloudwatch reads cached split database database_per_service pools store_db_host store_before store_after
   loadgen=$(tf output -json loadgen)
   [[ $loadgen != null ]] || fail "It is not set up for a load test: scripts/aws.sh up --loadtest"
   database=$(output database)
   # Empty reads as shared, the same as same_layout's guard: output()'s "jq -r '. // empty'" prints
   # nothing for a recorded false, the same as for null.
   database_per_service=$(output database_per_service)
+  # The pool sizes the run's services held, which --db-pool may have changed from loadtest.tfvars'.
+  # Null from a state written before the output existed.
+  pools=$(tf output -json db_pool 2> /dev/null) || pools=null
   database_per_service=${database_per_service:-false}
   # Null, not empty, when the store shares the ledger's server: the store's own server's address
   # (infra/runtime/outputs.tf's loadgen.store_db_host) when there is one to ask.
@@ -509,14 +527,14 @@ cmd_loadtest() {
   mkdir -p till-loadtest/results
   jq -n --argjson result "$result" --argjson before "$before" --argjson after "$after" --argjson cloudwatch "$cloudwatch" \
     --argjson reads "$reads" --arg cached "$cached" --arg split "$split" --arg database "$database" \
-    --argjson database_per_service "$database_per_service" \
+    --argjson database_per_service "$database_per_service" --argjson pools "$pools" \
     --argjson store_before "$store_before" --argjson store_after "$store_after" \
     --arg commit "$deployed" --arg code "$code" \
     'def diff(b; a): if b == null or a == null then {} else
         a.transactions | with_entries(.key as $db | .value |= with_entries(.key as $count
           | .value -= (b.transactions[$db][$count] // 0))) end;
       {commit: $commit, exit_code: ($code | tonumber? // $code), store_catalogue_cache: ($cached == "true"),
-      stock_shards: ($split | tonumber? // null), database: $database, database_per_service: $database_per_service,
+      stock_shards: ($split | tonumber? // null), database: $database, database_per_service: $database_per_service, db_pool: $pools,
       k6: $result, catalogue_reads: $reads, cloudwatch: $cloudwatch,
       database_top_statements: (if $after == null and $store_after == null then null else
         ($after.statements // []) + ($store_after.statements // []) end),
@@ -767,12 +785,16 @@ for arg in "$@"; do
     --shards=*) shards=${arg#*=} ;;
     --database=*) database=${arg#*=} ;;
     --database-per-service) database_per_service=true ;;
+    --db-pool=*) db_pool=${arg#*=} ;;
     --shoppers=*) shoppers=${arg#*=} ;;
     --ramp=*) ramp=${arg#*=} ;;
     --hold=*) hold=${arg#*=} ;;
     *) fail "Unknown option: $arg" ;;
   esac
 done
+# Here, in the script's own shell: running_vars is read through a process substitution, where a
+# refusal would end only the subshell and an up would go ahead without the setting it was given.
+pool_vars > /dev/null
 
 case $command in
   bootstrap | plan | up | smoke | loadtest | accounts | status | down | destroy) "cmd_$command" ;;

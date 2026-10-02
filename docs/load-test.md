@@ -112,6 +112,17 @@ store's statement time no longer shares the ledger's cores or its connection bud
 `db`, and `database_transactions` is still keyed by database name regardless of which server it came
 from. The first run like this is [below](#1-and-2-october-work-for-nobody-and-then-the-store-on-a-server-of-its-own).
 
+## Pool sizes
+
+`scripts/aws.sh up --loadtest --db-pool=STORE,LEDGER` replaces
+[`loadtest.tfvars`](../infra/loadtest.tfvars)' `db_pool` — eight connections for each store and
+sixteen for each ledger — for that deployment, and the result records the sizes a run used as
+`db_pool`. Changing only this replaces the services and keeps the servers, so one deployment can be
+measured at more than one size. It is there because the ledger's server has two vCPUs and each
+ledger held sixteen connections with about 180 requests queued behind them
+([below](#1-and-2-october-work-for-nobody-and-then-the-store-on-a-server-of-its-own)): whether
+fewer connections would get more done is a thing to measure, not to assume.
+
 ## A run
 
 1. `scripts/aws.sh up --loadtest` deploys with the sizes in
