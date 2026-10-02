@@ -4,6 +4,7 @@ import io.till.core.ConflictException;
 import io.till.core.DeadlineExceededException;
 import io.till.core.IncompleteSnapshotException;
 import io.till.jdbc.LedgerException;
+import java.sql.SQLTransientConnectionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -22,7 +23,9 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
  * kernel, while these are failures of the machinery around it. The one that matters is
  * {@link ConflictException}, which is <b>not</b> an error in the request — the rows kept moving under
  * a perfectly good command — and so answers 503 with a {@code Retry-After} rather than a 500 that
- * would page somebody about contention.
+ * would page somebody about contention. A {@link LedgerException} whose cause is the connection
+ * pool refusing to grow ({@link LedgerException#poolExhaustion()}) is answered the same way, for the
+ * same reason: it is overload, not a fault.
  */
 @RestControllerAdvice
 class ApiExceptionHandler extends ResponseEntityExceptionHandler {
@@ -115,18 +118,44 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * @param e the database could not be reached, or refused something impossible
+     * @param e the database could not be reached, refused something impossible, or its connection
+     *     pool could not grow fast enough for the load
      * @return 503
      */
     @ExceptionHandler(LedgerException.class)
     ResponseEntity<ProblemDetail> onLedger(LedgerException e) {
-        LOG.error("the ledger failed", e);
+        return e.poolExhaustion().map(this::onOverloaded)
+                .orElseGet(
+                        () -> {
+                            LOG.error("the ledger failed", e);
+                            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                                    .body(
+                                            Problems.of(
+                                                    HttpStatus.SERVICE_UNAVAILABLE,
+                                                    "Ledger unavailable",
+                                                    "the ledger could not be reached"));
+                        });
+    }
+
+    /**
+     * @param exhausted the pool's own refusal to grow — overload, not a fault
+     * @return 503, with a hint about when to come back, the same shape {@link #onConflict} answers
+     */
+    private ResponseEntity<ProblemDetail> onOverloaded(SQLTransientConnectionException exhausted) {
+        // One line, no stack trace: every refusal logging its full trace at ERROR was millions of
+        // log records in the load test that found this (docs/load-test.md), for a condition that
+        // is routine overload rather than a fault. The pool's own message already carries its
+        // total/active/idle/waiting figures.
+        LOG.warn("the ledger's pool is exhausted: {}", exhausted.getMessage());
+        ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "the ledger's connection pool is exhausted; the request is fine and can be retried");
+        problem.setTitle("Overloaded");
+        problem.setProperty("code", "OVERLOADED");
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body(
-                        Problems.of(
-                                HttpStatus.SERVICE_UNAVAILABLE,
-                                "Ledger unavailable",
-                                "the ledger could not be reached"));
+                .header(HttpHeaders.RETRY_AFTER, "1")
+                .body(problem);
     }
 
     /**

@@ -7,6 +7,7 @@ import io.till.core.ConflictException;
 import io.till.core.DeadlineExceededException;
 import io.till.core.Outcome;
 import io.till.core.Till;
+import io.till.jdbc.LedgerException;
 import java.time.DateTimeException;
 import java.time.Instant;
 import org.springframework.stereotype.Component;
@@ -81,6 +82,17 @@ class Commands {
             // Also not an error in the command: the caller's clock, not the rows, ran out. Counted
             // separately from "exhausted" so an operator can tell overload from contention.
             registry.counter("till.outcome", "kind", kind, "outcome", "deadline_exceeded").increment();
+            throw e;
+        } catch (LedgerException e) {
+            // Pool exhaustion specifically: not a fault either, just too many commands waiting for
+            // too few connections. Counted here, tagged by kind like every other outcome, rather
+            // than in ApiExceptionHandler, which has no Command to read a kind from. Every other
+            // LedgerException passes through this catch uncounted and unchanged, same as before.
+            e.poolExhaustion()
+                    .ifPresent(
+                            ignored ->
+                                    registry.counter("till.outcome", "kind", kind, "outcome", "overloaded")
+                                            .increment());
             throw e;
         } finally {
             sample.stop(registry.timer("till.command", "kind", kind));

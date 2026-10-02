@@ -11,6 +11,22 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **A ledger out of connections says so in one line, with an answer the client already retries.**
+  When a `LedgerException`'s cause is Hikari's `SQLTransientConnectionException` — the pool
+  refusing to grow, not a fault (`LedgerException.poolExhaustion()`) — `ApiExceptionHandler` now
+  answers 503 `code: OVERLOADED` with `Retry-After: 1`, the same shape as `CONTENTION`; logs one
+  WARN line with the pool's own `total=`/`active=`/`idle=`/`waiting=` figures and no stack trace,
+  instead of the ERROR-with-stack-trace every refusal got before; and counts it as
+  `till.outcome{outcome="overloaded"}`. The counter lives in `Commands.run`, next to `exhausted`
+  and `deadline_exceeded`, rather than in the exception handler, which has no `Command` to tag it
+  by kind with — keeping every outcome counted in the one place already responsible for not
+  letting the metrics drift from the traffic. Every other `LedgerException` is unchanged: a 503,
+  logged at ERROR with its stack trace. `TillClient` needed no change: it already retries any 503
+  with its own backoff regardless of `code`, proved for `OVERLOADED` the same way it already was
+  for `CONTENTION` (`TillClientTest.retriesOverloadedWithTheSameKey`). In the last load test each
+  ledger logged a full stack trace for every one of 35,000 and 51,000 refusals — 2.8 and 3.6
+  million log records across the two runs — for a condition that is routine overload
+  (docs/load-test.md).
 - **pgjdbc gets its own login timeout, separate from how long a command queues for a connection.**
   `spring.datasource.hikari.data-source-properties.loginTimeout` (ten seconds,
   `TILL_DB_LOGIN_TIMEOUT` / `STORE_DB_LOGIN_TIMEOUT`) is now set for both services. Until now, the
