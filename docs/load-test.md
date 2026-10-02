@@ -364,9 +364,11 @@ The ledger's own logs say where the five seconds go. Each ledger had about 180 r
 its sixteen connections throughout both runs, and its pool refused 35,000 commands on one server and
 51,000 with the store on its own after two seconds without a connection — more in the second because
 nine times as many checkouts got as far as the ledger. At the peak the pools lost connections, down
-to ten or eleven of sixteen, and could not replace them: new connections timed out logging in (`SSL
-error: Read timed out`), and Hikari gives a new connection the same two seconds to log in as a
-request has to get one (it derives the driver's login timeout from `connection-timeout`). The
+to ten or eleven of sixteen, and could not replace them: new connections timed out while negotiating
+SSL (`SSL error: Read timed out`) against a server that busy. (A first reading of these logs put
+that down to Hikari passing its two-second `connection-timeout` to the driver as a login timeout. It
+does not, for a pool configured by URL: pgjdbc's own `loginTimeout` defaults to no limit, and the
+read that timed out was one of the driver's own connect-phase limits.) The
 deadline check refused 1,307 and 1,548 commands; the rest of the waiting is for a connection, which
 the deadline does not bound, as ADR 11 records. Every refusal also logged a full stack trace, one
 record a line: 2.8 and 3.6 million log records in the two windows.

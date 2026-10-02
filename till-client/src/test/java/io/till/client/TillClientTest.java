@@ -71,6 +71,28 @@ class TillClientTest {
     }
 
     @Test
+    @DisplayName("a 503 OVERLOADED is retried with the same key, exactly like CONTENTION")
+    void retriesOverloadedWithTheSameKey() {
+        try (StubTill stub =
+                new StubTill()
+                        .then(503, "{\"code\":\"OVERLOADED\",\"detail\":\"try again\"}")
+                        .then(503, "{\"code\":\"OVERLOADED\",\"detail\":\"try again\"}")
+                        .always(201, RESERVED)) {
+            TillClient client =
+                    TillClient.builder(stub.url()).backoff(Duration.ofMillis(1)).maxAttempts(4).build();
+
+            Outcome.Reserved reserved = client.reserve(KEY, List.of(Line.of("widget", 2)), null);
+
+            assertEquals(ReservationId.of("r-1"), reserved.id());
+            assertEquals(3, stub.requests().size());
+            assertEquals(
+                    List.of("checkout-8123", "checkout-8123", "checkout-8123"),
+                    stub.requests().stream().map(StubTill.Seen::idempotencyKey).toList(),
+                    "every attempt must carry the original key, or the retry becomes a second order");
+        }
+    }
+
+    @Test
     @DisplayName("a dropped connection is retried, and with the same key")
     void retriesADroppedConnection() {
         try (StubTill stub = new StubTill().then(0, "").always(201, RESERVED)) {

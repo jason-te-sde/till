@@ -11,6 +11,11 @@ spring:
       # connection has already given up, and in the load test a checkout did (docs/load-test.md).
       # Milliseconds.
       connection-timeout: ${STORE_DB_CONNECTION_TIMEOUT:2000}
+      data-source-properties:
+        # pgjdbc's own bound on opening a brand new connection, separate from connection-timeout
+        # above — see till-server's application.yml for why the two cannot share one number.
+        # Seconds.
+        loginTimeout: ${STORE_DB_LOGIN_TIMEOUT:10}
   flyway:
     enabled: true
     locations: classpath:db/migration

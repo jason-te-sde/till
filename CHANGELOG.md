@@ -11,6 +11,36 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **A ledger out of connections says so in one line, with an answer the client already retries.**
+  When a `LedgerException`'s cause is Hikari's `SQLTransientConnectionException` — the pool
+  refusing to grow, not a fault (`LedgerException.poolExhaustion()`) — `ApiExceptionHandler` now
+  answers 503 `code: OVERLOADED` with `Retry-After: 1`, the same shape as `CONTENTION`; logs one
+  WARN line with the pool's own `total=`/`active=`/`idle=`/`waiting=` figures and no stack trace,
+  instead of the ERROR-with-stack-trace every refusal got before; and counts it as
+  `till.outcome{outcome="overloaded"}`. The counter lives in `Commands.run`, next to `exhausted`
+  and `deadline_exceeded`, rather than in the exception handler, which has no `Command` to tag it
+  by kind with — keeping every outcome counted in the one place already responsible for not
+  letting the metrics drift from the traffic. Every other `LedgerException` is unchanged: a 503,
+  logged at ERROR with its stack trace. `TillClient` needed no change: it already retries any 503
+  with its own backoff regardless of `code`, proved for `OVERLOADED` the same way it already was
+  for `CONTENTION` (`TillClientTest.retriesOverloadedWithTheSameKey`). In the last load test each
+  ledger logged a full stack trace for every one of 35,000 and 51,000 refusals — 2.8 and 3.6
+  million log records across the two runs — for a condition that is routine overload
+  (docs/load-test.md).
+- **pgjdbc gets its own login timeout, separate from how long a command queues for a connection.**
+  `spring.datasource.hikari.data-source-properties.loginTimeout` (ten seconds,
+  `TILL_DB_LOGIN_TIMEOUT` / `STORE_DB_LOGIN_TIMEOUT`) is now set for both services. Until now, the
+  only number either had was `connection-timeout` (2 s): Hikari hands the driver a login timeout
+  derived from it (`PoolBase.setLoginTimeout`), but for a `jdbcUrl`-configured pool that only
+  reaches `DriverManager`'s global setting, which pgjdbc never reads — its own `loginTimeout`
+  defaults to `"0"`, no limit — so opening a brand new connection was, in fact, unbounded. The last load test
+  found each ledger's pool down to ten or eleven of its sixteen connections and unable to replace
+  the rest, with `SSL error: Read timed out` against a database at 86–98% CPU
+  (docs/load-test.md) — a hang, not merely a slow login, could previously have blocked a
+  pool-filling thread forever. `LoginTimeoutTest` proves the property is actually wired through
+  end to end — a login one second slower than a one-second override fails promptly instead of
+  waiting it out — and that the ten-second default survives a real login slowed to about three
+  seconds by a PostgreSQL 17 `on login` event trigger.
 - **`scripts/aws.sh up --db-pool=STORE,LEDGER`**: the connections each store and each ledger may
   hold, in place of the deployment's own `db_pool`, so that one deployment measures more than one
   pool size; `scripts/aws.sh loadtest` records the sizes a run used. An invalid value is refused

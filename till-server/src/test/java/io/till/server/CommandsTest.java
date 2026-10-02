@@ -18,6 +18,8 @@ import io.till.core.Sku;
 import io.till.core.Snapshot;
 import io.till.core.Till;
 import io.till.core.mem.InMemoryLedger;
+import io.till.jdbc.LedgerException;
+import java.sql.SQLTransientConnectionException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -135,6 +137,64 @@ class CommandsTest {
         assertInstanceOf(Outcome.Reserved.class, outcome, "applied in time; only reported late afterwards");
         assertEquals(
                 1, registry.counter("till.late", "kind", "reserve", "outcome", "reserved").count());
+    }
+
+    @Test
+    @DisplayName("the pool exhausted is counted as overloaded, next to exhausted and deadline_exceeded")
+    void poolExhaustionIsCountedAsOverloaded() {
+        SQLTransientConnectionException exhausted =
+                new SQLTransientConnectionException(
+                        "till - Connection is not available, request timed out after 2000ms "
+                                + "(total=16, active=16, idle=0, waiting=184)");
+        Ledger refusing =
+                new Ledger() {
+                    @Override
+                    public Snapshot load(Command command, Instant now, int reclaimLimit) {
+                        throw new LedgerException("loading a snapshot for " + command, exhausted);
+                    }
+
+                    @Override
+                    public boolean apply(Decision decision) {
+                        throw new IllegalStateException("not reached: load always fails first");
+                    }
+                };
+        Till till = Till.builder(refusing).clock(fixed(T0)).build();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        Commands commands = new Commands(till, registry);
+
+        assertThrows(LedgerException.class, () -> commands.run(reserve("c1", "r1", 3)));
+
+        assertEquals(
+                1, registry.counter("till.outcome", "kind", "reserve", "outcome", "overloaded").count());
+    }
+
+    @Test
+    @DisplayName("any other LedgerException is not counted as overloaded, and still propagates unchanged")
+    void anOrdinaryLedgerFailureIsNotCountedAsOverloaded() {
+        LedgerException original =
+                new LedgerException("loading a snapshot", new java.sql.SQLException("connection refused"));
+        Ledger broken =
+                new Ledger() {
+                    @Override
+                    public Snapshot load(Command command, Instant now, int reclaimLimit) {
+                        throw original;
+                    }
+
+                    @Override
+                    public boolean apply(Decision decision) {
+                        throw new IllegalStateException("not reached: load always fails first");
+                    }
+                };
+        Till till = Till.builder(broken).clock(fixed(T0)).build();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        Commands commands = new Commands(till, registry);
+
+        LedgerException thrown =
+                assertThrows(LedgerException.class, () -> commands.run(reserve("c1", "r1", 3)));
+
+        assertEquals(original, thrown, "the exact same failure, not a wrapped or replaced one");
+        assertTrue(registry.find("till.outcome").counters().stream()
+                .noneMatch(counter -> "overloaded".equals(counter.getId().getTag("outcome"))));
     }
 
     private static Command reserve(String key, String id, long quantity) {
