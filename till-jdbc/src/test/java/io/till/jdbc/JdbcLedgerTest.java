@@ -26,24 +26,38 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Random;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -464,6 +478,136 @@ class JdbcLedgerTest {
     }
 
     @Test
+    @DisplayName("the lean statement is lookups under one append: no sort, window, aggregate or join")
+    void theLeanStatementSortsAndJoinsNothing() throws SQLException {
+        till.adjust(key("d1"), sku("widget"), 10);
+        List<String> settings = new CopyOnWriteArrayList<>();
+        List<String> statements = new CopyOnWriteArrayList<>();
+        DataSource observed = interfering(dataSource, settings, statements, null, () -> {});
+        new JdbcLedger(observed).load(new Command.Reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 1)), TTL), T0, 0);
+
+        // Which plan: not the one made for these parameters' values but the one a long-lived connection
+        // settles on, because PostgreSQL plans a prepared statement without them once it has seen it a
+        // few times. What it must not do is spend a sort, a window, a hash or a join on the handful of
+        // rows one load returns, as the statement once did (ADR 12, "Later").
+        String plan = genericPlan(statements.get(0));
+
+        for (String node : List.of("Sort", "WindowAgg", "Aggregate", "Unique", "Join", "Nested Loop", "Hash", "Merge")) {
+            assertFalse(plan.contains(node), "the lean statement's generic plan has a " + node + " in it:\n" + plan);
+        }
+    }
+
+    @Test
+    @DisplayName("run often enough on one connection, a lean load is planned once and not again on every call")
+    void aLeanLoadSettlesOnOnePlan() throws SQLException {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 2)), TTL);
+
+        // PostgreSQL plans a prepared statement for its parameters' values the first five times and
+        // afterwards keeps the plan that ignores them, unless planning for the values was cheaper by more
+        // than planning costs. A statement it never settles on is planned on every call, and planning one
+        // of this size costs more than running it. Which side a statement lands on turns on how it is
+        // written, not on how much data there is: a lateral join over the command's SKUs reads the stock
+        // faster, and is planned on every call, so that it runs faster and costs more.
+        try (Connection connection =
+                DriverManager.getConnection(TestDatabase.url(), TestDatabase.username(), TestDatabase.password())) {
+            JdbcLedger onOneConnection = new JdbcLedger(alwaysTheOne(connection));
+            for (int i = 0; i < 20; i++) {
+                onOneConnection.load(new Command.Commit(key("pay-" + i), rid("r1")), T0, 0);
+            }
+
+            try (Statement statement = connection.createStatement();
+                    ResultSet plans =
+                            statement.executeQuery(
+                                    "select generic_plans, custom_plans from pg_prepared_statements "
+                                            + "where statement like '%till_stock%'")) {
+                assertTrue(plans.next(), "the driver should have prepared the statement on the server by now");
+                long generic = plans.getLong("generic_plans");
+                long custom = plans.getLong("custom_plans");
+                assertFalse(plans.next(), "one statement is what a lean load prepares");
+                assertTrue(
+                        generic > custom,
+                        "after twenty loads PostgreSQL had planned the statement afresh " + custom + " times and run a generic plan "
+                                + generic + " times");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("a lean snapshot is the snapshot a reclaiming load reads, whatever the command names")
+    void aLeanSnapshotIsTheTransactionalOne() {
+        populateEveryShape();
+
+        for (Command command : everyShapeOfCommand()) {
+            Snapshot transactional = ledger.load(command, T0, 32);
+            Snapshot lean = ledger.load(command, T0, 0);
+
+            assertEquals(transactional, lean, "a lean and a transactional load disagree for " + command);
+            assertEquals(
+                    List.copyOf(transactional.stock().keySet()),
+                    List.copyOf(lean.stock().keySet()),
+                    "the SKUs come in a different order for " + command);
+        }
+
+        // Hand-derived, not read back from either path: the first command names every SKU of a hold
+        // that is already there, so each is named twice and must still come back once, with every one
+        // of its shards. Delta sorts first because upper case does, and the ghost has no row at all.
+        Snapshot named =
+                ledger.load(
+                        new Command.Reserve(
+                                key("hold-1"),
+                                rid("r1"),
+                                List.of(Line.of("alpha", 1), Line.of("beta", 7), Line.of("gamma", 1), Line.of("Delta", 2)),
+                                TTL),
+                        T0,
+                        0);
+        assertEquals(List.of(sku("Delta"), sku("alpha"), sku("beta"), sku("gamma")), List.copyOf(named.stock().keySet()));
+        assertEquals(List.of(1, 1, 4, 3), named.stock().values().stream().map(List::size).toList());
+        assertEquals(
+                List.of(Line.of("Delta", 2), Line.of("alpha", 1), Line.of("beta", 7), Line.of("gamma", 1)),
+                named.reservation().orElseThrow().lines());
+        assertTrue(
+                named.reservation().orElseThrow().allocations().stream().filter(a -> a.sku().equals(sku("beta"))).count() > 1,
+                "the data was meant to hold beta across more than one shard: " + named.reservation());
+        assertTrue(named.recordedOutcome().isPresent());
+
+        Snapshot ghost =
+                ledger.load(new Command.Reserve(key("fresh"), rid("r2"), List.of(Line.of("alpha", 1), Line.of("ghost", 1)), TTL), T0, 0);
+        assertEquals(List.of(sku("alpha"), sku("ghost")), List.copyOf(ghost.stock().keySet()));
+        assertEquals(List.of(), ghost.shards(sku("ghost")));
+        assertEquals(Optional.empty(), ghost.reservation());
+        assertEquals(Optional.empty(), ghost.recordedOutcome());
+    }
+
+    @Test
+    @DisplayName("a lean snapshot does not depend on the order the database returns its rows in")
+    void aLeanSnapshotDoesNotDependOnRowOrder() {
+        populateEveryShape();
+
+        Map<String, UnaryOperator<List<Object[]>>> orders = new LinkedHashMap<>();
+        orders.put("reversed", rows -> reorder(rows, copy -> Collections.reverse(copy)));
+        orders.put("rotated by one", rows -> reorder(rows, copy -> Collections.rotate(copy, 1)));
+        orders.put("rotated by seven", rows -> reorder(rows, copy -> Collections.rotate(copy, 7)));
+        for (long seed = 1; seed <= 5; seed++) {
+            long chosen = seed;
+            orders.put("shuffled with seed " + seed, rows -> reorder(rows, copy -> Collections.shuffle(copy, new Random(chosen))));
+        }
+
+        for (Command command : everyShapeOfCommand()) {
+            Snapshot expected = ledger.load(command, T0, 0);
+            for (Map.Entry<String, UnaryOperator<List<Object[]>>> order : orders.entrySet()) {
+                Snapshot actual = new JdbcLedger(reordering(dataSource, order.getValue())).load(command, T0, 0);
+
+                assertEquals(expected, actual, "rows " + order.getKey() + " changed the snapshot for " + command);
+                assertEquals(
+                        List.copyOf(expected.stock().keySet()),
+                        List.copyOf(actual.stock().keySet()),
+                        "rows " + order.getKey() + " changed the order of the SKUs for " + command);
+            }
+        }
+    }
+
+    @Test
     @DisplayName("an empty ledger answers rather than failing")
     void emptyLedger() {
         assertTrue(ledger.listStock(Optional.empty(), 10).isEmpty());
@@ -790,6 +934,175 @@ class JdbcLedgerTest {
         } catch (SQLException e) {
             throw new IllegalStateException(sql, e);
         }
+    }
+
+    /**
+     * A ledger with every shape a snapshot has to describe: a SKU in one row, SKUs in four and in three,
+     * a SKU whose name sorts before the others only in code point order, and one hold across all four,
+     * which takes the larger one's units from two of its shards.
+     */
+    private void populateEveryShape() {
+        till.adjust(key("d-alpha"), sku("alpha"), 10);
+        till.adjust(key("d-beta"), sku("beta"), 20);
+        till.shard(key("s-beta"), sku("beta"), 4);
+        till.adjust(key("d-gamma"), sku("gamma"), 9);
+        till.shard(key("s-gamma"), sku("gamma"), 3);
+        till.adjust(key("d-delta"), sku("Delta"), 4);
+        Outcome held =
+                till.reserve(
+                        key("hold-1"),
+                        rid("r1"),
+                        List.of(Line.of("alpha", 1), Line.of("beta", 7), Line.of("gamma", 1), Line.of("Delta", 2)),
+                        TTL);
+        assertInstanceOf(Outcome.Reserved.class, held);
+    }
+
+    /**
+     * One command for each way a load's inputs can be present or absent: a key that was used and one
+     * that was not, a hold that exists and one that does not, SKUs the ledger has, the ones the hold
+     * names too, and one it has never heard of, and the commands that name no hold or no SKU at all.
+     */
+    private static List<Command> everyShapeOfCommand() {
+        List<Line> held = List.of(Line.of("alpha", 1), Line.of("beta", 7), Line.of("gamma", 1), Line.of("Delta", 2));
+        return List.of(
+                new Command.Reserve(key("hold-1"), rid("r1"), held, TTL),
+                new Command.Reserve(key("fresh"), rid("r2"), List.of(Line.of("alpha", 1), Line.of("ghost", 1)), TTL),
+                new Command.Reserve(key("fresh"), rid("r1"), List.of(Line.of("beta", 1)), TTL),
+                new Command.Commit(key("pay-1"), rid("r1")),
+                new Command.Commit(key("pay-2"), rid("nowhere")),
+                new Command.Release(key("hold-1"), rid("r1")),
+                new Command.Adjust(key("d-beta"), sku("beta"), 5),
+                new Command.Adjust(key("d-new"), sku("ghost"), 5),
+                new Command.Shard(key("s-new"), sku("alpha"), 2),
+                new Command.Sweep(10));
+    }
+
+    /** The plan PostgreSQL makes for {@code sql} without knowing the value of any parameter. */
+    private static String genericPlan(String sql) throws SQLException {
+        StringBuilder numbered = new StringBuilder();
+        int parameters = 0;
+        for (char c : sql.toCharArray()) {
+            if (c == '?') {
+                numbered.append('$').append(++parameters);
+            } else {
+                numbered.append(c);
+            }
+        }
+        // A connection of its own: both settings belong to the connection, and the pool's are shared.
+        try (Connection connection =
+                        DriverManager.getConnection(TestDatabase.url(), TestDatabase.username(), TestDatabase.password());
+                Statement statement = connection.createStatement()) {
+            statement.execute("set plan_cache_mode = force_generic_plan");
+            statement.execute("prepare lean_plan as " + numbered);
+            String nulls = String.join(", ", Collections.nCopies(parameters, "null"));
+            StringBuilder plan = new StringBuilder();
+            try (ResultSet rows = statement.executeQuery("explain (costs off) execute lean_plan(" + nulls + ")")) {
+                while (rows.next()) {
+                    plan.append(rows.getString(1)).append('\n');
+                }
+            }
+            return plan.toString();
+        }
+    }
+
+    /** A pool of the one connection, which a caller's {@code close} gives back without closing it. */
+    private static DataSource alwaysTheOne(Connection only) {
+        return proxy(DataSource.class, (method, args) -> {
+            if (!method.getName().equals("getConnection")) {
+                throw new UnsupportedOperationException(method.getName());
+            }
+            return proxy(Connection.class, (call, callArgs) -> call.getName().equals("close") ? null : forward(only, call, callArgs));
+        });
+    }
+
+    private static List<Object[]> reorder(List<Object[]> rows, Consumer<List<Object[]>> order) {
+        List<Object[]> copy = new ArrayList<>(rows);
+        order.accept(copy);
+        return copy;
+    }
+
+    /**
+     * A pool whose queries come back with their rows in an order {@code order} chooses, not the one
+     * the database did: each result is read whole, put through {@code order}, and handed back a row at
+     * a time. Only the getters a load calls are there; another one is an error, so a load that starts
+     * to read something else fails here rather than quietly reading nothing.
+     */
+    private static DataSource reordering(DataSource real, UnaryOperator<List<Object[]>> order) {
+        return proxy(DataSource.class, (method, args) -> {
+            Object result = forward(real, method, args);
+            if (!method.getName().equals("getConnection")) {
+                return result;
+            }
+            Connection connection = (Connection) result;
+            return proxy(Connection.class, (call, callArgs) -> {
+                Object prepared = forward(connection, call, callArgs);
+                if (!call.getName().equals("prepareStatement")) {
+                    return prepared;
+                }
+                PreparedStatement statement = (PreparedStatement) prepared;
+                return proxy(PreparedStatement.class, (statementCall, statementArgs) -> {
+                    if (!statementCall.getName().equals("executeQuery")) {
+                        return forward(statement, statementCall, statementArgs);
+                    }
+                    try (ResultSet rows = statement.executeQuery()) {
+                        return replay(rows, order);
+                    }
+                });
+            });
+        });
+    }
+
+    private static ResultSet replay(ResultSet rows, UnaryOperator<List<Object[]>> order) throws SQLException {
+        ResultSetMetaData metadata = rows.getMetaData();
+        Map<String, Integer> columns = new HashMap<>();
+        for (int i = 1; i <= metadata.getColumnCount(); i++) {
+            columns.put(metadata.getColumnLabel(i).toLowerCase(Locale.ROOT), i - 1);
+        }
+        List<Object[]> buffered = new ArrayList<>();
+        while (rows.next()) {
+            Object[] row = new Object[columns.size()];
+            for (int i = 0; i < row.length; i++) {
+                row[i] = rows.getObject(i + 1);
+            }
+            buffered.add(row);
+        }
+        Iterator<Object[]> remaining = order.apply(buffered).iterator();
+        AtomicReference<Object> last = new AtomicReference<>();
+        AtomicReference<Object[]> current = new AtomicReference<>();
+        return proxy(ResultSet.class, (call, args) -> {
+            switch (call.getName()) {
+                case "next" -> {
+                    current.set(remaining.hasNext() ? remaining.next() : null);
+                    return current.get() != null;
+                }
+                case "close" -> {
+                    return null;
+                }
+                case "wasNull" -> {
+                    return last.get() == null;
+                }
+                case "getString", "getInt", "getLong", "getObject" -> {
+                    if (!(args[0] instanceof String label)) {
+                        throw new UnsupportedOperationException("a load read " + call + " by position, which a replay does not do");
+                    }
+                    Object value = current.get()[columns.get(label.toLowerCase(Locale.ROOT))];
+                    last.set(value);
+                    return switch (call.getName()) {
+                        case "getString" -> value == null ? null : value.toString();
+                        case "getInt" -> value == null ? 0 : ((Number) value).intValue();
+                        case "getLong" -> value == null ? 0L : ((Number) value).longValue();
+                        default -> value == null ? null : asOffsetDateTime(value);
+                    };
+                }
+                default -> throw new UnsupportedOperationException("a load read " + call + ", which a replay does not do");
+            }
+        });
+    }
+
+    private static OffsetDateTime asOffsetDateTime(Object value) {
+        return value instanceof Timestamp timestamp
+                ? timestamp.toInstant().atOffset(ZoneOffset.UTC)
+                : (OffsetDateTime) value;
     }
 
     /** Something done to the database, from the test's side. */

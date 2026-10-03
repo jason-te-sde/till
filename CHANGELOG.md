@@ -11,6 +11,13 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **A snapshot benchmark** (`SnapshotBenchmark` in `till-jdbc`, only with `-Dtill.benchmark=true`): the
+  lean snapshot statement against the one it replaced, call by call, on the data one load test leaves in
+  the ledger's database — 100,000 reservations, 120,000 lines, 170,000 idempotency records. It reports
+  what the client waited and, from `pg_stat_statements`, what the server spent executing and planning
+  and how many pages it touched; with `-Dbench.container`, the CPU the server's backend used; and it
+  prints the generic plan. `-Dbench.statement` adds a statement of your own, `-Dbench.lines` a wider
+  basket, `-Dbench.churn` the stock updates a load test makes.
 - **Database Insights on every database server** (`infra/runtime/state.tf`), in its standard mode:
   the load by wait event and by statement, sampled every second and kept seven days at no charge.
   The load tests' `pg_stat_statements` accounted for a small part of the CPU the ledger's server was
@@ -186,6 +193,22 @@ explicitly not: it is a testing tool and it will change.
 
 ### Changed
 
+- **The statement behind every lean load costs the database about 30% less CPU, and returns the same
+  `Snapshot`** ([ADR 12](docs/design/0012-one-statement-snapshot.md), "Later"). The load test that
+  recorded the ledger database's load with Database Insights put it at 30.6% of all the database's
+  load, the largest single item, for a statement that returns sixteen to nineteen rows: it numbered
+  the lines and the stock with window functions, sorted everything by kind and joined the stock to a
+  deduplicated set of SKUs. Nothing needed the order — the `Snapshot` and `Reservation` constructors
+  sort what they are given — so it is gone, and the stock arm is `sku = any(...)` over the command's
+  SKUs and the reservation's. On the data one load test leaves, a prepared statement on a warm
+  connection cost the backend 25% to 37% less CPU a call over eight runs, 31% at the median, for a
+  reserve's load and a commit's alike; less for an order of many SKUs (12% at twenty). On top of ADR
+  14, in the contention benchmark (`-Dbench.dbcpus=2 -Dbench.shards=16`, five interleaved pairs
+  against the commit before this change) the checkouts a second went from 1,352 to 1,745 on the mean,
+  +29%: every pair faster, by 25% to 35%, with the container's CPU at 177–194% of its 200% cap
+  throughout. Against the commit before ADR 14 it was +13%, ahead in each pair but by about the spread
+  within a side. Four tests in `JdbcLedgerTest` hold the plan to lookups and to being planned once,
+  and the snapshot to the transactional load's for every shape of command and for rows in any order.
 - **A decision is written in one statement**, in autocommit, with no `BEGIN` or `COMMIT` around it
   ([ADR 14](docs/design/0014-one-round-trip-apply.md)). `V4__apply_function.sql` adds `till_apply`, a
   PL/pgSQL function that takes a decision as arrays — a column of them to an argument, the same
