@@ -27,6 +27,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -40,6 +41,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import javax.sql.DataSource;
 
 /**
@@ -60,11 +62,13 @@ import javax.sql.DataSource;
  *       never existed.
  * </ul>
  *
- * <p><b>Writing</b> always happens at read committed, with every statement carrying the version it
- * expects. Nothing is locked between loading and writing, so a caller that thinks for a second
- * blocks nobody; if the row moved underneath it, its update matches no row, the whole transaction is
- * rolled back, and {@code apply} returns {@code false} so that the caller can decide again against
- * what is there now.
+ * <p><b>Writing</b> is one statement, in autocommit, at read committed (see {@link #apply}): the
+ * function {@code till_apply} takes the whole decision and writes it, every row checked against the
+ * version the decision expects. Nothing is locked between loading and writing, so a caller that
+ * thinks for a second blocks nobody, and nothing is held locked across a round trip either, because
+ * the transaction begins and ends inside the one statement. If a row moved underneath the decision,
+ * its update matches no row, the function raises, everything the statement wrote is undone, and
+ * {@code apply} returns {@code false} so that the caller can decide again against what is there now.
  *
  * <p><b>Refused is not failed.</b> A version that has moved, a taken reservation id, an idempotency
  * key claimed by a concurrent copy of the same request: all of them return {@code false}, which is
@@ -72,10 +76,10 @@ import javax.sql.DataSource;
  * raises {@link LedgerException} instead, because that means the application tried to write a level
  * the database knows is impossible, and retrying it would loop forever around a real bug.
  *
- * <p>Conflicts are detected with {@code on conflict do nothing} and a row count rather than by
- * catching a unique violation. A failed statement inside a PostgreSQL transaction aborts the whole
- * transaction, so the exception route makes every conflict cost a rollback of work already done and
- * makes the code read as though an exception were the expected case.
+ * <p>A taken key is found with {@code on conflict do nothing} and a row count rather than by
+ * catching a unique violation, and only the function's own SQLState is read as a refusal. A unique
+ * violation is the database's error, raised where no conflict was expected — a reservation's line
+ * written twice — and stays an exception like any other.
  *
  * <p>Instances hold nothing but the {@link DataSource} and are safe to share between threads.
  *
@@ -174,31 +178,22 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
             "select id, idem_key, state, created_at, expires_at, version from till_reservation "
                     + "where state = 'HELD' and expires_at <= ? order by id collate \"C\" limit ?";
 
-    private static final String INSERT_STOCK =
-            "insert into till_stock (sku, shard, on_hand, reserved, version) values (?, ?, ?, ?, 0) "
-                    + "on conflict (sku, shard) do nothing";
-
-    private static final String UPDATE_STOCK =
-            "update till_stock set on_hand = ?, reserved = ?, version = version + 1, updated_at = now() "
-                    + "where sku = ? and shard = ? and version = ?";
-
-    private static final String INSERT_RESERVATION =
-            "insert into till_reservation (id, idem_key, state, created_at, expires_at, version) "
-                    + "values (?, ?, ?, ?, ?, 0) on conflict (id) do nothing";
-
-    private static final String INSERT_LINE =
-            "insert into till_reservation_line (reservation_id, sku, shard, quantity) values (?, ?, ?, ?)";
-
-    private static final String UPDATE_RESERVATION =
-            "update till_reservation set state = ?, version = version + 1 where id = ? and version = ?";
-
-    private static final String INSERT_RECORD =
-            "insert into till_idempotency (idem_key, fingerprint, outcome, recorded_at) values (?, ?, ?, ?) "
-                    + "on conflict (idem_key) do nothing";
-
-    private static final String INSERT_OUTBOX =
-            "insert into till_outbox (dedupe_key, payload, recorded_at) values (?, ?, ?) "
-                    + "on conflict (dedupe_key) do nothing";
+    /**
+     * A whole decision, written by {@code till_apply} ({@code V4__apply_function.sql}): every mutation,
+     * event and record as arrays, a column of them to an argument. The text is the same for every
+     * decision, whatever it holds, so the driver prepares it once per connection and the server plans
+     * it once. The arguments are named, so the call says which column each placeholder is; {@link
+     * #bind} sets them in this order.
+     */
+    private static final String APPLY =
+            "select till_apply("
+                    + "put_sku => ?, put_shard => ?, put_on_hand => ?, put_reserved => ?, put_version => ?, "
+                    + "set_id => ?, set_state => ?, set_version => ?, "
+                    + "insert_id => ?, insert_key => ?, insert_state => ?, insert_created_at => ?, "
+                    + "insert_expires_at => ?, "
+                    + "line_reservation => ?, line_sku => ?, line_shard => ?, line_quantity => ?, "
+                    + "event_key => ?, event_payload => ?, event_recorded_at => ?, "
+                    + "record_key => ?, record_fingerprint => ?, record_outcome => ?, record_recorded_at => ?)";
 
     private static final String SELECT_UNPUBLISHED =
             "select sequence, payload, recorded_at from till_outbox where published_at is null "
@@ -278,6 +273,14 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
 
     /** PostgreSQL's SQLState for a check constraint violation, which is a bug and not contention. */
     private static final String CHECK_VIOLATION = "23514";
+
+    /**
+     * What {@code till_apply} raises, and nothing else does, when a row is not at the version the
+     * decision expects or a key it inserts is taken: contention, which {@code apply} answers with
+     * {@code false}. A class of SQLState PostgreSQL does not use, so that no error of its own can be
+     * read as one.
+     */
+    private static final String REFUSED = "TL001";
 
     private final DataSource dataSource;
 
@@ -593,26 +596,46 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         return levels;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One statement, in autocommit: {@code till_apply} takes the decision as arrays and writes it,
+     * and the statement that calls it is the whole transaction, begun, written and committed inside
+     * one round trip. No row the decision has written stays locked while another statement crosses
+     * the network, as each did when every mutation was a statement of its own between a {@code BEGIN}
+     * and a {@code COMMIT} (ADR 14).
+     *
+     * <p>A row not at the version the decision expects, or a key it inserts already taken, makes the
+     * function raise {@link #REFUSED}, which undoes everything the statement wrote: that is the
+     * {@code false}. Every other error is an exception, a check violation above all.
+     *
+     * @throws IllegalArgumentException if the decision lists its mutations in an order other than the
+     *     kernel's — stock rows, then state changes, then new reservations — which the function could
+     *     not keep; nothing is sent
+     */
     @Override
     public boolean apply(Decision decision) {
+        Rows rows = Rows.of(decision);
         try (Connection connection = dataSource.getConnection()) {
             boolean autoCommit = connection.getAutoCommit();
-            connection.setAutoCommit(false);
-            try {
-                boolean written = write(connection, decision);
-                if (written) {
-                    connection.commit();
-                } else {
-                    connection.rollback();
-                }
-                return written;
-            } catch (SQLException | RuntimeException e) {
-                connection.rollback();
-                throw e;
+            if (!autoCommit) {
+                // Only in autocommit is the statement its own transaction. On a connection that is
+                // not, the decision would be written into a transaction nobody commits.
+                connection.setAutoCommit(true);
+            }
+            try (PreparedStatement statement = connection.prepareStatement(APPLY)) {
+                bind(connection, statement, rows);
+                statement.execute();
+                return true;
             } finally {
-                connection.setAutoCommit(autoCommit);
+                if (!autoCommit) {
+                    connection.setAutoCommit(false);
+                }
             }
         } catch (SQLException e) {
+            if (REFUSED.equals(e.getSQLState())) {
+                return false;
+            }
             if (CHECK_VIOLATION.equals(e.getSQLState())) {
                 // The database refused a level the kernel should never have produced. Retrying
                 // would spin around the bug rather than report it.
@@ -623,97 +646,52 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         }
     }
 
-    private boolean write(Connection connection, Decision decision) throws SQLException {
-        for (Mutation mutation : decision.mutations()) {
-            boolean ok =
-                    switch (mutation) {
-                        case Mutation.PutStock m -> putStock(connection, m);
-                        case Mutation.InsertReservation m -> insertReservation(connection, m.reservation());
-                        case Mutation.SetReservationState m -> setState(connection, m);
-                    };
-            if (!ok) {
-                return false;
-            }
-        }
-        for (Event event : decision.events()) {
-            if (!insertOutbox(connection, event)) {
-                return false;
-            }
-        }
-        Optional<OutcomeRecord> record = decision.outcomeRecord();
-        return record.isEmpty() || insertRecord(connection, record.get());
+    /** Binds a decision's rows to {@link #APPLY}, in the order its placeholders are in. */
+    private static void bind(Connection connection, PreparedStatement statement, Rows rows) throws SQLException {
+        OutcomeRecord record = rows.record().orElse(null);
+        int at = 0;
+        statement.setArray(++at, array(connection, "varchar", rows.puts(), put -> put.sku().value()));
+        statement.setArray(++at, array(connection, "integer", rows.puts(), Mutation.PutStock::shard));
+        statement.setArray(++at, array(connection, "bigint", rows.puts(), Mutation.PutStock::onHand));
+        statement.setArray(++at, array(connection, "bigint", rows.puts(), Mutation.PutStock::reserved));
+        // No version for a row the decision creates: the kernel's ABSENT stays the kernel's.
+        statement.setArray(
+                ++at, array(connection, "bigint", rows.puts(), put -> put.isInsert() ? null : put.expectedVersion()));
+        statement.setArray(++at, array(connection, "varchar", rows.sets(), set -> set.reservationId().value()));
+        statement.setArray(++at, array(connection, "varchar", rows.sets(), set -> set.state().name()));
+        statement.setArray(
+                ++at, array(connection, "bigint", rows.sets(), Mutation.SetReservationState::expectedVersion));
+        statement.setArray(++at, array(connection, "varchar", rows.inserts(), held -> held.id().value()));
+        statement.setArray(++at, array(connection, "varchar", rows.inserts(), held -> held.key().value()));
+        statement.setArray(++at, array(connection, "varchar", rows.inserts(), held -> held.state().name()));
+        statement.setArray(++at, array(connection, "timestamptz", rows.inserts(), held -> text(held.createdAt())));
+        statement.setArray(++at, array(connection, "timestamptz", rows.inserts(), held -> text(held.expiresAt())));
+        statement.setArray(++at, array(connection, "varchar", rows.lines(), line -> line.reservation().value()));
+        statement.setArray(++at, array(connection, "varchar", rows.lines(), line -> line.allocation().sku().value()));
+        statement.setArray(++at, array(connection, "integer", rows.lines(), line -> line.allocation().shard()));
+        statement.setArray(++at, array(connection, "bigint", rows.lines(), line -> line.allocation().quantity()));
+        statement.setArray(++at, array(connection, "varchar", rows.events(), Event::dedupeKey));
+        statement.setArray(++at, array(connection, "text", rows.events(), Codec::encodeEvent));
+        statement.setArray(++at, array(connection, "timestamptz", rows.events(), event -> text(event.occurredAt())));
+        statement.setString(++at, record == null ? null : record.key().value());
+        statement.setString(++at, record == null ? null : record.fingerprint());
+        statement.setString(++at, record == null ? null : record.encodedOutcome());
+        statement.setObject(++at, record == null ? null : offset(record.recordedAt()), Types.TIMESTAMP_WITH_TIMEZONE);
     }
 
-    private boolean putStock(Connection connection, Mutation.PutStock mutation) throws SQLException {
-        if (mutation.isInsert()) {
-            try (PreparedStatement statement = connection.prepareStatement(INSERT_STOCK)) {
-                statement.setString(1, mutation.sku().value());
-                statement.setInt(2, mutation.shard());
-                statement.setLong(3, mutation.onHand());
-                statement.setLong(4, mutation.reserved());
-                return statement.executeUpdate() == 1;
-            }
-        }
-        try (PreparedStatement statement = connection.prepareStatement(UPDATE_STOCK)) {
-            statement.setLong(1, mutation.onHand());
-            statement.setLong(2, mutation.reserved());
-            statement.setString(3, mutation.sku().value());
-            statement.setInt(4, mutation.shard());
-            statement.setLong(5, mutation.expectedVersion());
-            return statement.executeUpdate() == 1;
-        }
+    /** One column of one kind of row, as the SQL array {@code till_apply} takes it. */
+    private static <T> Array array(Connection connection, String type, List<T> rows, Function<? super T, ?> column)
+            throws SQLException {
+        return connection.createArrayOf(type, rows.stream().map(column).toArray());
     }
 
-    private boolean insertReservation(Connection connection, Reservation reservation) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_RESERVATION)) {
-            statement.setString(1, reservation.id().value());
-            statement.setString(2, reservation.key().value());
-            statement.setString(3, reservation.state().name());
-            statement.setObject(4, offset(reservation.createdAt()));
-            statement.setObject(5, offset(reservation.expiresAt()));
-            if (statement.executeUpdate() != 1) {
-                return false;
-            }
-        }
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_LINE)) {
-            for (Allocation allocation : reservation.allocations()) {
-                statement.setString(1, reservation.id().value());
-                statement.setString(2, allocation.sku().value());
-                statement.setInt(3, allocation.shard());
-                statement.setLong(4, allocation.quantity());
-                statement.addBatch();
-            }
-            statement.executeBatch();
-        }
-        return true;
-    }
-
-    private boolean setState(Connection connection, Mutation.SetReservationState mutation) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPDATE_RESERVATION)) {
-            statement.setString(1, mutation.state().name());
-            statement.setString(2, mutation.reservationId().value());
-            statement.setLong(3, mutation.expectedVersion());
-            return statement.executeUpdate() == 1;
-        }
-    }
-
-    private boolean insertOutbox(Connection connection, Event event) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_OUTBOX)) {
-            statement.setString(1, event.dedupeKey());
-            statement.setString(2, Codec.encodeEvent(event));
-            statement.setObject(3, offset(event.occurredAt()));
-            return statement.executeUpdate() == 1;
-        }
-    }
-
-    private boolean insertRecord(Connection connection, OutcomeRecord record) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_RECORD)) {
-            statement.setString(1, record.key().value());
-            statement.setString(2, record.fingerprint());
-            statement.setString(3, record.encodedOutcome());
-            statement.setObject(4, offset(record.recordedAt()));
-            return statement.executeUpdate() == 1;
-        }
+    /**
+     * An instant as an element of a {@code timestamptz} array: ISO-8601 at UTC. PostgreSQL keeps
+     * microseconds, and {@link io.till.core.Till} truncates to them before deciding, so the instant
+     * read back is the one written.
+     */
+    private static String text(Instant instant) {
+        return instant.toString();
     }
 
     @Override
@@ -1058,6 +1036,65 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 instant(rows, "expires_at"),
                 rows.getLong("version"));
     }
+
+    /**
+     * A decision's rows, by kind, in the order {@code till_apply} writes them: stock rows, state
+     * changes, new reservations and their lines, events, and the idempotency record.
+     */
+    private record Rows(
+            List<Mutation.PutStock> puts,
+            List<Mutation.SetReservationState> sets,
+            List<Reservation> inserts,
+            List<LineRow> lines,
+            List<Event> events,
+            Optional<OutcomeRecord> record) {
+
+        /**
+         * Sorts a decision's mutations by kind, refusing a decision that lists them in any other order.
+         * The kernel lists them in this one; the function cannot keep another, and a decision applied
+         * in an order other than its own would lock its rows in an order nobody chose.
+         *
+         * @throws IllegalArgumentException if a mutation follows one of a kind the function writes later
+         */
+        static Rows of(Decision decision) {
+            List<Mutation.PutStock> puts = new ArrayList<>();
+            List<Mutation.SetReservationState> sets = new ArrayList<>();
+            List<Reservation> inserts = new ArrayList<>();
+            int reached = 0;
+            for (Mutation mutation : decision.mutations()) {
+                int kind =
+                        switch (mutation) {
+                            case Mutation.PutStock m -> {
+                                puts.add(m);
+                                yield 0;
+                            }
+                            case Mutation.SetReservationState m -> {
+                                sets.add(m);
+                                yield 1;
+                            }
+                            case Mutation.InsertReservation m -> {
+                                inserts.add(m.reservation());
+                                yield 2;
+                            }
+                        };
+                if (kind < reached) {
+                    throw new IllegalArgumentException(
+                            "a decision lists its stock rows, then its state changes, then its new reservations, "
+                                    + "which is the order till_apply writes them in; " + mutation
+                                    + " comes too late in " + decision.mutations());
+                }
+                reached = kind;
+            }
+            List<LineRow> lines = new ArrayList<>();
+            for (Reservation reservation : inserts) {
+                reservation.allocations().forEach(allocation -> lines.add(new LineRow(reservation.id(), allocation)));
+            }
+            return new Rows(puts, sets, inserts, lines, decision.events(), decision.outcomeRecord());
+        }
+    }
+
+    /** A row of {@code till_reservation_line} for a reservation being inserted. */
+    private record LineRow(ReservationId reservation, Allocation allocation) {}
 
     /** A reservation header, before its lines have been fetched. */
     private record Row(String id, String key, String state, Instant createdAt, Instant expiresAt, long version) {

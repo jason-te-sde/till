@@ -6,11 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.till.core.Codec;
 import io.till.core.Command;
 import io.till.core.Decision;
 import io.till.core.IdempotencyKey;
 import io.till.core.Kernel;
 import io.till.core.Line;
+import io.till.core.Mutation;
 import io.till.core.Outcome;
 import io.till.core.OutboxEntry;
 import io.till.core.Reservation;
@@ -476,6 +478,320 @@ class JdbcLedgerTest {
         assertEquals(io.till.core.RejectionCode.UNKNOWN_SKU, ((Outcome.Rejected) outcome).code());
     }
 
+    @Test
+    @DisplayName("a reserve, and the commit after it, are each written in one statement, with nothing begun or committed around it")
+    void aDecisionIsOneStatement() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        List<String> calls = new CopyOnWriteArrayList<>();
+        List<String> executed = new CopyOnWriteArrayList<>();
+        JdbcLedger observed =
+                new JdbcLedger(interfering(dataSource, new CopyOnWriteArrayList<>(), calls, executed, null, () -> {}));
+
+        Command reserve = new Command.Reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 2)), TTL);
+        assertTrue(observed.apply(Kernel.decide(ledger.load(reserve, T0, 0), reserve, T0)));
+
+        assertEquals(1, executed.size(), "one statement executed, got " + executed);
+        assertEquals(executed, calls, "and no transaction begun, committed or rolled back around it");
+        // Not merely one statement: the whole decision, written by it.
+        assertEquals(2, ledger.stock(sku("widget")).orElseThrow().reserved());
+        assertEquals(List.of(rid("r1")), ledger.allReservations().stream().map(Reservation::id).toList());
+        assertEquals(List.of(Line.of("widget", 2)), ledger.allReservations().get(0).lines());
+        assertEquals(List.of("adjusted:d1", "reserved:r1"), dedupeKeys());
+        assertEquals(1, count("select count(*) from till_idempotency where idem_key = 'c1'"));
+
+        executed.clear();
+        calls.clear();
+        Command commit = new Command.Commit(key("p1"), rid("r1"));
+        assertTrue(observed.apply(Kernel.decide(ledger.load(commit, T0, 0), commit, T0)));
+
+        assertEquals(1, executed.size(), "one statement executed, got " + executed);
+        assertEquals(executed, calls, "and no transaction begun, committed or rolled back around it");
+        assertEquals(8, ledger.stock(sku("widget")).orElseThrow().onHand());
+        assertEquals(ReservationState.COMMITTED, ledger.allReservations().get(0).state());
+        assertEquals(List.of("adjusted:d1", "reserved:r1", "committed:r1"), dedupeKeys());
+        assertEquals(1, count("select count(*) from till_idempotency where idem_key = 'p1'"));
+    }
+
+    @Test
+    @DisplayName("a decision with one stale row is refused in one statement, and nothing of it is written")
+    void aStaleDecisionWritesNothing() {
+        till.adjust(key("d1"), sku("gadget"), 10);
+        till.adjust(key("d2"), sku("widget"), 10);
+        Command command =
+                new Command.Reserve(key("k1"), rid("r1"), List.of(Line.of("gadget", 1), Line.of("widget", 1)), TTL);
+        Decision stale = Kernel.decide(ledger.load(command, T0, 0), command, T0);
+        // The decision writes its stock rows in SKU order, gadget's before widget's, so with widget's
+        // moved the refusal comes after gadget's row has been written by the same statement.
+        till.adjust(key("d3"), sku("widget"), 5);
+
+        List<String> calls = new CopyOnWriteArrayList<>();
+        List<String> executed = new CopyOnWriteArrayList<>();
+        JdbcLedger observed =
+                new JdbcLedger(interfering(dataSource, new CopyOnWriteArrayList<>(), calls, executed, null, () -> {}));
+
+        boolean applied = observed.apply(stale);
+
+        StockItem gadget = ledger.stock(sku("gadget")).orElseThrow();
+        assertEquals(0, gadget.reserved(), "the row written before the refusal must not survive it: " + gadget);
+        assertEquals(0, gadget.version(), "not even its version: " + gadget);
+        StockItem widget = ledger.stock(sku("widget")).orElseThrow();
+        assertEquals(15, widget.onHand(), "the adjustment that moved it stands: " + widget);
+        assertEquals(0, widget.reserved(), widget.toString());
+        assertEquals(0, count("select count(*) from till_reservation"), "no reservation");
+        assertEquals(0, count("select count(*) from till_reservation_line"), "no line");
+        assertEquals(List.of("adjusted:d1", "adjusted:d2", "adjusted:d3"), dedupeKeys(), "no event");
+        assertEquals(0, count("select count(*) from till_idempotency where idem_key = 'k1'"), "no record");
+        assertFalse(applied, "and the caller is told to decide again");
+        assertEquals(1, executed.size(), "refused in one statement, got " + executed);
+        assertEquals(executed, calls, "and no transaction begun, committed or rolled back around it");
+    }
+
+    @Test
+    @DisplayName("a check violation in that one statement is an exception, never a refusal")
+    void aCheckViolationIsAnException() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        Command command = new Command.Adjust(key("d2"), sku("widget"), 3);
+        Decision decision = Kernel.decide(ledger.load(command, T0, 0), command, T0);
+        List<String> calls = new CopyOnWriteArrayList<>();
+        List<String> executed = new CopyOnWriteArrayList<>();
+        JdbcLedger observed =
+                new JdbcLedger(interfering(dataSource, new CopyOnWriteArrayList<>(), calls, executed, null, () -> {}));
+
+        // A rule the kernel knows nothing about, so that a level it computed can break one: the
+        // decision above takes the widget to thirteen.
+        execute("alter table till_stock add constraint till_test_unlucky check (on_hand <> 13)");
+        try {
+            LedgerException thrown = assertThrows(LedgerException.class, () -> observed.apply(decision));
+
+            assertEquals("23514", ((SQLException) thrown.getCause()).getSQLState(), thrown.getMessage());
+            assertEquals(10, ledger.stock(sku("widget")).orElseThrow().onHand(), "nothing was written");
+            assertEquals(List.of("adjusted:d1"), dedupeKeys(), "no event");
+            assertEquals(0, count("select count(*) from till_idempotency where idem_key = 'd2'"), "no record");
+            assertEquals(1, executed.size(), "one statement, got " + executed);
+            assertEquals(executed, calls, "and no transaction begun, committed or rolled back around it");
+        } finally {
+            execute("alter table till_stock drop constraint till_test_unlucky");
+        }
+    }
+
+    @Test
+    @DisplayName("on a connection handed out without autocommit, a decision is still committed, and the connection put back as it was")
+    void aDecisionIsCommittedOffAutocommit() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        Command reserve = new Command.Reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 1)), TTL);
+        Decision decision = Kernel.decide(ledger.load(reserve, T0, 0), reserve, T0);
+        // A pool configured with autoCommit=false hands out connections like these.
+        DataSource manual = proxy(DataSource.class, (method, args) -> {
+            Object result = forward(dataSource, method, args);
+            if (method.getName().equals("getConnection")) {
+                ((Connection) result).setAutoCommit(false);
+            }
+            return result;
+        });
+        List<String> calls = new CopyOnWriteArrayList<>();
+        JdbcLedger observed = new JdbcLedger(
+                interfering(manual, new CopyOnWriteArrayList<>(), calls, new CopyOnWriteArrayList<>(), null, () -> {}));
+
+        assertTrue(observed.apply(decision));
+
+        // Read on other connections: committed, not left in a transaction the pool rolls back.
+        assertEquals(List.of(rid("r1")), ledger.allReservations().stream().map(Reservation::id).toList());
+        assertEquals(1, ledger.stock(sku("widget")).orElseThrow().reserved());
+        assertEquals("setAutoCommit(true)", calls.get(0), "switched for the statement: " + calls);
+        assertEquals("setAutoCommit(false)", calls.get(calls.size() - 1), "and back afterwards: " + calls);
+    }
+
+    // Each kind of row the function inserts or moves is refused the same way when somebody got there
+    // first: false, and nothing of the decision written — including the stock row it had already
+    // written in the same statement. The stale stock update is aStaleDecisionWritesNothing above.
+
+    @Test
+    @DisplayName("a stock row somebody else created first is a refusal, and the row written before it is undone")
+    void aStockRowAlreadyThereIsARefusal() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        Command split = new Command.Shard(key("s1"), sku("widget"), 2);
+        Decision decision = Kernel.decide(ledger.load(split, T0, 0), split, T0);
+        // Another split got there first, with the second shard.
+        execute("insert into till_stock (sku, shard, on_hand, reserved, version) values ('widget', 1, 0, 0, 0)");
+
+        assertFalse(ledger.apply(decision));
+
+        assertEquals(
+                List.of("widget#0 10/0 v0", "widget#1 0/0 v0"),
+                ledger.allShards().stream()
+                        .map(s -> s.sku() + "#" + s.index() + " " + s.onHand() + "/" + s.reserved() + " v" + s.version())
+                        .toList(),
+                "shard 0, written before the refusal, is as it was");
+        assertEquals(0, count("select count(*) from till_idempotency where idem_key = 's1'"), "no record");
+    }
+
+    @Test
+    @DisplayName("a reservation id taken first is a refusal, and the stock row written before it is undone")
+    void aReservationIdTakenIsARefusal() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.adjust(key("d2"), sku("gadget"), 10);
+        Command reserve = new Command.Reserve(key("k1"), rid("r1"), List.of(Line.of("widget", 1)), TTL);
+        Decision decision = Kernel.decide(ledger.load(reserve, T0, 0), reserve, T0);
+        till.reserve(key("k2"), rid("r1"), List.of(Line.of("gadget", 1)), TTL);
+
+        assertFalse(ledger.apply(decision));
+
+        StockItem widget = ledger.stock(sku("widget")).orElseThrow();
+        assertEquals(0, widget.reserved(), "written before the refusal, and undone: " + widget);
+        assertEquals(0, widget.version(), widget.toString());
+        assertEquals(List.of(Line.of("gadget", 1)), ledger.allReservations().get(0).lines(), "r1 is still the other one");
+        assertEquals(List.of("adjusted:d1", "adjusted:d2", "reserved:r1"), dedupeKeys(), "and so is its event");
+        assertEquals(0, count("select count(*) from till_idempotency where idem_key = 'k1'"), "no record");
+    }
+
+    @Test
+    @DisplayName("a reservation not at its expected version is a refusal, and the stock row written before it is undone")
+    void aReservationThatMovedIsARefusal() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.reserve(key("k1"), rid("r1"), List.of(Line.of("widget", 1)), TTL);
+        Command commit = new Command.Commit(key("p1"), rid("r1"));
+        Decision decision = Kernel.decide(ledger.load(commit, T0, 0), commit, T0);
+        execute("update till_reservation set version = version + 1 where id = 'r1'");
+
+        assertFalse(ledger.apply(decision));
+
+        StockItem widget = ledger.stock(sku("widget")).orElseThrow();
+        assertEquals(10, widget.onHand(), "written before the refusal, and undone: " + widget);
+        assertEquals(1, widget.reserved(), widget.toString());
+        assertEquals(ReservationState.HELD, ledger.allReservations().get(0).state());
+        assertEquals(List.of("adjusted:d1", "reserved:r1"), dedupeKeys(), "no event");
+        assertEquals(0, count("select count(*) from till_idempotency where idem_key = 'p1'"), "no record");
+    }
+
+    @Test
+    @DisplayName("an event already in the outbox is a refusal, and the stock row written before it is undone")
+    void anEventAlreadyWrittenIsARefusal() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        Command adjust = new Command.Adjust(key("d2"), sku("widget"), 5);
+        Decision decision = Kernel.decide(ledger.load(adjust, T0, 0), adjust, T0);
+        // What an earlier execution leaves behind when its record is pruned and its event is not, the
+        // case FORGET_IDEMPOTENCY guards against: the same event, already in the outbox.
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "insert into till_outbox (dedupe_key, payload, recorded_at) values ('adjusted:d2', ?, now())")) {
+            statement.setString(1, Codec.encodeEvent(decision.events().get(0)));
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+        long sequence = count("select sequence from till_outbox where dedupe_key = 'adjusted:d2'");
+
+        assertFalse(ledger.apply(decision));
+
+        assertEquals(10, ledger.stock(sku("widget")).orElseThrow().onHand(), "written before the refusal, and undone");
+        assertEquals(List.of("adjusted:d1", "adjusted:d2"), dedupeKeys());
+        assertEquals(
+                sequence, count("select sequence from till_outbox where dedupe_key = 'adjusted:d2'"), "the old row stands");
+        assertEquals(0, count("select count(*) from till_idempotency where idem_key = 'd2'"), "no record");
+    }
+
+    @Test
+    @DisplayName("an idempotency key claimed first is a refusal, and everything written before it is undone")
+    void anIdempotencyKeyClaimedIsARefusal() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        Command reserve = new Command.Reserve(key("k1"), rid("r1"), List.of(Line.of("widget", 1)), TTL);
+        Decision decision = Kernel.decide(ledger.load(reserve, T0, 0), reserve, T0);
+        // A different request under the same key, answered and recorded first: a refusal of its own,
+        // which writes nothing but the record.
+        till.commit(key("k1"), rid("ghost"));
+
+        assertFalse(ledger.apply(decision));
+
+        StockItem widget = ledger.stock(sku("widget")).orElseThrow();
+        assertEquals(0, widget.reserved(), "the stock row, written first, is undone: " + widget);
+        assertEquals(0, widget.version(), widget.toString());
+        assertEquals(0, count("select count(*) from till_reservation"), "and the reservation");
+        assertEquals(0, count("select count(*) from till_reservation_line"), "and its line");
+        assertEquals(List.of("adjusted:d1"), dedupeKeys(), "and its event");
+        assertEquals(1, count("select count(*) from till_idempotency where idem_key = 'k1'"), "the first record stands");
+    }
+
+    @Test
+    @DisplayName("arrays of one kind that disagree in length are a malformed call, not a refusal")
+    void aMalformedCallIsNotARefusal() throws SQLException {
+        till.adjust(key("d1"), sku("widget"), 10);
+
+        // One stock row with no shard: a missing element would read as null, match no row, and look
+        // exactly like a version that moved, retried until the caller gave up on contention.
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement call = connection.prepareStatement(
+                        "select till_apply("
+                                + "put_sku => array['widget'], put_shard => array[]::integer[], "
+                                + "put_on_hand => array[10::bigint], put_reserved => array[1::bigint], "
+                                + "put_version => array[0::bigint], "
+                                + "set_id => '{}', set_state => '{}', set_version => '{}', "
+                                + "insert_id => '{}', insert_key => '{}', insert_state => '{}', "
+                                + "insert_created_at => '{}', insert_expires_at => '{}', "
+                                + "line_reservation => '{}', line_sku => '{}', line_shard => '{}', "
+                                + "line_quantity => '{}', event_key => '{}', event_payload => '{}', "
+                                + "event_recorded_at => '{}', record_key => null, record_fingerprint => null, "
+                                + "record_outcome => null, record_recorded_at => null)")) {
+            SQLException thrown = assertThrows(SQLException.class, call::execute);
+
+            assertEquals("22023", thrown.getSQLState(), thrown.getMessage());
+        }
+        assertEquals(0, ledger.stock(sku("widget")).orElseThrow().reserved());
+    }
+
+    @Test
+    @DisplayName("a decision listing its rows in an order the function cannot keep is refused, and nothing is sent")
+    void aDecisionOutOfOrderIsRefused() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 1)), TTL);
+        long version = ledger.allReservations().get(0).version();
+        // The kernel lists stock rows, then state changes, then new reservations; the function writes
+        // them in that order. This lists a new reservation first.
+        Decision outOfOrder =
+                new Decision(
+                        new Outcome.Released(rid("r1"), T0),
+                        List.of(
+                                new Mutation.InsertReservation(
+                                        new Reservation(
+                                                rid("r2"), key("c2"), List.of(Line.of("widget", 1)),
+                                                ReservationState.HELD, T0, T0.plus(TTL), 0)),
+                                new Mutation.SetReservationState(rid("r1"), ReservationState.RELEASED, version)),
+                        List.of(),
+                        Optional.empty());
+        List<String> executed = new CopyOnWriteArrayList<>();
+        JdbcLedger observed = new JdbcLedger(
+                interfering(dataSource, new CopyOnWriteArrayList<>(), new CopyOnWriteArrayList<>(), executed, null, () -> {}));
+
+        assertThrows(IllegalArgumentException.class, () -> observed.apply(outOfOrder));
+
+        assertEquals(List.of(), executed, "nothing was sent");
+        assertEquals(List.of(rid("r1")), ledger.allReservations().stream().map(Reservation::id).toList());
+        assertEquals(ReservationState.HELD, ledger.allReservations().get(0).state());
+    }
+
+    private List<String> dedupeKeys() {
+        return ledger.allEvents().stream().map(OutboxEntry::dedupeKey).toList();
+    }
+
+    private long count(String sql) {
+        try (Connection connection = dataSource.getConnection();
+                Statement statement = connection.createStatement();
+                ResultSet rows = statement.executeQuery(sql)) {
+            rows.next();
+            return rows.getLong(1);
+        } catch (SQLException e) {
+            throw new IllegalStateException(sql, e);
+        }
+    }
+
+    private void execute(String sql) {
+        try (Connection connection = dataSource.getConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        } catch (SQLException e) {
+            throw new IllegalStateException(sql, e);
+        }
+    }
+
     /** Something done to the database, from the test's side. */
     @FunctionalInterface
     private interface Interference {
@@ -493,6 +809,23 @@ class JdbcLedgerTest {
      */
     private static DataSource interfering(
             DataSource real, List<String> settings, List<String> statements, String before, Interference interference) {
+        return interfering(real, settings, statements, new CopyOnWriteArrayList<>(), before, interference);
+    }
+
+    /**
+     * As above, and also records into {@code executed} the text of every statement the server is
+     * sent, once per execution: a statement prepared once and executed for each row of a batch is
+     * there once per row, and a plain {@code createStatement} one is there too. With
+     * {@code statements}, that is what went over the wire: {@code executed} the statements, and
+     * {@code statements} whether anything began, committed or rolled back a transaction around them.
+     */
+    private static DataSource interfering(
+            DataSource real,
+            List<String> settings,
+            List<String> statements,
+            List<String> executed,
+            String before,
+            Interference interference) {
         AtomicBoolean done = new AtomicBoolean();
         return proxy(DataSource.class, (method, args) -> {
             Object result = forward(real, method, args);
@@ -515,8 +848,33 @@ class JdbcLedgerTest {
                     }
                     default -> {}
                 }
-                return forward(connection, call, callArgs);
+                Object made = forward(connection, call, callArgs);
+                return switch (call.getName()) {
+                    case "prepareStatement" ->
+                            executions(PreparedStatement.class, (PreparedStatement) made, (String) callArgs[0], executed);
+                    case "createStatement" -> executions(Statement.class, (Statement) made, null, executed);
+                    default -> made;
+                };
             });
+        });
+    }
+
+    /** A statement that adds each of its executions, and each row of a batch, to {@code executed}. */
+    private static <S extends Statement> S executions(Class<S> type, S statement, String prepared, List<String> executed) {
+        List<String> batch = new ArrayList<>();
+        return proxy(type, (method, args) -> {
+            String sql = args != null && args.length > 0 && args[0] instanceof String text ? text : prepared;
+            switch (method.getName()) {
+                case "addBatch" -> batch.add(sql);
+                case "clearBatch" -> batch.clear();
+                case "executeBatch", "executeLargeBatch" -> {
+                    executed.addAll(batch);
+                    batch.clear();
+                }
+                case "execute", "executeQuery", "executeUpdate", "executeLargeUpdate" -> executed.add(sql);
+                default -> {}
+            }
+            return forward(statement, method, args);
         });
     }
 

@@ -113,7 +113,8 @@ explicitly not: it is a testing tool and it will change.
   included; the store's is five seconds (`store.till.deadline`). Before it, a ledger too busy to
   answer cost a checkout four five-second attempts — the 20.8 s p99 of the first load tests.
 - **A contention benchmark** for the ledger's write path (`ContentionBenchmark` in `till-jdbc`, only
-  with `-Dtill.benchmark=true`): conflicts, snapshots and transactions per completed checkout.
+  with `-Dtill.benchmark=true`): conflicts, snapshots, transactions and statements per completed
+  checkout.
 - **A deployment on AWS** (`infra/`, `scripts/aws.sh`): ECS on Fargate, RDS PostgreSQL, ElastiCache
   Valkey, Cognito, and CloudFront to an internal load balancer through a VPC origin; `up`, `smoke`,
   `down`, and a schedule inside AWS that scales every service to zero at a deadline, for a session
@@ -185,6 +186,25 @@ explicitly not: it is a testing tool and it will change.
 
 ### Changed
 
+- **A decision is written in one statement**, in autocommit, with no `BEGIN` or `COMMIT` around it
+  ([ADR 14](docs/design/0014-one-round-trip-apply.md)). `V4__apply_function.sql` adds `till_apply`, a
+  PL/pgSQL function that takes a decision as arrays — a column of them to an argument, the same
+  statement for a decision of any size — and writes it in the order the transaction it replaces
+  did, stock rows first. A row not at the version the decision expects, or a key already taken, makes
+  it raise SQLSTATE `TL001`, which takes everything the statement wrote with it, and `apply` answers
+  `false` as before; a check violation, and every other error, is still a `LedgerException`. A reserve
+  was seven statements — `BEGIN`, five writes, `COMMIT` — with its stock row locked from the first
+  to the last, and Database Insights put 16% of the ledger database's load in `Client:ClientRead`,
+  backends holding locks while they waited for the application's next statement, and a quarter of it
+  in `BEGIN` and `COMMIT`. In the contention benchmark (`-Dbench.dbcpus=2 -Dbench.shards=16`, six
+  interleaved pairs against the commit this branched from) the statements per checkout went from 15.5
+  to 4.1 and the checkouts a second from 991 to 1,388 on the mean, +40%: every pair faster, by 33% to
+  55%, and the slowest run after the change faster than the fastest before it. Decisions that
+  conflicted went from 6.6–6.8% to 5.4–5.6%; transactions per checkout did not move, as they could
+  not. A refusal is now an error in PostgreSQL's log, about 1.1 KB each. `apply` refuses a decision
+  whose mutations are not in the kernel's order, which the function could not keep. `JdbcSchema` now
+  splits a migration around quoted strings, a dollar-quoted function body among them, rather than at
+  every semicolon. A schema change, so a minor version when released.
 - **A snapshot that reclaims nothing is one statement**, in autocommit, with no `SET`, `BEGIN` or
   `COMMIT` ([ADR 12](docs/design/0012-one-statement-snapshot.md)) — the lean first decision of every
   reserve, commit and release, which is the common case by far. A load test found the `SET

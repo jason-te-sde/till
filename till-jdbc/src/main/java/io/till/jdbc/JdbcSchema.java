@@ -27,12 +27,13 @@ public final class JdbcSchema {
     public static final List<String> RESOURCES = List.of(
             "db/migration/V1__till_schema.sql",
             "db/migration/V2__listing_indexes.sql",
-            "db/migration/V3__stock_shards.sql");
+            "db/migration/V3__stock_shards.sql",
+            "db/migration/V4__apply_function.sql");
 
     private JdbcSchema() {}
 
     /**
-     * Creates every table and index till needs.
+     * Creates every table and index till needs, and the function that writes a decision.
      *
      * @param dataSource where to create them
      * @throws SQLException if the database refuses a statement
@@ -70,14 +71,81 @@ public final class JdbcSchema {
     static List<String> statements() {
         List<String> statements = new ArrayList<>();
         for (String resource : RESOURCES) {
-            for (String candidate : stripComments(read(resource)).split(";")) {
-                String trimmed = candidate.trim();
-                if (!trimmed.isEmpty()) {
-                    statements.add(trimmed);
-                }
-            }
+            statements.addAll(split(read(resource)));
         }
         return statements;
+    }
+
+    /**
+     * One migration file's text, as the statements in it.
+     *
+     * <p>A semicolon ends a statement except inside a quoted string: a single-quoted one, doubled
+     * quotes and all, or a dollar-quoted one ({@code $$ ... $$}, or {@code $tag$ ... $tag$}), which is
+     * how a function's body is written — its semicolons end the body's own statements, and the body
+     * goes to the database whole. Both are read as PostgreSQL's documentation, sections 4.1.2.1 and
+     * 4.1.2.4, describes them; the backslash escapes of an {@code E'...'} string are not.
+     *
+     * @param sql the file's contents
+     * @return its statements, comments removed, in order
+     */
+    static List<String> split(String sql) {
+        String text = stripComments(sql);
+        List<String> statements = new ArrayList<>();
+        String dollarQuote = null;
+        boolean quoted = false;
+        int start = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (dollarQuote != null) {
+                // Only its own delimiter ends it; any other dollar sign in a body is text.
+                if (text.startsWith(dollarQuote, i)) {
+                    i += dollarQuote.length() - 1;
+                    dollarQuote = null;
+                }
+            } else if (quoted) {
+                // A doubled quote inside a string ends it and starts it again: the same thing.
+                quoted = c != '\'';
+            } else if (c == '\'') {
+                quoted = true;
+            } else if (c == '$' && !continuesIdentifier(text, i) && dollarTag(text, i) != null) {
+                // A dollar sign right after an identifier's character is part of the identifier.
+                dollarQuote = dollarTag(text, i);
+                i += dollarQuote.length() - 1;
+            } else if (c == ';') {
+                addStatement(statements, text.substring(start, i));
+                start = i + 1;
+            }
+        }
+        addStatement(statements, text.substring(start));
+        return statements;
+    }
+
+    /**
+     * The dollar-quote delimiter that starts at {@code at} — {@code $$}, or a tag between two dollar
+     * signs that could be an unquoted identifier — or null if the dollar sign there starts none, as
+     * the one in a positional parameter does not.
+     */
+    private static String dollarTag(String text, int at) {
+        int end = text.indexOf('$', at + 1);
+        if (end < 0 || !text.substring(at + 1, end).matches("([A-Za-z_][A-Za-z0-9_]*)?")) {
+            return null;
+        }
+        return text.substring(at, end + 1);
+    }
+
+    private static boolean continuesIdentifier(String text, int at) {
+        if (at == 0) {
+            return false;
+        }
+        char before = text.charAt(at - 1);
+        return Character.isLetterOrDigit(before) || before == '_' || before == '$';
+    }
+
+    private static void addStatement(List<String> statements, String candidate) {
+        String trimmed = candidate.trim();
+        if (!trimmed.isEmpty()) {
+            statements.add(trimmed);
+        }
     }
 
     /**
@@ -87,9 +155,8 @@ public final class JdbcSchema {
      * file did — so splitting first cuts a comment in half and leaves its second half glued to the
      * front of the next statement, where it is a syntax error rather than a comment.
      *
-     * <p>Splitting on a semicolon at all is only safe because the schema has no function bodies, no
-     * triggers and no string literals. If it ever does, this has to change with it, and a test
-     * asserting the current behaviour is what will notice.
+     * <p>A whole-line comment inside a function body goes too, which changes nothing the function
+     * does.
      */
     private static String stripComments(String sql) {
         StringBuilder sb = new StringBuilder(sql.length());

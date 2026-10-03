@@ -169,11 +169,19 @@ a reservation's lines into its stock read. The transaction sets its own isolatio
 statement, rather than the connection's being changed around it; changing the connection instead cost
 three statements a load, each a transaction of its own.
 
-Writing always happens at **read committed**, with every statement carrying the version it expects. If the
-row moved, the update matches no row, the transaction rolls back, and `apply` returns `false`. The
-stock rows go first, because they are the rows most likely to have moved: every command on a SKU
-writes its row. Finding that out before inserting the reservation saves the inserts a conflict would
-roll back.
+Writing is **one statement too** ([ADR 14](design/0014-one-round-trip-apply.md)). `till_apply`, a
+PL/pgSQL function the schema's fourth migration adds, takes the whole decision as arrays — a column
+of them to an argument, so a decision of any size is the same statement — and `apply` calls it once,
+in autocommit: the transaction begins, writes and commits inside one round trip, and no row it has
+written stays locked while anything crosses the network. It used to be `BEGIN`, a statement for each
+row and `COMMIT`, seven statements for a reserve, with its stock row locked from the first to the
+last; Database Insights found backends waiting for the application's next statement, locks held,
+16% of the database's load. The function applies and decides nothing: it writes the values the
+kernel computed, at **read committed**, every update carrying the version the kernel read. If a row
+moved, its update matches no row, the function raises, the statement takes everything it wrote with
+it, and `apply` returns `false`. The stock rows go first, because they are the rows most likely to
+have moved: every command on a SKU writes its row. Finding that out before inserting the reservation
+saves the inserts a conflict would roll back.
 
 A busy SKU's stock can be **split across rows** ([ADR 9](design/0009-hot-sku-shards.md)).
 `till_stock` is keyed by SKU and shard, a snapshot reads every shard of a SKU in scope, and a decision
@@ -186,10 +194,11 @@ answers it by loading again. A **check constraint violation** is not treated tha
 instead, because that means the application tried to write a level the database knows is impossible,
 and retrying it would spin around a real bug forever.
 
-Conflicts are detected with `on conflict do nothing` and a row count rather than by catching a unique
-violation. A failed statement inside a PostgreSQL transaction aborts the whole transaction, so the
-exception route makes every conflict cost a rollback of work already done — and makes the code read
-as though an exception were the expected case.
+A taken key is found with `on conflict do nothing` and a row count, and refused with the function's
+own SQLState, `TL001`, rather than by letting PostgreSQL's unique violation through. Only `TL001` is
+read as a refusal, so a unique violation where none was expected — a reservation's line written
+twice — is a bug, and raises like one. The refusal costs one thing the old `ROLLBACK` did not:
+PostgreSQL logs it as an error, about a kilobyte a time.
 
 ## Where the idempotency actually happens
 
