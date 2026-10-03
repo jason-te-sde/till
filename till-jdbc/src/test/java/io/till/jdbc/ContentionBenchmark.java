@@ -13,7 +13,11 @@ import io.till.core.ReservationId;
 import io.till.core.Sku;
 import io.till.core.Snapshot;
 import io.till.core.Till;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -83,7 +87,8 @@ class ContentionBenchmark {
         config.setMaximumPoolSize(poolSize);
         config.setPoolName("till-bench");
         try (HikariDataSource pool = new HikariDataSource(config)) {
-            Counting ledger = new Counting(new JdbcLedger(pool));
+            Wire wire = new Wire();
+            Counting ledger = new Counting(new JdbcLedger(wire.over(pool)));
             Till till = Till.builder(ledger).build();
             List<Sku> skus = new ArrayList<>();
             for (int i = 0; i < skuCount; i++) {
@@ -144,8 +149,10 @@ class ContentionBenchmark {
                 resetStatements(pool);
                 before = Counters.read(pool);
                 ledger.measuring = true;
+                wire.measuring = true;
             }
             ledger.measuring = false;
+            wire.measuring = false;
             // A backend reports its transactions when it goes idle, and waits up to ten seconds to.
             Thread.sleep(11_000);
             Counters after = Counters.read(pool);
@@ -167,6 +174,8 @@ class ContentionBenchmark {
                 System.out.printf(Locale.ROOT, "  transactions        %,d committed, %,d rolled back: %.1f per checkout%n",
                         commits, rollbacks, (commits + rollbacks) / Math.max(1.0, checkouts.sum()));
             }
+            System.out.printf(Locale.ROOT, "  statements sent     %,d: %.1f per checkout, BEGIN, COMMIT and ROLLBACK included%n",
+                    wire.statements.sum(), wire.statements.sum() / Math.max(1.0, checkouts.sum()));
             topStatements(pool);
         }
     }
@@ -202,6 +211,77 @@ class ContentionBenchmark {
                 }
             }
             return applied;
+        }
+    }
+
+    /**
+     * The ledger's pool, counting the statements sent over it while the measurement runs: each one
+     * executed, each row of a batch (the server runs every one), each commit and rollback, and each
+     * transaction begun — {@code setAutoCommit(false)}, which the driver sends as a {@code BEGIN}
+     * ahead of the next statement. The server's own count would leave out a statement that failed,
+     * and {@code pg_stat_statements} is not loaded on the container this benchmark starts.
+     */
+    private static final class Wire {
+
+        private final LongAdder statements = new LongAdder();
+        private volatile boolean measuring;
+
+        DataSource over(DataSource pool) {
+            return proxy(DataSource.class, pool, (method, args, result) -> {
+                if (!method.getName().equals("getConnection")) {
+                    return result;
+                }
+                return proxy(Connection.class, (Connection) result, (call, callArgs, made) -> {
+                    switch (call.getName()) {
+                        case "setAutoCommit" -> count(Boolean.FALSE.equals(callArgs[0]) ? 1 : 0);
+                        case "commit", "rollback" -> count(1);
+                        default -> {}
+                    }
+                    return made instanceof Statement statement ? counted(statement) : made;
+                });
+            });
+        }
+
+        private Statement counted(Statement statement) {
+            AtomicLong batched = new AtomicLong();
+            After counting = (method, args, result) -> {
+                switch (method.getName()) {
+                    case "addBatch" -> batched.incrementAndGet();
+                    case "clearBatch" -> batched.set(0);
+                    case "executeBatch", "executeLargeBatch" -> count(batched.getAndSet(0));
+                    case "execute", "executeQuery", "executeUpdate", "executeLargeUpdate" -> count(1);
+                    default -> {}
+                }
+                return result;
+            };
+            return statement instanceof PreparedStatement prepared
+                    ? proxy(PreparedStatement.class, prepared, counting)
+                    : proxy(Statement.class, statement, counting);
+        }
+
+        private void count(long sent) {
+            if (measuring) {
+                statements.add(sent);
+            }
+        }
+
+        @FunctionalInterface
+        private interface After {
+            Object handle(Method method, Object[] args, Object result) throws Throwable;
+        }
+
+        /** {@code target}, with {@code after} seeing every call it answered and what it answered. */
+        private static <T> T proxy(Class<T> type, T target, After after) {
+            return type.cast(Proxy.newProxyInstance(
+                    ContentionBenchmark.class.getClassLoader(), new Class<?>[] {type}, (self, method, args) -> {
+                        Object result;
+                        try {
+                            result = method.invoke(target, args);
+                        } catch (InvocationTargetException e) {
+                            throw e.getCause();
+                        }
+                        return after.handle(method, args, result);
+                    }));
         }
     }
 

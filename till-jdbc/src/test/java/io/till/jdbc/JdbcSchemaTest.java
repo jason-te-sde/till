@@ -59,6 +59,68 @@ class JdbcSchemaTest {
     }
 
     @Test
+    @DisplayName("a function body's semicolons do not end the statement that creates it")
+    void aFunctionBodyStaysWhole() {
+        List<String> statements = JdbcSchema.split(
+                """
+                create function f() returns void language plpgsql as $$
+                begin
+                    perform 1;
+                    perform 2;
+                end
+                $$;
+                create function g() returns text language sql as $body$ select 'a;b' $body$;
+                create table t (x integer);
+                """);
+
+        assertEquals(3, statements.size(), "three statements, got " + statements);
+        assertTrue(statements.get(0).startsWith("create function f()"), statements.get(0));
+        assertTrue(statements.get(0).endsWith("end\n$$"), "the body arrives whole: " + statements.get(0));
+        assertEquals("create function g() returns text language sql as $body$ select 'a;b' $body$", statements.get(1));
+        assertEquals("create table t (x integer)", statements.get(2));
+    }
+
+    @Test
+    @DisplayName("a dollar quote closes at its own delimiter, even where another tag runs into it")
+    void aDollarQuoteClosesAtItsOwnDelimiter() {
+        // Inside $$, "$x$$" is the text "$x" and then the closing $$, as PostgreSQL reads it: a
+        // delimiter that is not the closing one gives its last dollar sign back.
+        List<String> statements =
+                JdbcSchema.split("create function f() returns text language sql as $$ select 'a$x$$;\n"
+                        + "create table t (x integer);");
+
+        assertEquals(
+                List.of("create function f() returns text language sql as $$ select 'a$x$$", "create table t (x integer)"),
+                statements,
+                "two statements, got " + statements);
+    }
+
+    @Test
+    @DisplayName("a semicolon or a dollar sign inside a quoted string does not end or open anything")
+    void aQuotedStringIsText() {
+        List<String> statements =
+                JdbcSchema.split("create table t (x text default 'a;$$b''c');\ncreate table u (y integer);");
+
+        assertEquals(
+                List.of("create table t (x text default 'a;$$b''c')", "create table u (y integer)"),
+                statements,
+                "two statements, got " + statements);
+    }
+
+    @Test
+    @DisplayName("a dollar sign inside an identifier does not start a quote")
+    void aDollarInAnIdentifierIsNotAQuote() {
+        // PostgreSQL allows $ after an identifier's first character, and a dollar quote that follows
+        // one has to be separated from it by whitespace; so "a$b$c" is a name, not a quoted "b".
+        List<String> statements = JdbcSchema.split("create table t (a$b$c integer);\ncreate table u (x integer);");
+
+        assertEquals(
+                List.of("create table t (a$b$c integer)", "create table u (x integer)"),
+                statements,
+                "two statements, got " + statements);
+    }
+
+    @Test
     @DisplayName("every migration Flyway would apply is applied here too, in the same order")
     void everyMigration() throws Exception {
         List<String> files;
