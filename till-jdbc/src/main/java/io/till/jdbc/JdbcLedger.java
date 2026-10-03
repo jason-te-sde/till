@@ -56,10 +56,10 @@ import javax.sql.DataSource;
  *       so a single statement already reads at one instant; it needs no transaction to say so.
  *   <li><b>A load that reclaims, and the sweep,</b> still open a read-only repeatable-read
  *       transaction: what they read next depends on what the first read found, so it cannot be
- *       folded into one statement the way the lean load's {@code scope} CTE folds a reservation's
- *       lines into its stock read. At read committed, the several statements that path takes would
- *       each see a different instant — each row correct, the set of them describing a state that
- *       never existed.
+ *       folded into one statement the way the lean statement folds a reservation's lines into its
+ *       stock read. At read committed, the several statements that path takes would each see a
+ *       different instant — each row correct, the set of them describing a state that never
+ *       existed.
  * </ul>
  *
  * <p><b>Writing</b> is one statement, in autocommit, at read committed (see {@link #apply}): the
@@ -115,51 +115,50 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
      * statement's arms to agree on column count and type, and four genuinely different row shapes
      * otherwise mean a wide, mostly-{@code null} row either way.
      *
-     * <p>{@code target_lines} and {@code scope} are CTEs rather than a second round trip: {@code
-     * scope} is {@link Command#declaredSkus()} plus whatever SKUs the named reservation's lines add,
-     * which {@link #readSnapshot} only knows after a separate read of those lines. One statement can
-     * still compute it, because a subquery in it runs against the same snapshot as everything else in
-     * it — the whole reason this needs no transaction (see {@link #load}).
+     * <p>The parameters, in the order they appear: the target reservation (for {@code target_lines}),
+     * the idempotency key, the target reservation again (for its header), and the command's own SKUs.
+     * One that a command does not have binds {@code null}, or an empty array, rather than skipping its
+     * arm: {@code = null} matches no row, the same zero rows a skipped arm would have produced, and a
+     * prepared statement cannot have an optional arm.
      *
-     * <p>Orderings are the ones {@link #SELECT_STOCK} and {@link #SELECT_LINES} already use: {@code
-     * collate "C"} for SKUs, not for one reservation's lines (its {@code reservation_id} is constant
-     * within {@code target_lines}, so omitting it from the order leaves the result unchanged). The
-     * differential test depends on both.
+     * <p>{@code target_lines} is a CTE because two arms read it — the lines arm, and the stock arm,
+     * whose scope is {@link Command#declaredSkus()} plus whatever SKUs those lines add, which {@link
+     * #readSnapshot} only knows after a separate read of them. One statement can still compute it,
+     * because a subquery in it runs against the same snapshot as everything else in it — the whole
+     * reason this needs no transaction (see {@link #load}). The scope is one array and the stock arm
+     * asks for {@code sku = any(...)}: a row matches once however often the array names its SKU, so
+     * a SKU the command and the reservation both name comes back once, with every shard it has.
      *
-     * <p>A SKU or key absent from a command binds {@code null} for that arm's parameter rather than
-     * skipping the arm — {@code = null} matches no row, which is the same zero rows a skipped arm
-     * would have produced, and a statement this is cannot have an optional arm.
+     * <p>It returns its rows in no order, and that is what keeps it cheap. It used to number the
+     * lines and the stock with window functions, sort the lot by {@code kind} and join the stock to a
+     * deduplicated set of SKUs; for the dozen rows a load returns, that cost the database more than
+     * the lookups did (ADR 12, "Later"). Nothing needs the order: {@link #assembleLeanSnapshot} puts
+     * the rows into a {@link Snapshot} and a {@link Reservation}, whose constructors sort what they
+     * are given. {@code JdbcLedgerTest} keeps the statement this way, holding its generic plan to
+     * lookups under one append and holding it to being planned once rather than on every call, which
+     * a rewrite that runs faster can lose.
      */
     private static final String SNAPSHOT_QUERY =
             "with target_lines as ("
                     + "  select sku, shard, quantity from till_reservation_line where reservation_id = ?"
-                    + "), scope as ("
-                    + "  select sku from unnest(?::varchar[]) as sku"
-                    + "  union"
-                    + "  select sku from target_lines"
                     + ") "
-                    + "select kind, text1, text2, text3, int1, num1, num2, num3, ts1, ts2 from ("
-                    + "  select 'record' as kind, idem_key::text as text1, fingerprint::text as text2, "
-                    + "         outcome::text as text3, null::integer as int1, null::bigint as num1, "
-                    + "         null::bigint as num2, null::bigint as num3, recorded_at as ts1, "
-                    + "         null::timestamptz as ts2, 0::bigint as seq "
-                    + "  from till_idempotency where idem_key = ? "
-                    + "  union all "
-                    + "  select 'reservation', id::text, idem_key::text, state::text, null::integer, "
-                    + "         version, null::bigint, null::bigint, created_at, expires_at, 0::bigint "
-                    + "  from till_reservation where id = ? "
-                    + "  union all "
-                    + "  select 'line', sku::text, null::text, null::text, shard, quantity, null::bigint, "
-                    + "         null::bigint, null::timestamptz, null::timestamptz, "
-                    + "         row_number() over (order by sku, shard) "
-                    + "  from target_lines "
-                    + "  union all "
-                    + "  select 'stock', sku::text, null::text, null::text, shard, on_hand, reserved, "
-                    + "         version, null::timestamptz, null::timestamptz, "
-                    + "         row_number() over (order by sku collate \"C\", shard) "
-                    + "  from till_stock where sku in (select sku from scope)"
-                    + ") combined "
-                    + "order by kind, seq";
+                    + "select 'record' as kind, idem_key::text as text1, fingerprint::text as text2, "
+                    + "       outcome::text as text3, null::integer as int1, null::bigint as num1, "
+                    + "       null::bigint as num2, null::bigint as num3, recorded_at as ts1, "
+                    + "       null::timestamptz as ts2 "
+                    + "from till_idempotency where idem_key = ? "
+                    + "union all "
+                    + "select 'reservation', id::text, idem_key::text, state::text, null::integer, "
+                    + "       version, null::bigint, null::bigint, created_at, expires_at "
+                    + "from till_reservation where id = ? "
+                    + "union all "
+                    + "select 'line', sku::text, null::text, null::text, shard, quantity, null::bigint, "
+                    + "       null::bigint, null::timestamptz, null::timestamptz "
+                    + "from target_lines "
+                    + "union all "
+                    + "select 'stock', sku::text, null::text, null::text, shard, on_hand, reserved, "
+                    + "       version, null::timestamptz, null::timestamptz "
+                    + "from till_stock where sku = any(?::varchar[] || array(select sku from target_lines))";
 
     /**
      * Ordering is {@code collate "C"} throughout, which is code point order and therefore the order
@@ -347,9 +346,9 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 PreparedStatement statement = connection.prepareStatement(SNAPSHOT_QUERY)) {
             String targetId = command.targetReservation().map(ReservationId::value).orElse(null);
             statement.setString(1, targetId);
-            statement.setArray(2, skuArray(connection, command.declaredSkus()));
-            statement.setString(3, command.idempotencyKey().map(IdempotencyKey::value).orElse(null));
-            statement.setString(4, targetId);
+            statement.setString(2, command.idempotencyKey().map(IdempotencyKey::value).orElse(null));
+            statement.setString(3, targetId);
+            statement.setArray(4, skuArray(connection, command.declaredSkus()));
             try (ResultSet rows = statement.executeQuery()) {
                 return assembleLeanSnapshot(command, rows);
             }
@@ -377,9 +376,13 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
      *
      * <p>The scope — every SKU {@link Snapshot#stock()} must have an entry for — is recomputed here
      * from the command's own SKUs and the reservation found, exactly as {@link #readSnapshot} does,
-     * rather than trusted from the query's {@code scope} CTE: that CTE exists only to decide which
-     * stock rows to fetch, and a SKU with none still has to be marked {@linkplain
-     * Snapshot.Builder#absent absent}.
+     * rather than read off the rows: the statement's array only decides which stock rows to fetch,
+     * and a SKU with none still has to be marked {@linkplain Snapshot.Builder#absent absent}.
+     *
+     * <p>The rows arrive in no order (see {@link #SNAPSHOT_QUERY}), and nothing here depends on one:
+     * the {@link Snapshot} sorts each SKU's shards by index, the {@link Reservation} sorts its lines
+     * by SKU and its allocations by SKU and shard, and the SKUs of the snapshot follow {@code scope},
+     * which is the command's own order and then the reservation's.
      */
     private Snapshot assembleLeanSnapshot(Command command, ResultSet rows) throws SQLException {
         Snapshot.Builder builder = Snapshot.builder();
