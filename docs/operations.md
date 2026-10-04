@@ -281,6 +281,24 @@ the SKU reads all of its rows, and rows are only ever added — so split what wi
 everything. Splitting writes every row the SKU has, which is why it belongs before the sale rather
 than in the middle of it.
 
+## Durability
+
+**A hold commits without waiting for the disk; a sale, an adjustment and a split wait.** A decision that
+takes a hold, gives one back, writes expired ones off or refuses a command commits with
+`synchronous_commit` off, for its own transaction only ([ADR 15](design/0015-async-commit-for-holds.md)).
+A crash of the database server — not a clean shutdown, which flushes first — can lose the holds
+acknowledged in the moment before it: up to three times `wal_writer_delay`, 600 ms at PostgreSQL's
+default. Each is lost whole, as though it had not been made, and nothing durable survives that depended
+on one, so the database comes back consistent and needs no repair. A customer whose hold was lost is
+told "No reservation" when they pay, and the order expires at its deadline; nothing is sold twice.
+
+**Leave `synchronous_commit` at `on` in the parameter group.** Off for the whole database would put
+payments and adjustments in that window too, and they are the commits a crash must not lose.
+`wal_writer_delay` is the window's length: lower is a shorter window and more flushes.
+
+The outbox publisher flushes the WAL before it sends a batch, so no event leaves for the broker while
+a crash could still take back the decision that wrote it.
+
 ## Retention
 
 Three tables grow for as long as the service runs. Till prunes them itself, on a schedule, because
@@ -375,7 +393,10 @@ they agree about the schema — which is what the Flyway version records.
 
 A migration that only adds things is safe during a rolling deploy. One that removes or narrows
 something is not, and should be split: deploy code that no longer needs the column, then remove it.
-There is one migration so far, so this is advice rather than experience.
+The exception is a replacement that accepts everything the old one did. `V5__apply_durability.sql`
+drops `till_apply` and creates it again with one more argument, which has a default, so the call the
+last version's instances still send while the first new one migrates reaches the new function and
+behaves as before ([ADR 15](design/0015-async-commit-for-holds.md)).
 
 ## Symptom to cause
 
@@ -399,6 +420,8 @@ There is one migration so far, so this is advice rather than experience.
 | The store refuses to start: "an identity provider" | `STORE_OIDC_ISSUER_URI` and `STORE_OIDC_CLIENT_ID` are required |
 | Refuses to start, Flyway validation | the database has a schema this build did not create, or a migration was edited after being applied |
 | A store or ledger deploy rolls back with `remaining connection slots are reserved` | the connection budget, not the new build. Steady state holds 64 against the `db.t4g.micro`'s ~70; `infra/runtime/services.tf` replaces one task at a time so a deploy never adds to it |
+| `ERROR: ... is not at version ...` or `... already exists`, SQLSTATE `TL001`, in PostgreSQL's log | contention, and expected under it: a decision that `till_apply` refused because another got to its rows or keys first, which the ledger answers by deciding again ([ADR 14](design/0014-one-round-trip-apply.md)). PostgreSQL logs each as an `ERROR` with its `CONTEXT` and `STATEMENT` lines, roughly 1 KB, so the log grows with the conflict rate. `log_min_error_statement` above `error` in the parameter group drops the `STATEMENT` line, about half of each |
+| 404 `RESERVATION_NOT_FOUND` paying for an order placed just before the ledger's database crashed | a hold acknowledged in the moment before the crash and lost in it: holds commit without waiting for the disk ([ADR 15](design/0015-async-commit-for-holds.md)). Nothing was sold twice; the order expires at its deadline and the customer can order again |
 | `LedgerException` about an impossible stock level | a bug in till. The database refused a level the application should not have been able to produce. The stock row named in the message is the place to start, and it has **not** been corrupted — the transaction rolled back |
 | The outbox backlog grows and nothing errors | the publisher is not running. `till.outbox.enabled`, and whether the scheduler is alive. The gauge is read straight from the table, so it is right even when the publisher is the thing that is broken. If `till_outbox_standby_total` is rising on every instance, one of them holds the publishing claim and is stuck: its session in `pg_locks`, advisory lock `0x74696c6c6f757462` |
 | The store's stock lags while the outbox is empty | the consumers. How many partitions the topic has (`kafka-topics.sh --describe`): one partition is one consumer, however many stores are running |
