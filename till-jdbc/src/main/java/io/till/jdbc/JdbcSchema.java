@@ -28,7 +28,8 @@ public final class JdbcSchema {
             "db/migration/V1__till_schema.sql",
             "db/migration/V2__listing_indexes.sql",
             "db/migration/V3__stock_shards.sql",
-            "db/migration/V4__apply_function.sql");
+            "db/migration/V4__apply_function.sql",
+            "db/migration/V5__apply_durability.sql");
 
     private JdbcSchema() {}
 

@@ -164,24 +164,33 @@ at all.
 A load that reclaims, and the sweep, still open a **read-only repeatable-read** transaction. What
 they read next depends on what the first read found — a reclaim limit widens the set of expired
 holds a decision might write off, and the sweep does not know which rows those are until it asks —
-so their later statements cannot be folded into the first the way the lean load's `scope` CTE folds
-a reservation's lines into its stock read. The transaction sets its own isolation, as its first
+so their later statements cannot be folded into the first, the way the lean statement adds the SKUs
+of a reservation's lines to the stock it reads. The transaction sets its own isolation, as its first
 statement, rather than the connection's being changed around it; changing the connection instead cost
 three statements a load, each a transaction of its own.
 
 Writing is **one statement too** ([ADR 14](design/0014-one-round-trip-apply.md)). `till_apply`, a
-PL/pgSQL function the schema's fourth migration adds, takes the whole decision as arrays — a column
-of them to an argument, so a decision of any size is the same statement — and `apply` calls it once,
-in autocommit: the transaction begins, writes and commits inside one round trip, and no row it has
-written stays locked while anything crosses the network. It used to be `BEGIN`, a statement for each
-row and `COMMIT`, seven statements for a reserve, with its stock row locked from the first to the
-last; Database Insights found backends waiting for the application's next statement, locks held,
-16% of the database's load. The function applies and decides nothing: it writes the values the
-kernel computed, at **read committed**, every update carrying the version the kernel read. If a row
-moved, its update matches no row, the function raises, the statement takes everything it wrote with
-it, and `apply` returns `false`. The stock rows go first, because they are the rows most likely to
-have moved: every command on a SKU writes its row. Finding that out before inserting the reservation
-saves the inserts a conflict would roll back.
+PL/pgSQL function the schema's fourth migration added and its fifth replaced, takes the whole
+decision as arrays — a column of them to an argument, so a decision of any size is the same
+statement — and `apply` calls it once, in autocommit: the transaction begins, writes and commits
+inside one round trip, and no row it has written stays locked while anything crosses the network. It
+used to be `BEGIN`, a statement for each row and `COMMIT`, seven statements for a reserve, with its
+stock row locked from the first to the last; Database Insights found backends waiting for the
+application's next statement, locks held, 16% of the database's load. The function applies and
+decides nothing: it writes the values the kernel computed, at **read committed**, every update
+carrying the version the kernel read. If a row moved, its update matches no row, the function raises,
+the statement takes everything it wrote with it, and `apply` returns `false`. The stock rows go first,
+because they are the rows most likely to have moved: every command on a SKU writes its row. Finding
+that out before inserting the reservation saves the inserts a conflict would roll back.
+
+**A hold commits without waiting for the disk** ([ADR 15](design/0015-async-commit-for-holds.md)).
+A decision that takes a hold, gives one back, writes expired ones off or refuses a command tells
+`till_apply` it need not be durable, and the function turns `synchronous_commit` off for that
+transaction alone: `apply` returns once its WAL is in the server's buffers rather than on disk. A
+crash can lose the last few hundred milliseconds of those, each one whole, and never one that a
+durable decision depended on, because a durable commit flushes all the WAL written before its own. A
+lost hold is a hold that never happened, and a lost release or expiry leaves a hold that expires
+again. A sale, an adjustment and a split wait for the disk, as every decision used to.
 
 A busy SKU's stock can be **split across rows** ([ADR 9](design/0009-hot-sku-shards.md)).
 `till_stock` is keyed by SKU and shard, a snapshot reads every shard of a SKU in scope, and a decision
@@ -253,7 +262,9 @@ answered by doing nothing, because the hold is now in the state the loser wanted
 The publisher is at-least-once by construction — it marks rows **after** delivering them, so a crash
 in between repeats the send. Two publishers can deliver the same batch. That is the consumer's to
 drop, which it can, because every event carries a deduplication key that is a function of what
-happened rather than of when it was published.
+happened rather than of when it was published. It flushes the WAL before it sends: a hold's commit is
+visible before it is on disk, and an event already sent cannot be called back if a crash then takes
+its hold.
 
 ## The store
 

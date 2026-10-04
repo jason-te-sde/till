@@ -193,6 +193,24 @@ explicitly not: it is a testing tool and it will change.
 
 ### Changed
 
+- **A hold commits without waiting for the disk; a sale, an adjustment and a split still wait**
+  ([ADR 15](docs/design/0015-async-commit-for-holds.md)). Database Insights put `COMMIT` at 20% of the
+  ledger database's load by statement, and the WAL waits at about 11% of it by wait event, and most
+  commits are holds, which expire by themselves. `V5__apply_durability.sql` replaces `till_apply` with
+  V4's function and one more argument, `durable`, last and true by default; false sets
+  `synchronous_commit` off for that transaction only. `JdbcLedger.apply` passes false for `Reserved`,
+  `Released`, `Swept` and `Rejected`, and true for everything else, an outcome added later included. A
+  crash of the database can lose the holds acknowledged in the last few hundred milliseconds before
+  it, each one whole, and never one that a durable decision depended on: a lost reserve is a hold that
+  never happened, and paying for it is answered 404 `RESERVATION_NOT_FOUND`; a lost release or expiry
+  leaves a hold that expires again. The outbox publisher now flushes the WAL between reading a batch
+  and sending it (`pg_logical_emit_message` with `flush`), so that no event leaves while a crash could
+  still take back the hold it describes. **The ledger now needs PostgreSQL 17**, for that function: on
+  an earlier server every round of the publisher fails, and nothing is delivered. V4's function is
+  dropped; the default is what lets the last version's instances, still serving during a rolling
+  deploy, keep writing, durably. Not measured: the local benchmark's database runs with `fsync=off`,
+  where a flush costs nothing, and the next load test on AWS will show it. A schema change, so a minor
+  version when released.
 - **The statement behind every lean load costs the database about 30% less CPU, and returns the same
   `Snapshot`** ([ADR 12](docs/design/0012-one-statement-snapshot.md), "Later"). The load test that
   recorded the ledger database's load with Database Insights put it at 30.6% of all the database's

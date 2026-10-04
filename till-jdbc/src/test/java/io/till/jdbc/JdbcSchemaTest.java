@@ -46,14 +46,14 @@ class JdbcSchemaTest {
     void commentsAreStrippedBeforeSplitting() {
         // The schema really does contain such a comment, and splitting on ';' before removing
         // comments left its second half glued to the front of the next statement. Every statement
-        // starting with 'create' is the assertion that no longer happens.
+        // starting with a command is the assertion that no longer happens.
         List<String> statements = JdbcSchema.statements();
 
         assertFalse(statements.isEmpty());
         for (String statement : statements) {
             assertTrue(
-                    statement.startsWith("create") || statement.startsWith("alter"),
-                    "a statement that is not a create or an alter: " + statement.lines().findFirst().orElse(""));
+                    statement.startsWith("create") || statement.startsWith("alter") || statement.startsWith("drop"),
+                    "a statement that is not a create, an alter or a drop: " + statement.lines().findFirst().orElse(""));
             assertFalse(statement.contains("--"), "a comment survived into: " + statement);
         }
     }
