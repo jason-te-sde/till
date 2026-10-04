@@ -16,7 +16,9 @@ import io.till.core.Kernel;
 import io.till.core.Line;
 import io.till.core.Mutation;
 import io.till.core.Outcome;
+import io.till.core.OutcomeRecord;
 import io.till.core.OutboxEntry;
+import io.till.core.RejectionCode;
 import io.till.core.Reservation;
 import io.till.core.ReservationId;
 import io.till.core.ReservationState;
@@ -35,6 +37,7 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -51,6 +54,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -975,6 +979,150 @@ class JdbcLedgerTest {
     }
 
     @Test
+    @DisplayName("till_apply told a decision need not be durable commits it without waiting for the WAL, in that transaction only")
+    void aDecisionThatNeedNotBeDurableTurnsSynchronousCommitOff() throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                assertEquals("off", commitModeAfter(connection, applyNothing(", durable => false")));
+                connection.rollback();
+                assertEquals("on", commitModeAfter(connection, null), "the next transaction is back to the default");
+
+                assertEquals("on", commitModeAfter(connection, applyNothing(", durable => true")));
+                connection.rollback();
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("an instance still sending the last version's call, which does not name durable, is answered, and durably")
+    void theLastVersionsCallIsStillAnswered() throws SQLException {
+        // A rolling deploy migrates the database when its first new instance starts, while instances
+        // of the last version are still serving; they send V4's call, typed as they bind it, with
+        // nothing to write here but a record.
+        String[] arrays = {
+            "varchar", "integer", "bigint", "bigint", "bigint", "varchar", "varchar", "bigint", "varchar", "varchar",
+            "varchar", "timestamptz", "timestamptz", "varchar", "varchar", "integer", "bigint", "varchar", "text",
+            "timestamptz"
+        };
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement call = connection.prepareStatement(LAST_VERSIONS_APPLY)) {
+                for (int i = 0; i < arrays.length; i++) {
+                    call.setArray(i + 1, connection.createArrayOf(arrays[i], new Object[0]));
+                }
+                call.setString(21, "from-v4");
+                call.setString(22, "fingerprint");
+                call.setString(23, "outcome");
+                call.setObject(24, T0.atOffset(ZoneOffset.UTC), Types.TIMESTAMP_WITH_TIMEZONE);
+                call.execute();
+
+                assertEquals("on", commitModeAfter(connection, null), "it commits as it always did");
+                connection.commit();
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        }
+        assertEquals(1, count("select count(*) from till_idempotency where idem_key = 'from-v4'"));
+    }
+
+    @Test
+    @DisplayName("a hold taken, given back or written off, and a refusal, commit without waiting for the WAL; every other outcome waits")
+    void onlyHoldsAndRefusalsCommitWithoutWaiting() {
+        // Every kind of outcome, and synchronous_commit as it must stand when its decision is written.
+        // A kind added to Outcome and not here fails below, so that somebody decides which it is.
+        Map<Class<?>, Durability> table = new LinkedHashMap<>();
+        table.put(Outcome.Reserved.class,
+                new Durability(new Outcome.Reserved(rid("r1"), List.of(Line.of("widget", 1)), T0.plus(TTL)), "off"));
+        table.put(Outcome.Released.class, new Durability(new Outcome.Released(rid("r1"), T0), "off"));
+        table.put(Outcome.Swept.class, new Durability(new Outcome.Swept(3), "off"));
+        table.put(Outcome.Rejected.class,
+                new Durability(Outcome.Rejected.of(RejectionCode.RESERVATION_EXPIRED, "r1 expired"), "off"));
+        table.put(Outcome.Committed.class, new Durability(new Outcome.Committed(rid("r1"), T0), "on"));
+        table.put(Outcome.Adjusted.class, new Durability(new Outcome.Adjusted(sku("widget"), 10, 0), "on"));
+        table.put(Outcome.Sharded.class, new Durability(new Outcome.Sharded(sku("widget"), 4), "on"));
+        assertEquals(
+                Set.of(Outcome.class.getPermittedSubclasses()),
+                table.keySet(),
+                "every kind of outcome is classified here: a hold, which may commit without waiting for its WAL, "
+                        + "or something that moves stock for good, which may not");
+
+        // What the database saw: the setting, read inside the statement that writes the decision's record.
+        execute("create table till_test_commit_mode (idem_key varchar primary key, synchronous_commit text)");
+        execute("create function till_test_commit_mode() returns trigger language plpgsql as $$ begin "
+                + "insert into till_test_commit_mode values (new.idem_key, current_setting('synchronous_commit')); "
+                + "return null; end $$");
+        execute("create trigger till_test_commit_mode after insert on till_idempotency "
+                + "for each row execute function till_test_commit_mode()");
+        try {
+            Map<String, String> expected = new LinkedHashMap<>();
+            Map<String, String> seen = new LinkedHashMap<>();
+            table.forEach((kind, durability) -> {
+                // Made up: an outcome and a record of it, which is all apply reads to tell them apart,
+                // and the one row the trigger watches.
+                String key = "mode-" + kind.getSimpleName();
+                Outcome outcome = durability.sample();
+                OutcomeRecord record = new OutcomeRecord(key(key), "fingerprint", Codec.encodeOutcome(outcome), T0);
+                assertTrue(ledger.apply(new Decision(outcome, List.of(), List.of(), Optional.of(record))));
+                expected.put(kind.getSimpleName(), durability.synchronousCommit());
+                seen.put(kind.getSimpleName(), text("select synchronous_commit from till_test_commit_mode where idem_key = '"
+                        + key + "'"));
+            });
+
+            assertEquals(expected, seen);
+        } finally {
+            execute("drop trigger till_test_commit_mode on till_idempotency");
+            execute("drop function till_test_commit_mode()");
+            execute("drop table till_test_commit_mode");
+        }
+    }
+
+    /** An outcome of one kind, and what synchronous_commit must be while its decision is written. */
+    private record Durability(Outcome sample, String synchronousCommit) {}
+
+    /** The statement {@code JdbcLedger} sent before V5: every argument named, none of them durable. */
+    private static final String LAST_VERSIONS_APPLY =
+            "select till_apply("
+                    + "put_sku => ?, put_shard => ?, put_on_hand => ?, put_reserved => ?, put_version => ?, "
+                    + "set_id => ?, set_state => ?, set_version => ?, "
+                    + "insert_id => ?, insert_key => ?, insert_state => ?, insert_created_at => ?, "
+                    + "insert_expires_at => ?, "
+                    + "line_reservation => ?, line_sku => ?, line_shard => ?, line_quantity => ?, "
+                    + "event_key => ?, event_payload => ?, event_recorded_at => ?, "
+                    + "record_key => ?, record_fingerprint => ?, record_outcome => ?, record_recorded_at => ?)";
+
+    /**
+     * Runs {@code sql}, if any, in the connection's current transaction, and answers {@code show
+     * synchronous_commit} from inside the same transaction.
+     */
+    private static String commitModeAfter(Connection connection, String sql) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            if (sql != null) {
+                statement.execute(sql);
+            }
+            try (ResultSet rows = statement.executeQuery("show synchronous_commit")) {
+                rows.next();
+                return rows.getString(1);
+            }
+        }
+    }
+
+    /** A call to {@code till_apply} with nothing to write — every array empty, no record — and {@code more}. */
+    private static String applyNothing(String more) {
+        return "select till_apply("
+                + "put_sku => '{}', put_shard => '{}', put_on_hand => '{}', put_reserved => '{}', put_version => '{}', "
+                + "set_id => '{}', set_state => '{}', set_version => '{}', "
+                + "insert_id => '{}', insert_key => '{}', insert_state => '{}', insert_created_at => '{}', "
+                + "insert_expires_at => '{}', "
+                + "line_reservation => '{}', line_sku => '{}', line_shard => '{}', line_quantity => '{}', "
+                + "event_key => '{}', event_payload => '{}', event_recorded_at => '{}', "
+                + "record_key => null, record_fingerprint => null, record_outcome => null, record_recorded_at => null"
+                + more + ")";
+    }
+
+    @Test
     @DisplayName("a decision listing its rows in an order the function cannot keep is refused, and nothing is sent")
     void aDecisionOutOfOrderIsRefused() {
         till.adjust(key("d1"), sku("widget"), 10);
@@ -1014,6 +1162,17 @@ class JdbcLedgerTest {
                 ResultSet rows = statement.executeQuery(sql)) {
             rows.next();
             return rows.getLong(1);
+        } catch (SQLException e) {
+            throw new IllegalStateException(sql, e);
+        }
+    }
+
+    /** The first column of the first row, or null if there is none. */
+    private String text(String sql) {
+        try (Connection connection = dataSource.getConnection();
+                Statement statement = connection.createStatement();
+                ResultSet rows = statement.executeQuery(sql)) {
+            return rows.next() ? rows.getString(1) : null;
         } catch (SQLException e) {
             throw new IllegalStateException(sql, e);
         }

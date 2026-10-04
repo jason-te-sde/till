@@ -12,6 +12,7 @@ import io.till.core.Line;
 import io.till.core.Mutation;
 import io.till.core.Outbox;
 import io.till.core.OutboxEntry;
+import io.till.core.Outcome;
 import io.till.core.OutcomeRecord;
 import io.till.core.Reservation;
 import io.till.core.Retention;
@@ -69,6 +70,8 @@ import javax.sql.DataSource;
  * the transaction begins and ends inside the one statement. If a row moved underneath the decision,
  * its update matches no row, the function raises, everything the statement wrote is undone, and
  * {@code apply} returns {@code false} so that the caller can decide again against what is there now.
+ * A hold taken, given back or written off, and a refusal, commit without waiting for their WAL to be
+ * flushed; everything else waits for it ({@link #ASYNCHRONOUS}, ADR 15).
  *
  * <p><b>Refused is not failed.</b> A version that has moved, a taken reservation id, an idempotency
  * key claimed by a concurrent copy of the same request: all of them return {@code false}, which is
@@ -178,11 +181,11 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                     + "where state = 'HELD' and expires_at <= ? order by id collate \"C\" limit ?";
 
     /**
-     * A whole decision, written by {@code till_apply} ({@code V4__apply_function.sql}): every mutation,
-     * event and record as arrays, a column of them to an argument. The text is the same for every
-     * decision, whatever it holds, so the driver prepares it once per connection and the server plans
-     * it once. The arguments are named, so the call says which column each placeholder is; {@link
-     * #bind} sets them in this order.
+     * A whole decision, written by {@code till_apply} ({@code V5__apply_durability.sql}): every
+     * mutation, event and record as arrays, a column of them to an argument, and whether it has to be
+     * on disk before the call returns. The text is the same for every decision, whatever it holds, so
+     * the driver prepares it once per connection and the server plans it once. The arguments are
+     * named, so the call says which column each placeholder is; {@link #bind} sets them in this order.
      */
     private static final String APPLY =
             "select till_apply("
@@ -192,7 +195,25 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                     + "insert_expires_at => ?, "
                     + "line_reservation => ?, line_sku => ?, line_shard => ?, line_quantity => ?, "
                     + "event_key => ?, event_payload => ?, event_recorded_at => ?, "
-                    + "record_key => ?, record_fingerprint => ?, record_outcome => ?, record_recorded_at => ?)";
+                    + "record_key => ?, record_fingerprint => ?, record_outcome => ?, record_recorded_at => ?, "
+                    + "durable => ?)";
+
+    /**
+     * The outcomes whose decisions commit without waiting for their WAL to be flushed (ADR 15): a hold
+     * taken, a hold given back, holds written off by the sweep, and a refusal, which writes nothing but
+     * the expired holds it wrote off on the way and its own record. A hold is temporary by design, and
+     * a crash that loses one of these leaves the database as though it had not been made: a hold that
+     * was never taken, a hold still there that expires again later (ADR 4), a command that a retry
+     * decides afresh. Nothing durable can depend on one and survive without it, because a durable
+     * commit flushes all the WAL before its own.
+     *
+     * <p>Everything else waits for the flush: a hold turned into a sale, which lost would let a unit
+     * that was paid for be sold again; on-hand stock adjusted, which lost could invent stock; a SKU
+     * split into shards; and any outcome added after this was written, until somebody decides
+     * otherwise.
+     */
+    private static final Set<Class<? extends Outcome>> ASYNCHRONOUS =
+            Set.of(Outcome.Reserved.class, Outcome.Released.class, Outcome.Swept.class, Outcome.Rejected.class);
 
     private static final String SELECT_UNPUBLISHED =
             "select sequence, payload, recorded_at from till_outbox where published_at is null "
@@ -619,6 +640,11 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
      * the network, as each did when every mutation was a statement of its own between a {@code BEGIN}
      * and a {@code COMMIT} (ADR 14).
      *
+     * <p>A decision whose outcome is in {@link #ASYNCHRONOUS} is committed with {@code
+     * synchronous_commit} off, for its own transaction only, and {@code true} means it is committed
+     * and visible, not yet that it is on disk: a crash of the database in the next few hundred
+     * milliseconds can lose it, whole. Every other decision is on disk when this returns (ADR 15).
+     *
      * <p>A row not at the version the decision expects, or a key it inserts already taken, makes the
      * function raise {@link #REFUSED}, which undoes everything the statement wrote: that is the
      * {@code false}. Every other error is an exception, a check violation above all.
@@ -638,7 +664,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 connection.setAutoCommit(true);
             }
             try (PreparedStatement statement = connection.prepareStatement(APPLY)) {
-                bind(connection, statement, rows);
+                bind(connection, statement, rows, !ASYNCHRONOUS.contains(decision.outcome().getClass()));
                 statement.execute();
                 return true;
             } finally {
@@ -660,8 +686,9 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         }
     }
 
-    /** Binds a decision's rows to {@link #APPLY}, in the order its placeholders are in. */
-    private static void bind(Connection connection, PreparedStatement statement, Rows rows) throws SQLException {
+    /** Binds a decision's rows, and whether it is durable, to {@link #APPLY}, in the order its placeholders are in. */
+    private static void bind(Connection connection, PreparedStatement statement, Rows rows, boolean durable)
+            throws SQLException {
         OutcomeRecord record = rows.record().orElse(null);
         int at = 0;
         statement.setArray(++at, array(connection, "varchar", rows.puts(), put -> put.sku().value()));
@@ -691,6 +718,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         statement.setString(++at, record == null ? null : record.fingerprint());
         statement.setString(++at, record == null ? null : record.encodedOutcome());
         statement.setObject(++at, record == null ? null : offset(record.recordedAt()), Types.TIMESTAMP_WITH_TIMEZONE);
+        statement.setBoolean(++at, durable);
     }
 
     /** One column of one kind of row, as the SQL array {@code till_apply} takes it. */
