@@ -1,5 +1,7 @@
 package io.till.core.mem;
 
+import io.till.core.BatchDecision;
+import io.till.core.BatchSnapshot;
 import io.till.core.Command;
 import io.till.core.Decision;
 import io.till.core.Event;
@@ -37,7 +39,7 @@ import java.util.function.Consumer;
 /**
  * A ledger in a few maps.
  *
- * <p>Three jobs, and only the first is obvious:
+ * <p>Four jobs, and only the first is obvious:
  *
  * <ul>
  *   <li>It makes till usable with no database at all — a single process that wants correct
@@ -48,12 +50,14 @@ import java.util.function.Consumer;
  *       seeded schedule against both must produce the same answers and the same final state. That
  *       comparison is worth more than either implementation's own tests, because the two were
  *       written from the same contract and disagree exactly where one of them read it wrong.
+ *   <li>It is what a batch of commands is decided against ({@link #from}): seeded with the rows the
+ *       batch read, it gives each command the snapshot the commands before it left, for that reason.
  * </ul>
  *
  * <p>Locking is coarse on purpose: one lock, held for the whole of a load and for the whole of an
- * apply, and never across both. That makes each half atomic and leaves the interesting part —
- * deciding against a snapshot that has since moved — exactly as exposed as it is against a real
- * database, which is the part worth testing.
+ * apply, a batch's included, and never across both. That makes each half atomic and leaves the
+ * interesting part — deciding against a snapshot that has since moved — exactly as exposed as it is
+ * against a real database, which is the part worth testing.
  *
  * <p>Everything is kept forever. There is no compaction, no eviction of old idempotency records and
  * no bound on the outbox, because this is for tests and for single-process embedding. A long-running
@@ -122,9 +126,6 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
         boolean sweep = command instanceof Command.Sweep;
         List<Reservation> found = new ArrayList<>();
         for (Reservation reservation : reservations.values()) {
-            if (found.size() >= limit) {
-                break;
-            }
             if (!reservation.isReclaimableAt(now)) {
                 continue;
             }
@@ -135,10 +136,132 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
                 found.add(reservation);
             }
         }
-        // Ascending by id, so that two ledgers given the same rows offer them in the same order and
-        // a differential test compares like with like.
+        // The first by id, so that two ledgers given the same rows offer the same ones, in the same
+        // order, and a differential test compares like with like: PostgreSQL orders them by id and
+        // then limits them. Limiting them in the order they were taken, and sorting what was left,
+        // offered different holds whenever more were standing than the limit allowed.
         found.sort(Comparator.comparing(Reservation::id));
-        return found;
+        return found.size() > limit ? List.copyOf(found.subList(0, limit)) : found;
+    }
+
+    /**
+     * A ledger holding exactly the rows a batch's snapshot read, at their versions, and nothing else:
+     * what {@link io.till.core.Till#executeAll} decides a batch against (ADR 16).
+     *
+     * <p>Each command of the batch loads its snapshot from it, is decided, and has its decision applied
+     * to it, so the next one sees what it did. A load from it answers exactly as the ledger the
+     * snapshot came from did at that instant, for any command the snapshot was read for; it knows
+     * nothing of any other row, so a command it was not read for is the caller's to refuse
+     * ({@link BatchSnapshot#requireCovers}).
+     *
+     * @param snapshot what a batch read
+     * @return a ledger of those rows; its outbox is empty and starts at sequence 1
+     */
+    public static InMemoryLedger from(BatchSnapshot snapshot) {
+        InMemoryLedger seeded = new InMemoryLedger();
+        // A SKU in scope with no row stays out of the map: here, as in the ledger it was read from,
+        // having an entry is having a row.
+        snapshot.stock().forEach((sku, shards) -> {
+            if (!shards.isEmpty()) {
+                seeded.stock.put(sku, new ArrayList<>(shards));
+            }
+        });
+        seeded.reservations.putAll(snapshot.reservations());
+        seeded.records.putAll(snapshot.records());
+        return seeded;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Under the lock, as a {@link #load} is, so the batch's rows are one instant.
+     */
+    @Override
+    public BatchSnapshot loadBatch(List<Command> commands) {
+        lock.lock();
+        try {
+            Map<IdempotencyKey, OutcomeRecord> used = new LinkedHashMap<>();
+            Map<ReservationId, Reservation> named = new LinkedHashMap<>();
+            Set<Sku> scope = new LinkedHashSet<>();
+            for (Command command : commands) {
+                command.idempotencyKey()
+                        .filter(records::containsKey)
+                        .ifPresent(key -> used.put(key, records.get(key)));
+                scope.addAll(command.declaredSkus());
+                command.targetReservation().map(reservations::get).ifPresent(reservation -> {
+                    named.put(reservation.id(), reservation);
+                    scope.addAll(reservation.skus());
+                });
+            }
+            Map<Sku, List<StockShard>> levels = new LinkedHashMap<>();
+            for (Sku sku : scope) {
+                levels.put(sku, List.copyOf(stock.getOrDefault(sku, List.of())));
+            }
+            return new BatchSnapshot(levels, named, used);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Under the lock, as an {@link #apply} is: every precondition checked first, then every row
+     * written, so a refused batch leaves nothing behind.
+     */
+    @Override
+    public boolean applyBatch(BatchDecision decision) {
+        lock.lock();
+        try {
+            if (!admissible(decision)) {
+                conflicts++;
+                return false;
+            }
+            for (BatchDecision.StockWrite write : decision.stock()) {
+                put(new StockShard(write.sku(), write.shard(), write.onHand(), write.reserved(), write.newVersion()));
+            }
+            for (Mutation.SetReservationState set : decision.states()) {
+                reservations.computeIfPresent(set.reservationId(), (id, existing) -> existing.withState(set.state()));
+            }
+            for (Reservation reservation : decision.inserts()) {
+                reservations.put(reservation.id(), reservation);
+            }
+            for (Event event : decision.events()) {
+                long sequence = nextSequence++;
+                outbox.put(sequence, new OutboxEntry(sequence, event, event.occurredAt()));
+            }
+            decision.records().forEach(record -> records.put(record.key(), record));
+            applied += decision.outcomes().size();
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Every precondition a batch was decided under, re-checked while holding the lock. */
+    private boolean admissible(BatchDecision decision) {
+        for (BatchDecision.StockWrite write : decision.stock()) {
+            if (versionOf(write.sku(), write.shard()) != write.expectedVersion()) {
+                return false;
+            }
+        }
+        for (Mutation.SetReservationState set : decision.states()) {
+            Reservation existing = reservations.get(set.reservationId());
+            if (existing == null || existing.version() != set.expectedVersion()) {
+                return false;
+            }
+        }
+        for (Reservation reservation : decision.inserts()) {
+            if (reservations.containsKey(reservation.id())) {
+                return false;
+            }
+        }
+        for (OutcomeRecord record : decision.records()) {
+            if (records.containsKey(record.key())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
@@ -200,15 +323,19 @@ public final class InMemoryLedger implements Ledger, LedgerInspector, Outbox, Re
     }
 
     private void put(Mutation.PutStock m) {
-        List<StockShard> shards = stock.computeIfAbsent(m.sku(), sku -> new ArrayList<>());
-        StockShard written = new StockShard(m.sku(), m.shard(), m.onHand(), m.reserved(), m.expectedVersion() + 1);
-        if (m.shard() < shards.size()) {
-            shards.set(m.shard(), written);
-        } else if (m.shard() == shards.size()) {
+        put(new StockShard(m.sku(), m.shard(), m.onHand(), m.reserved(), m.expectedVersion() + 1));
+    }
+
+    private void put(StockShard written) {
+        List<StockShard> shards = stock.computeIfAbsent(written.sku(), sku -> new ArrayList<>());
+        if (written.index() < shards.size()) {
+            shards.set(written.index(), written);
+        } else if (written.index() == shards.size()) {
             shards.add(written);
         } else {
             // The kernel adds shards in order; one that would leave a gap is a bug, not contention.
-            throw new IllegalStateException("shard " + m.shard() + " of " + m.sku() + " would leave a gap after " + shards);
+            throw new IllegalStateException(
+                    "shard " + written.index() + " of " + written.sku() + " would leave a gap after " + shards);
         }
     }
 

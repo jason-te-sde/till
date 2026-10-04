@@ -197,6 +197,26 @@ class InMemoryLedgerTest {
     }
 
     @Test
+    @DisplayName("more expired holds than a load may take: it takes the first by id, whatever order they were taken in")
+    void reclaimTakesTheFirstById() {
+        till.adjust(key("d1"), sku("widget"), 10);
+        // Taken in this order, and ordered by id the other way: "r10" sorts before "r9".
+        till.reserve(key("k1"), rid("r9"), List.of(line("widget", 1)), Duration.ofMinutes(1));
+        till.reserve(key("k2"), rid("r10"), List.of(line("widget", 1)), Duration.ofMinutes(1));
+        Instant later = T0.plus(Duration.ofHours(1));
+
+        Snapshot swept = ledger.load(new Command.Sweep(1), later, 1);
+        Snapshot reclaiming =
+                ledger.load(new Command.Reserve(key("k3"), rid("r3"), List.of(line("widget", 9)), TTL), later, 1);
+
+        // PostgreSQL takes them in id order before it limits them (JdbcLedger's order by id ... limit),
+        // and the two ledgers have to offer the same holds for the differential test to compare like
+        // with like.
+        assertEquals(List.of(rid("r10")), swept.reclaimable().stream().map(Reservation::id).toList());
+        assertEquals(List.of(rid("r10")), reclaiming.reclaimable().stream().map(Reservation::id).toList());
+    }
+
+    @Test
     @DisplayName("the listings page, filter and clamp")
     void listings() {
         for (String sku : List.of("aaa", "bbb", "ccc")) {

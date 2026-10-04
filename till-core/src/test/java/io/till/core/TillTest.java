@@ -339,6 +339,16 @@ class TillTest {
         public boolean apply(Decision decision) {
             return attempts.incrementAndGet() > refusals && delegate.apply(decision);
         }
+
+        @Override
+        public BatchSnapshot loadBatch(List<Command> commands) {
+            return delegate.loadBatch(commands);
+        }
+
+        @Override
+        public boolean applyBatch(BatchDecision decision) {
+            return attempts.incrementAndGet() > refusals && delegate.applyBatch(decision);
+        }
     }
 
     /** Records the reclaim limit of every load, so a test can see which snapshot a decision had. */
@@ -359,6 +369,16 @@ class TillTest {
         @Override
         public boolean apply(Decision decision) {
             return delegate.apply(decision);
+        }
+
+        @Override
+        public BatchSnapshot loadBatch(List<Command> commands) {
+            return delegate.loadBatch(commands);
+        }
+
+        @Override
+        public boolean applyBatch(BatchDecision decision) {
+            return delegate.applyBatch(decision);
         }
     }
 
@@ -382,6 +402,18 @@ class TillTest {
         public boolean apply(Decision decision) {
             applies.incrementAndGet();
             return delegate.apply(decision);
+        }
+
+        @Override
+        public BatchSnapshot loadBatch(List<Command> commands) {
+            loads.incrementAndGet();
+            return delegate.loadBatch(commands);
+        }
+
+        @Override
+        public boolean applyBatch(BatchDecision decision) {
+            applies.incrementAndGet();
+            return delegate.applyBatch(decision);
         }
     }
 
@@ -410,6 +442,18 @@ class TillTest {
         @Override
         public boolean apply(Decision decision) {
             return delegate.apply(decision);
+        }
+
+        @Override
+        public BatchSnapshot loadBatch(List<Command> commands) {
+            BatchSnapshot snapshot = delegate.loadBatch(commands);
+            clock.advance(by);
+            return snapshot;
+        }
+
+        @Override
+        public boolean applyBatch(BatchDecision decision) {
+            return delegate.applyBatch(decision);
         }
     }
 

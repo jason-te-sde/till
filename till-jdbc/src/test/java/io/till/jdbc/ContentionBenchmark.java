@@ -2,6 +2,8 @@ package io.till.jdbc;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import io.till.core.BatchDecision;
+import io.till.core.BatchSnapshot;
 import io.till.core.Command;
 import io.till.core.ConflictException;
 import io.till.core.Decision;
@@ -204,6 +206,26 @@ class ContentionBenchmark {
         @Override
         public boolean apply(Decision decision) {
             boolean applied = inner.apply(decision);
+            if (measuring) {
+                decided.increment();
+                if (!applied) {
+                    conflicts.increment();
+                }
+            }
+            return applied;
+        }
+
+        @Override
+        public BatchSnapshot loadBatch(List<Command> commands) {
+            if (measuring) {
+                loads.increment();
+            }
+            return inner.loadBatch(commands);
+        }
+
+        @Override
+        public boolean applyBatch(BatchDecision decision) {
+            boolean applied = inner.applyBatch(decision);
             if (measuring) {
                 decided.increment();
                 if (!applied) {

@@ -1,10 +1,16 @@
 package io.till.core;
 
+import io.till.core.mem.InMemoryLedger;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +38,13 @@ import org.slf4j.LoggerFactory;
  * backoff belongs is in the caller that catches {@link ConflictException}, and what belongs in front
  * of this is a bounded pool, so that contention shows up as queueing rather than as a thousand
  * threads all retrying.
+ *
+ * <p>{@link #executeAll} takes several commands through the same loop at once: one load for all of
+ * them, a decision for each against what the ones before it did, and one write (ADR 16). The answers
+ * are the ones they would have had taken through it one at a time, in the order given. The commands
+ * are decided against an {@link InMemoryLedger} seeded with what the batch loaded, which is the
+ * ledger the PostgreSQL adapter is differentially tested against, rather than against a second
+ * implementation of what a ledger does with a decision.
  *
  * <p>Instances are immutable and safe to share between threads; whether concurrent commands are safe
  * is a question about the {@link Ledger}, and the two shipped with till both are.
@@ -156,6 +169,302 @@ public final class Till {
     }
 
     /**
+     * Runs commands that are waiting at the same time together, with exactly the answers running them
+     * one at a time, in the order given, would have given (ADR 16).
+     *
+     * <p>The commands are taken in runs. For a run, the clock is read once, and a command whose
+     * deadline has already passed is answered {@link DeadlineExceededException} and left out; the rest
+     * are loaded in one {@link Ledger#loadBatch}, decided one after another against an
+     * {@link InMemoryLedger} holding exactly what was loaded — each against what the ones before it
+     * did, through the same steps as {@link #execute} — and written in one {@link Ledger#applyBatch}.
+     * A refused write loads the run again and decides it again, with no wait, up to the till's
+     * attempts; when they run out, every command of the run that wrote something is answered
+     * {@link ConflictException}, and a replay, which wrote nothing, its outcome.
+     *
+     * <p>Before the write the clock is read again, if any command of the run has a deadline, and a
+     * command whose deadline has passed since is answered {@link DeadlineExceededException} and the run
+     * decided again without it, from the same snapshot: never written for a caller who has gone, and
+     * the commands after it decided as if it had never been there, as one at a time would have.
+     *
+     * <p>Two kinds of command end a run where they stand and go through {@link #execute} on their own:
+     * one whose decision is short of stock, while expired holds may be written off — {@code execute}
+     * loads them and decides again, and a batch's snapshot does not have them — and a sweep, which
+     * loads what it finds rather than what it names. The next run starts after it, so the answers stay
+     * those of the order given.
+     *
+     * <p>A failure that is not a refusal is the answer of every command it reached: a load that throws,
+     * of every command of its run; a write that throws, of every command whose decision it was writing.
+     * A command's own decision throwing is that command's answer alone.
+     *
+     * @param calls the commands, each with its caller's deadline or none, in the order they arrived
+     * @return an answer for each, in the same order, and how many of the batch's writes were refused
+     */
+    public BatchResult executeAll(List<Call> calls) {
+        if (calls == null) {
+            throw new IllegalArgumentException("calls are required");
+        }
+        Answer[] answers = new Answer[calls.size()];
+        int conflicts = 0;
+        int next = 0;
+        while (next < calls.size()) {
+            Run run = run(calls, next, answers);
+            conflicts += run.conflicts();
+            next = run.end();
+            if (next < calls.size()) {
+                // The run stopped at a command that goes on its own: a shortfall, or a sweep.
+                answers[next] = alone(calls.get(next));
+                next++;
+            }
+        }
+        return new BatchResult(List.of(answers), conflicts);
+    }
+
+    /**
+     * Decides and writes the run of commands that starts at {@code start}, which ends before the first
+     * sweep, or before the first command whose decision is short of stock, or at the end.
+     */
+    private Run run(List<Call> calls, int start, Answer[] answers) {
+        int limit = start;
+        while (limit < calls.size() && !(calls.get(limit).command() instanceof Command.Sweep)) {
+            limit++;
+        }
+        int conflicts = 0;
+        for (int attempt = 1; ; attempt++) {
+            Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+            List<Integer> live = new ArrayList<>();
+            for (int index = start; index < limit; index++) {
+                Call call = calls.get(index);
+                if (answers[index] != null) {
+                    continue;
+                }
+                if (call.deadline() != null && !now.isBefore(call.deadline())) {
+                    answers[index] = Answer.failed(new DeadlineExceededException(call.command(), call.deadline()));
+                } else {
+                    live.add(index);
+                }
+            }
+            if (live.isEmpty()) {
+                return new Run(limit, conflicts);
+            }
+
+            BatchSnapshot snapshot;
+            try {
+                snapshot = ledger.loadBatch(live.stream().map(index -> calls.get(index).command()).toList());
+            } catch (RuntimeException e) {
+                live.forEach(index -> answers[index] = Answer.failed(e));
+                return new Run(limit, conflicts);
+            }
+            Decided decided = decideInTime(snapshot, calls, live, now, answers);
+            int end = decided.cut() != null ? decided.cut() : limit;
+
+            boolean written;
+            try {
+                BatchDecision batch = BatchDecision.of(decided.decisions());
+                written = !batch.writes() || ledger.applyBatch(batch);
+            } catch (RuntimeException e) {
+                decided.answers().forEach((index, answer) ->
+                        answers[index] = decided.writers().contains(index) ? Answer.failed(e) : answer);
+                return new Run(end, conflicts);
+            }
+            if (written) {
+                decided.answers().forEach((index, answer) -> answers[index] = answer);
+                return new Run(end, conflicts);
+            }
+            conflicts++;
+            LOG.debug("conflict writing a batch of {} on attempt {} of {}", decided.decisions().size(), attempt, maxAttempts);
+            if (attempt >= maxAttempts) {
+                decided.answers().forEach((index, answer) -> answers[index] = decided.writers().contains(index)
+                        ? Answer.failed(new ConflictException(calls.get(index).command(), maxAttempts))
+                        : answer);
+                return new Run(end, conflicts);
+            }
+        }
+    }
+
+    /**
+     * Decides a run against its snapshot, and decides it again without any command whose deadline
+     * passed while it was loaded and decided. Each round takes one or more commands out, so it ends.
+     */
+    private Decided decideInTime(BatchSnapshot snapshot, List<Call> calls, List<Integer> live, Instant now, Answer[] answers) {
+        List<Integer> remaining = new ArrayList<>(live);
+        while (true) {
+            Decided decided = decide(snapshot, calls, remaining, now);
+            // The clock is read again only when there is a deadline to read it for, as in execute.
+            if (decided.writers().stream().allMatch(index -> calls.get(index).deadline() == null)) {
+                return decided;
+            }
+            Instant at = clock.instant().truncatedTo(ChronoUnit.MICROS);
+            List<Integer> gone = decided.writers().stream()
+                    .filter(index -> calls.get(index).deadline() != null && !at.isBefore(calls.get(index).deadline()))
+                    .toList();
+            if (gone.isEmpty()) {
+                return decided;
+            }
+            for (int index : gone) {
+                Call call = calls.get(index);
+                answers[index] = Answer.failed(new DeadlineExceededException(call.command(), call.deadline()));
+            }
+            remaining.removeAll(gone);
+        }
+    }
+
+    /**
+     * Takes each command through the loop's steps against a ledger holding exactly the batch's
+     * snapshot — load, decide, apply — so that each is decided against what the ones before it did,
+     * and stops at the first whose decision is short of stock while expired holds may be written off.
+     */
+    private Decided decide(BatchSnapshot snapshot, List<Call> calls, List<Integer> indices, Instant now) {
+        InMemoryLedger scratch = InMemoryLedger.from(snapshot);
+        Map<Integer, Answer> answers = new LinkedHashMap<>();
+        Set<Integer> writers = new HashSet<>();
+        List<Decision> decisions = new ArrayList<>();
+        for (int index : indices) {
+            Command command = calls.get(index).command();
+            Decision decision;
+            try {
+                snapshot.requireCovers(command);
+                decision = Kernel.decide(scratch.load(command, now, 0), command, now);
+            } catch (RuntimeException e) {
+                // This command's alone, as it would be one at a time; the scratch is as it was.
+                answers.put(index, Answer.failed(e));
+                continue;
+            }
+            if (needsReclaim(decision)) {
+                return new Decided(answers, writers, decisions, index);
+            }
+            if (decision.writes()) {
+                if (!scratch.apply(decision)) {
+                    // Nothing else writes to the scratch, so a refusal here is a bug, not contention.
+                    answers.put(index, Answer.failed(new IllegalStateException(
+                            "a decision made against a batch's own ledger was refused by it: " + command)));
+                    continue;
+                }
+                writers.add(index);
+                decisions.add(decision);
+            }
+            answers.put(index, Answer.of(decision.outcome()));
+        }
+        return new Decided(answers, writers, decisions, null);
+    }
+
+    /** Runs a command on its own, through {@link #execute}, and keeps whatever it throws as its answer. */
+    private Answer alone(Call call) {
+        try {
+            return Answer.of(execute(call.command(), call.deadline()));
+        } catch (RuntimeException e) {
+            return Answer.failed(e);
+        }
+    }
+
+    /**
+     * Whether a decision made without the expired holds is one they could change: a shortfall, while
+     * this till writes them off.
+     */
+    private boolean needsReclaim(Decision lean) {
+        return reclaimLimit > 0
+                && lean.outcome() instanceof Outcome.Rejected rejected
+                && rejected.code() == RejectionCode.INSUFFICIENT_STOCK;
+    }
+
+    /** Where a run stopped — the index of the first command it did not answer, or the end — and its refused writes. */
+    private record Run(int end, int conflicts) {}
+
+    /**
+     * A run, decided: each command's answer if the write goes through, which of them wrote, their
+     * decisions in order, and where the run was cut short, if it was.
+     */
+    private record Decided(Map<Integer, Answer> answers, Set<Integer> writers, List<Decision> decisions, Integer cut) {}
+
+    /**
+     * One command of a batch, and when its caller stops waiting for it.
+     *
+     * @param command what to do
+     * @param deadline the instant, on the till's own clock, after which the caller is no longer
+     *     waiting; null for none
+     */
+    public record Call(Command command, Instant deadline) {
+
+        public Call {
+            if (command == null) {
+                throw new IllegalArgumentException("a call needs a command");
+            }
+        }
+
+        /**
+         * A command whose caller will wait however long it takes.
+         *
+         * @param command what to do
+         * @return the call, with no deadline
+         */
+        public static Call of(Command command) {
+            return new Call(command, null);
+        }
+    }
+
+    /**
+     * What one command of a batch came to: an outcome, rejections included, or the exception
+     * {@link #execute} would have thrown for it. Exactly one of the two.
+     *
+     * @param outcome what happened, or null if it failed
+     * @param failure why it failed, or null if it has an outcome
+     */
+    public record Answer(Outcome outcome, RuntimeException failure) {
+
+        public Answer {
+            if ((outcome == null) == (failure == null)) {
+                throw new IllegalArgumentException("an answer is an outcome or a failure, exactly one of them");
+            }
+        }
+
+        /**
+         * An answer with an outcome.
+         *
+         * @param outcome what happened
+         * @return the answer
+         */
+        public static Answer of(Outcome outcome) {
+            return new Answer(outcome, null);
+        }
+
+        /**
+         * An answer that is a failure.
+         *
+         * @param failure what {@link #execute} would have thrown
+         * @return the answer
+         */
+        public static Answer failed(RuntimeException failure) {
+            return new Answer(null, failure);
+        }
+
+        /**
+         * The outcome, as {@link #execute} would have returned it, or its failure, thrown as it would
+         * have thrown it.
+         *
+         * @return the outcome
+         */
+        public Outcome get() {
+            if (failure != null) {
+                throw failure;
+            }
+            return outcome;
+        }
+    }
+
+    /**
+     * What a batch came to.
+     *
+     * @param answers one for each command, in the order they were given
+     * @param conflicts how many of the batch's writes were refused because a row had moved, each of
+     *     which loaded its run again
+     */
+    public record BatchResult(List<Answer> answers, int conflicts) {
+
+        public BatchResult {
+            answers = List.copyOf(answers);
+        }
+    }
+
+    /**
      * Decides without the expired holds first, and again with them only if they could change the
      * answer.
      *
@@ -178,11 +487,8 @@ public final class Till {
             // with reclaiming turned off — which is when it is the only thing left doing it.
             return Kernel.decide(ledger.load(command, now, sweep.limit()), command, now);
         }
-        if (reclaimLimit == 0) {
-            return Kernel.decide(ledger.load(command, now, 0), command, now);
-        }
         Decision lean = Kernel.decide(ledger.load(command, now, 0), command, now);
-        if (lean.outcome() instanceof Outcome.Rejected rejected && rejected.code() == RejectionCode.INSUFFICIENT_STOCK) {
+        if (needsReclaim(lean)) {
             return Kernel.decide(ledger.load(command, now, reclaimLimit), command, now);
         }
         return lean;

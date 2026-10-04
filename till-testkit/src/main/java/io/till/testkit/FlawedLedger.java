@@ -1,5 +1,7 @@
 package io.till.testkit;
 
+import io.till.core.BatchDecision;
+import io.till.core.BatchSnapshot;
 import io.till.core.Command;
 import io.till.core.Decision;
 import io.till.core.Ledger;
@@ -14,7 +16,9 @@ import io.till.core.Snapshot;
 import io.till.core.StockItem;
 import io.till.core.StockShard;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -22,7 +26,8 @@ import java.util.Optional;
  *
  * <p>Each flaw is implemented by breaking the {@link Ledger} contract in one specific way, which is
  * where these bugs live in real systems: the rules are usually fine and the adapter underneath them
- * is where the race is.
+ * is where the race is. A batch's load and write (ADR 16) are broken the same way as a single
+ * command's, so that a suite driving batches can be tested too.
  *
  * @see Flaw
  */
@@ -78,6 +83,53 @@ public final class FlawedLedger implements Ledger, LedgerInspector {
                                     decision.outcome(), decision.mutations(), decision.events(), Optional.empty()));
             default -> delegate.apply(decision);
         };
+    }
+
+    @Override
+    public BatchSnapshot loadBatch(List<Command> commands) {
+        BatchSnapshot loaded = delegate.loadBatch(commands);
+        return switch (flaw) {
+            case NO_IDEMPOTENCY -> new BatchSnapshot(loaded.stock(), loaded.reservations(), Map.of());
+            case RESERVED_IGNORED -> {
+                Map<Sku, List<StockShard>> stock = new LinkedHashMap<>();
+                loaded.stock().forEach((sku, shards) -> stock.put(sku, shards.stream()
+                        .map(shard -> new StockShard(sku, shard.index(), shard.onHand(), 0, shard.version()))
+                        .toList()));
+                yield new BatchSnapshot(stock, loaded.reservations(), loaded.records());
+            }
+            default -> loaded;
+        };
+    }
+
+    @Override
+    public boolean applyBatch(BatchDecision decision) {
+        return switch (flaw) {
+            case LOST_UPDATE -> delegate.applyBatch(blind(decision));
+            case PARTIAL_APPLY -> delegate.applyBatch(new BatchDecision(
+                    decision.outcomes(), decision.stock(), decision.states(), decision.inserts(), List.of(),
+                    decision.records()));
+            case NO_IDEMPOTENCY -> delegate.applyBatch(new BatchDecision(
+                    decision.outcomes(), decision.stock(), decision.states(), decision.inserts(), decision.events(),
+                    List.of()));
+            default -> delegate.applyBatch(decision);
+        };
+    }
+
+    /** A batch with every expected version replaced by whatever is there now, as {@link #applyBlind} does a decision. */
+    private BatchDecision blind(BatchDecision decision) {
+        List<BatchDecision.StockWrite> stock = decision.stock().stream()
+                .map(write -> {
+                    long current = currentVersion(write.sku(), write.shard());
+                    return new BatchDecision.StockWrite(
+                            write.sku(), write.shard(), write.onHand(), write.reserved(), current,
+                            Math.max(write.newVersion(), current + 1));
+                })
+                .toList();
+        List<Mutation.SetReservationState> states = decision.states().stream()
+                .map(set -> new Mutation.SetReservationState(set.reservationId(), set.state(), currentVersion(set.reservationId())))
+                .toList();
+        return new BatchDecision(
+                decision.outcomes(), stock, states, decision.inserts(), decision.events(), decision.records());
     }
 
     /**
