@@ -155,6 +155,11 @@ requests.
 | [1 Oct 2026, sixteen rows a game](../till-loadtest/results/20261001T045708Z.json) | `03e5385` | the same, every game's stock split sixteen ways | 8,000 | 3,176 | 5.1 s | 4.5% | 10.1 | **met**: throughput; **missed**: latency, errors |
 | [1 Oct 2026, work for nobody](../till-loadtest/results/20261001T105202Z.json) | `6966502` | the same; the ledger refusing work its caller stopped waiting for, a lean snapshot in one statement, three Kafka brokers | 8,000 | 3,175 | 5.2 s | 4.5% | 11.7 | **met**: throughput; **missed**: latency, errors |
 | [2 Oct 2026, the store on its own server](../till-loadtest/results/20261002T063658Z.json) | `6966502` | the same, the store's database on a db.t4g.micro of its own | 8,000 | 3,312 | 5.0 s | 1.6% | 103.3 | **met**: throughput; **missed**: latency, errors |
+| [2 Oct 2026, a login of its own](../till-loadtest/results/20261002T095810Z.json) | `a795eac` | the same; a new connection's login bounded on its own, a ledger out of connections saying OVERLOADED in one line | 8,000 | 3,298 | 5.0 s | 1.7% | 100.9 | **met**: throughput; **missed**: latency, errors |
+| [2 Oct 2026, eight connections a ledger](../till-loadtest/results/20261002T103317Z.json) | `a795eac` | the same, each ledger holding eight connections instead of sixteen | 8,000 | 3,278 | 5.0 s | 2.1% | 91.1 | **met**: throughput; **missed**: latency, errors |
+| [3 Oct 2026, with Database Insights](../till-loadtest/results/20261003T004854Z.json) | `6069d4b` | sixteen connections again; Database Insights recording the load | 8,000 | 3,261 | 5.0 s | 2.2% | 87.9 | **met**: throughput; **missed**: latency, errors |
+| [4 Oct 2026, one call each way](../till-loadtest/results/20261004T002219Z.json) | `d412174` | the same; a decision written in one call to `till_apply`, a snapshot statement that neither sorts nor joins | 8,000 | 3,298 | 5.0 s | 1.5% | 106.7 | **met**: throughput; **missed**: latency, errors |
+| [4 Oct 2026, holds without waiting for the disk](../till-loadtest/results/20261004T053709Z.json) | `f5c32f3` | the same; a hold commits without waiting for its WAL to be flushed | 8,000 | 3,315 | 5.0 s | 1.5% | 108.0 | **met**: throughput; **missed**: latency, errors |
 
 ### 30 September: the first run
 
@@ -376,3 +381,52 @@ record a line: 2.8 and 3.6 million log records in the two windows.
 So the next work is the ledger's pool: connections that can still be opened under load, the ledger
 turning away at once what it cannot serve rather than after two seconds of queueing, and one line for
 each refusal. Then Aurora, measured the same way.
+
+### 2 to 4 October: where the ledger's database spends its time
+
+Five runs, all with the store on a server of its own and sixteen rows a game; each has its trial
+beside it in the results.
+
+| | A login of its own | Eight connections | With Insights | One call each way | Holds without the disk |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Requests a second | 3,298 | 3,278 | 3,261 | 3,298 | 3,315 |
+| p95 / p99 | 278 ms / 5.0 s | 285 ms / 5.0 s | 626 ms / 5.0 s | 596 ms / 5.0 s | **341 ms** / 5.0 s |
+| Unexpected responses | 1.72% | 2.14% | 2.22% | 1.54% | 1.52% |
+| Orders placed, paid, a second | 100.9, 80.1 | 91.1, 67.1 | 87.9, 64.6 | 106.7, 85.2 | **108.0, 86.0** |
+| The ledger's transactions rolled back | 7.3% | 5.7% | 6.3% | 6.7% | **2.1%** |
+| The ledger's database CPU (maximum) | 95.8% | 65.7% | 95.5% | 93.4% | 88.7% |
+
+What did not help:
+
+- **A login of its own.** The pool's new connections now have ten seconds to log in where they had,
+  as it turned out, no limit at all. The run is the store-on-its-own run again, within the noise.
+- **Fewer connections.** At eight a ledger the database's CPU fell from 96% to 66%, and fewer orders
+  got through: the pool, not the server, became what checkouts waited for. At four, even the trial
+  failed. The outbox's publisher and the sweeper take their connections from the same pool.
+
+Then Database Insights, which samples the load every second, said where the time went. In the run
+that recorded it, the ledger's server had 17.5 sessions active on its two vCPUs: 67% of them on the
+CPU or waiting for it, 16% waiting for the application's next statement in the middle of a
+transaction, and about 11% waiting on the WAL. Contention for the same pages was 2.3%. By statement,
+the snapshot was 31% of the load, COMMIT 20%, the stock update 14%, BEGIN 5%, and the four inserts
+about 21% together. Three changes followed from that: a decision written in one call to a function,
+`till_apply` ([ADR 14](design/0014-one-round-trip-apply.md)), in place of a transaction of round
+trips; a snapshot statement without the sorts, windows and joins that had been most of its cost
+([ADR 12](design/0012-one-statement-snapshot.md)); and holds committed without waiting for the disk,
+sales and adjustments still waiting ([ADR 15](design/0015-async-commit-for-holds.md)). Locally, the
+first two were worth 40% and then a further 29% more checkouts a second.
+
+Here they took the sessions on the ledger's server from 17.5 to 13.0 and then 11.1. Async commit
+halved the time spent waiting on the WAL and cut rollbacks from 6.7% to 2.1%, because transactions
+that finish sooner collide less. The p95 fell to 341 ms, and the orders paid a second went from 65 to
+86. What is left is CPU: 67% of the load, `till_apply` 73% of it and the snapshot 18%.
+
+The p99 did not move, and the reason is in the shape of the test rather than in any one run. It is a
+closed loop: each shopper orders as soon as the last response arrives, so a faster checkout lets the
+same 8,000 order more, until the ledger is full again. The trial's 100 shoppers placed 1.7 orders a
+second; at 8,000 that would be about 136, and the ledger served 108. Until it can take every one of
+them with room to spare, the orders that do not fit wait out the store's five-second deadline, and
+those orders are the p99. Every other kind of request had its p99 under 175 ms.
+
+Next is the ledger doing fewer, larger transactions: the commands queued for it decided together and
+written in one call.
