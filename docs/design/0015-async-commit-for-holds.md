@@ -5,11 +5,12 @@
 ## Context
 
 Database Insights, recording the ledger's database during the last load test, put `COMMIT` at 20% of
-its load, and the waits on the write-ahead log — `LWLock:WALWrite`, `LWLock:WALInsert`, `IO:WalSync` —
-at about 11% more. Since [ADR 14](0014-one-round-trip-apply.md) a decision is one call to `till_apply`
-in autocommit, and every one of those calls waits, inside the statement, for its WAL to be flushed to
-disk before its connection is free again. ADR 14 said as much: the flush each commit waits for moved
-inside the one statement; it did not go away.
+its load counted by statement, and the waits on the write-ahead log — `LWLock:WALWrite`,
+`LWLock:WALInsert`, `IO:WalSync` — at about 11% counted by wait event: two views of the same load,
+which overlap, since a commit's wait for its flush is in both. Since [ADR 14](0014-one-round-trip-apply.md)
+a decision is one call to `till_apply` in autocommit, and every one of those calls waits, inside the
+statement, for its WAL to be flushed to disk before its connection is free again. ADR 14 said as much:
+the flush each commit waits for moved inside the one statement; it did not go away.
 
 Most of those commits are holds: a reserve, a release, the sweep writing off expired holds, a command
 short of stock writing them off on its way. A hold is temporary by design. It expires at its deadline
@@ -124,7 +125,7 @@ neither of which this changes:
 
 The customer placed an order; the ledger answered `Reserved`; the store wrote the order, pending, with
 the hold's id and deadline. Then the ledger's database crashed and came back without the hold. The
-order page still counts down — "Your copies are held for" — under a Pay button. Pay asks the ledger to
+order page still counts down — "Your copies are held for" — above a Pay button. Pay asks the ledger to
 commit the hold, and the ledger answers 404 `RESERVATION_NOT_FOUND`. The store does not branch on that
 code: it passes the refusal on as its own 404, code `RESERVATION_NOT_FOUND`, title "No such
 reservation", detail "no reservation" and the hold's id, and leaves the order pending. The storefront
@@ -151,6 +152,11 @@ next load test on AWS will say, in `COMMIT`'s share of the load and in the WAL w
 benchmark cannot: Testcontainers starts PostgreSQL with `fsync=off`, where a flush costs nothing, so
 there is nothing there for this change to save, and no number is given for it.
 
+**"Committed" means less for a hold.** [ADR 5](0005-scope.md) chose PostgreSQL over Redis because it can
+say "this is committed" and mean it. For a sale and an adjustment it still means that. For a hold it now
+means committed, visible, and on disk within a few hundred milliseconds: a hold is temporary by design,
+and losing one in that window loses nothing a customer paid for.
+
 **What loses holds is the server dying, not stopping.** A clean shutdown flushes the WAL first and
 loses nothing. The last few hundred milliseconds of holds go when the instance fails, the operating
 system kills PostgreSQL, or the power goes.
@@ -175,19 +181,26 @@ durable commit between reading a batch and sending it.
 
 **Tested, each test watched failing first.** `aDecisionThatNeedNotBeDurableTurnsSynchronousCommitOff`
 finds `show synchronous_commit` off inside the transaction of a call told the decision need not be
-durable, on again in the next transaction, and on after one told it must be; it failed against V4,
-which had no such argument. `theLastVersionsCallIsStillAnswered` sends V4's call, typed as `JdbcLedger`
-bound it, and finds it answered and committed with the setting on; it failed against V5 without the
-default, and again with V4's function left in place. `onlyHoldsAndRefusalsCommitWithoutWaiting` applies
-a decision of every kind of `Outcome`, the kinds read from the sealed interface so that a new one fails
-until it is classified, and reads the setting through a trigger inside the statement that writes each
-decision's record; it failed against the old `apply` with every kind on, and again with `Swept` left off
-the list. `anEventLeavesOnlyOnceItIsDurable` commits an event the way a hold is committed, checks that
-it is visible and not yet flushed, and records at the moment of the send whether the server's flush
-position has passed it; it failed against the old publisher, and again with the flush moved after the
-send or written without `flush`. It slows the WAL writer to one flush in ten seconds while it runs
-(`ALTER SYSTEM`, reset afterwards): at the default, the WAL writer flushed the event by itself before the
-send often enough that the test passed against the old publisher in three runs out of six.
+durable, back on in the next transaction once that one has committed, and on after a call told it must
+be durable; it failed against V4, which had no such argument, and with `set` in place of `set local`,
+whose setting a commit, unlike a rollback, would keep for the connection.
+`theLastVersionsCallIsStillAnswered` sends V4's call, typed as `JdbcLedger` bound it, and finds it
+answered and committed with the setting on; it failed against V5 without the default, and again with
+V4's function left in place. `onlyHoldsAndRefusalsCommitWithoutWaiting` applies a decision of every
+kind of `Outcome`, the kinds read from the sealed interface so that a new one fails until it is
+classified, and reads the setting through a trigger inside the statement that writes each decision's
+record; it failed against the old `apply` with every kind on, and again with `Swept` left off the list.
+`RefusalWritesTest` drives a refusal of every `RejectionCode` through the kernel, each against a snapshot
+with an expired hold in it, and finds nothing written but expiries and the record, which is what lets a
+refusal go without waiting; it failed with the kernel's write-off made to lower on-hand stock as well.
+`anEventLeavesOnlyOnceItIsDurable` commits an event the way a hold is committed, checks that it is
+visible and not yet flushed, commits one more just before the publisher reads its batch, and records at
+the moment of the send whether the server's flush position has passed the newer; it failed against the
+old publisher, and again with the flush moved before the read, moved after the send, or written without
+`flush`. It slows the WAL writer to one flush in ten seconds while it runs (`ALTER SYSTEM`, reset
+afterwards), because at the default the WAL writer flushed the event by itself before the send often
+enough that the test passed against the old publisher in three runs out of six; `ALTER SYSTEM` needs a
+superuser, so for any other user it is skipped, except in CI.
 `JdbcDifferentialTest` and `JdbcConcurrencyTest` pass unchanged.
 
 ## What is not done
@@ -215,8 +228,12 @@ commits a crash must not lose.
 database whose connection budget is already the constraint ([operations](../operations.md)), and every
 statement on those connections asynchronous whether it was meant to be or not.
 
-**`SET LOCAL` from Java before the call.** It needs a transaction around the call — `BEGIN`, the `SET`,
-the call, `COMMIT` — which is the round trips ADR 14 took away. Inside the function it costs nothing.
+**`SET LOCAL` from Java, sent with the call.** pgjdbc can send `set local synchronous_commit = off` and
+the call as one text, in one round trip, the two statements one implicit transaction, so it costs no
+round trip. It makes how a decision commits a property of the statement text rather than of the call:
+two texts for one function, each prepared on every connection, and an apply whose durability depends on
+which string it sends. An argument keeps one statement, and puts the commit mode in the function that
+writes the transaction, where a test can ask the function itself.
 
 **For the publisher:** a commit, which would flush, and give up its claim, a transaction-scoped advisory
 lock, in the middle of a batch; a durable write on a second connection, which works on any version and

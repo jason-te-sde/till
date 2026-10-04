@@ -297,7 +297,9 @@ payments and adjustments in that window too, and they are the commits a crash mu
 `wal_writer_delay` is the window's length: lower is a shorter window and more flushes.
 
 The outbox publisher flushes the WAL before it sends a batch, so no event leaves for the broker while
-a crash could still take back the decision that wrote it.
+a crash could still take back the decision that wrote it. **That needs PostgreSQL 17**, whose
+`pg_logical_emit_message` takes a `flush` argument: on an earlier server every round of the publisher
+fails (`till_outbox_failures_total`), and nothing is delivered.
 
 ## Retention
 

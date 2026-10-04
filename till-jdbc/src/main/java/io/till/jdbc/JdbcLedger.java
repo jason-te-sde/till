@@ -736,6 +736,14 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         return instant.toString();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>What is committed, which can include the events of holds not yet on disk (ADR 15): fine for
+     * looking at the tail, as the operator's view does, and not for sending. A publisher built on this
+     * and {@link #markPublished} has to flush the WAL between reading and sending, as {@link
+     * #publishNext} does.
+     */
     @Override
     public List<OutboxEntry> unpublished(int limit) {
         try (Connection connection = dataSource.getConnection()) {

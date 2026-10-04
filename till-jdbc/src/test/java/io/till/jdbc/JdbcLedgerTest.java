@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.till.core.Codec;
 import io.till.core.Command;
@@ -256,13 +257,18 @@ class JdbcLedgerTest {
     @Test
     @DisplayName("an event leaves for the broker only once the commit that wrote it is on disk")
     void anEventLeavesOnlyOnceItIsDurable() throws Exception {
-        // An event committed the way a hold is (ADR 15): with synchronous_commit off, so that the
-        // commit returns once its WAL is in the server's buffers, before anything is flushed. Every
-        // connection can read it from that moment, the publisher's included. A commit can wake the WAL
-        // writer from hibernating, which then flushes it at once, so the test writes events until it
-        // has one that is visible and not yet flushed.
-        slowWalWriter();
+        assumeTrue(
+                "true".equals(text("select rolsuper::text from pg_roles where rolname = current_user"))
+                        || System.getenv("CI") != null,
+                "slowing the WAL writer takes ALTER SYSTEM, which needs a superuser, and "
+                        + TestDatabase.URL_ENV + "'s user is not one; in CI this runs, and fails rather than skips");
         try {
+            slowWalWriter();
+            // An event committed the way a hold is (ADR 15): with synchronous_commit off, so that the
+            // commit returns once its WAL is in the server's buffers, before anything is flushed. Every
+            // connection can read it from that moment, the publisher's included. A commit can wake the
+            // WAL writer from hibernating, which then flushes it at once, so the test writes events until
+            // it has one that is visible and not yet flushed.
             String written = null;
             for (int attempt = 1; attempt <= 10 && written == null; attempt++) {
                 String lsn = commitAsynchronously(rid("r" + attempt));
@@ -273,10 +279,20 @@ class JdbcLedgerTest {
             assertNotNull(written, "each of ten events committed asynchronously was flushed at once, so this server "
                     + "cannot show one that is visible and not yet on disk");
 
-            String last = written;
+            // And one more while the publisher is at work, just before it reads its batch: the read sees
+            // it, and only a flush made after the read covers it.
+            AtomicReference<String> newest = new AtomicReference<>(written);
+            JdbcLedger observed = new JdbcLedger(interfering(
+                    dataSource, new CopyOnWriteArrayList<>(), new CopyOnWriteArrayList<>(), "select sequence, payload",
+                    () -> newest.set(commitAsynchronously(rid("r-meanwhile")))));
+            List<String> sent = new ArrayList<>();
             List<Boolean> onDiskWhenSent = new ArrayList<>();
-            ledger.publishNext(20, T0, batch -> onDiskWhenSent.add(flushedTo(last)));
+            observed.publishNext(20, T0, batch -> {
+                batch.forEach(entry -> sent.add(entry.dedupeKey()));
+                onDiskWhenSent.add(flushedTo(newest.get()));
+            });
 
+            assertTrue(sent.contains("reserved:r-meanwhile"), "the event committed just before the read was read: " + sent);
             assertEquals(List.of(true), onDiskWhenSent, "a batch was handed over while a crash could still take it back");
         } finally {
             execute("alter system reset wal_writer_delay");
@@ -985,7 +1001,10 @@ class JdbcLedgerTest {
             connection.setAutoCommit(false);
             try {
                 assertEquals("off", commitModeAfter(connection, applyNothing(", durable => false")));
-                connection.rollback();
+                // Committed, not rolled back: a rollback also undoes a plain SET, which would otherwise
+                // last for the connection, and so could not tell it from SET LOCAL. The call wrote
+                // nothing, so there is nothing to keep.
+                connection.commit();
                 assertEquals("on", commitModeAfter(connection, null), "the next transaction is back to the default");
 
                 assertEquals("on", commitModeAfter(connection, applyNothing(", durable => true")));
