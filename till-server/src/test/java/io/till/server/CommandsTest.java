@@ -269,4 +269,36 @@ class CommandsTest {
             return now;
         }
     }
+
+    @Test
+    @DisplayName("with a batcher, a command goes through it and is counted as it would have been alone")
+    void aCommandGoesThroughTheBatcher() {
+        io.till.core.mem.InMemoryLedger memory = new io.till.core.mem.InMemoryLedger();
+        Till till = Till.builder(memory).clock(fixed(T0)).build();
+        till.adjust(IdempotencyKey.of("stock"), Sku.of("widget"), 10);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        try (CommandBatcher batcher = new CommandBatcher(till, 64, 16, registry)) {
+            Commands commands = new Commands(till, registry, batcher);
+
+            Outcome outcome = commands.run(reserve("c1", "r1", 3));
+
+            assertInstanceOf(Outcome.Reserved.class, outcome);
+            assertEquals(1, registry.get("till.batch.size").summary().count(), "it went through the batcher");
+            assertEquals(1, registry.counter("till.outcome", "kind", "reserve", "outcome", "reserved").count());
+        }
+    }
+
+    @Test
+    @DisplayName("a command the batcher refuses is counted as overloaded, like an exhausted pool")
+    void aRefusedCommandIsCountedAsOverloaded() {
+        Till till = Till.builder(new io.till.core.mem.InMemoryLedger()).clock(fixed(T0)).build();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        CommandBatcher batcher = new CommandBatcher(till, 1, 1, registry);
+        batcher.close();
+        Commands commands = new Commands(till, registry, batcher);
+
+        assertThrows(CommandBatcher.QueueFullException.class, () -> commands.run(reserve("c1", "r1", 3)));
+        assertEquals(1, registry.counter("till.outcome", "kind", "reserve", "outcome", "overloaded").count());
+    }
+
 }

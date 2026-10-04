@@ -105,6 +105,18 @@ class CommandBatcherTest {
     }
 
     @Test
+    @DisplayName("a closed batcher refuses a command at once instead of queueing it for nobody")
+    void aClosedBatcherRefusesAtOnce() {
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, registry);
+        batcher.close();
+
+        // Preemptively timed: a closed batcher that queued the command would wait for it forever.
+        org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(Duration.ofSeconds(2), () ->
+                assertThrows(CommandBatcher.QueueFullException.class,
+                        () -> batcher.submit(reserve("k1", "r1", "widget", 1), null)));
+    }
+
+    @Test
     @DisplayName("a command's failure reaches its own caller, as executing it would have thrown it")
     void aFailureReachesItsCaller() {
         batcher = new CommandBatcher(Till.on(ledger), 64, 16, registry);

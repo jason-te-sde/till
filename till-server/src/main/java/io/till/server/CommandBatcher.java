@@ -72,7 +72,10 @@ final class CommandBatcher implements AutoCloseable {
      */
     Till.Answer submit(Command command, Instant deadline) {
         Pending pending = new Pending(new Till.Call(command, deadline), new CompletableFuture<>());
-        if (!queue.offer(pending)) {
+        // A closed batcher has no worker, so a command queued now would wait for nobody, forever.
+        // Checked before queueing and again after: a close between the two either drained this
+        // command, and answered it with a refusal, or left it to be taken back here.
+        if (!running || !queue.offer(pending) || (!running && queue.remove(pending))) {
             refused.increment();
             throw new QueueFullException();
         }

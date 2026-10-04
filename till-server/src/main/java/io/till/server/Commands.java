@@ -30,10 +30,33 @@ class Commands {
 
     private final Till till;
     private final MeterRegistry registry;
+    private final CommandBatcher batcher;
 
     Commands(Till till, MeterRegistry registry) {
+        this(till, registry, (CommandBatcher) null);
+    }
+
+    /**
+     * @param till what runs a command on its own
+     * @param registry where outcomes are counted
+     * @param batcher the batcher, when batching is on ({@code till.batch.enabled})
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    Commands(Till till, MeterRegistry registry,
+            org.springframework.beans.factory.ObjectProvider<CommandBatcher> batcher) {
+        this(till, registry, batcher.getIfAvailable());
+    }
+
+    /**
+     * @param till what runs a command on its own
+     * @param registry where outcomes are counted
+     * @param batcher what runs commands that wait together as one batch (ADR 16), or null to run
+     *     each on its own
+     */
+    Commands(Till till, MeterRegistry registry, CommandBatcher batcher) {
         this.till = till;
         this.registry = registry;
+        this.batcher = batcher;
     }
 
     /**
@@ -64,7 +87,7 @@ class Commands {
         Timer.Sample sample = Timer.start(registry);
         String kind = kindOf(command);
         try {
-            Outcome outcome = deadline == null ? till.execute(command) : till.execute(command, deadline);
+            Outcome outcome = execute(command, deadline);
             registry.counter("till.outcome", "kind", kind, "outcome", describe(outcome)).increment();
             if (deadline != null && till.clock().instant().isAfter(deadline)) {
                 // The pre-apply check in Till.execute passed, so the caller was still waiting when
@@ -82,6 +105,11 @@ class Commands {
             // Also not an error in the command: the caller's clock, not the rows, ran out. Counted
             // separately from "exhausted" so an operator can tell overload from contention.
             registry.counter("till.outcome", "kind", kind, "outcome", "deadline_exceeded").increment();
+            throw e;
+        } catch (CommandBatcher.QueueFullException e) {
+            // The queue in front of the ledger was full: the same overload as an exhausted pool,
+            // reached sooner, and counted the same way.
+            registry.counter("till.outcome", "kind", kind, "outcome", "overloaded").increment();
             throw e;
         } catch (LedgerException e) {
             // Pool exhaustion specifically: not a fault either, just too many commands waiting for
@@ -107,6 +135,15 @@ class Commands {
      * @throws IllegalArgumentException if the header is not a non-negative integer, or is so large
      *     that adding it overflows what an {@link Instant} can represent
      */
+    private Outcome execute(Command command, Instant deadline) {
+        if (batcher != null) {
+            // The answer the batch gave this command: its outcome, or what Till.execute would have
+            // thrown for it, thrown here.
+            return batcher.submit(command, deadline).get();
+        }
+        return deadline == null ? till.execute(command) : till.execute(command, deadline);
+    }
+
     private Instant deadlineFrom(String header) {
         long millis;
         try {
