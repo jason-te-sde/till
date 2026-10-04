@@ -127,6 +127,17 @@ class CommandsTest {
                         clock.advance(Duration.ofSeconds(2));
                         return applied;
                     }
+
+                    // These tests drive Till.execute alone; neither ledger is ever given a batch.
+                    @Override
+                    public io.till.core.BatchSnapshot loadBatch(java.util.List<Command> commands) {
+                        throw new UnsupportedOperationException("not batched in this test");
+                    }
+
+                    @Override
+                    public boolean applyBatch(io.till.core.BatchDecision decision) {
+                        throw new UnsupportedOperationException("not batched in this test");
+                    }
                 };
         Till till = Till.builder(slowApply).clock(clock).build();
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -157,6 +168,17 @@ class CommandsTest {
                     public boolean apply(Decision decision) {
                         throw new IllegalStateException("not reached: load always fails first");
                     }
+
+                    // These tests drive Till.execute alone; neither ledger is ever given a batch.
+                    @Override
+                    public io.till.core.BatchSnapshot loadBatch(java.util.List<Command> commands) {
+                        throw new UnsupportedOperationException("not batched in this test");
+                    }
+
+                    @Override
+                    public boolean applyBatch(io.till.core.BatchDecision decision) {
+                        throw new UnsupportedOperationException("not batched in this test");
+                    }
                 };
         Till till = Till.builder(refusing).clock(fixed(T0)).build();
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -183,6 +205,17 @@ class CommandsTest {
                     @Override
                     public boolean apply(Decision decision) {
                         throw new IllegalStateException("not reached: load always fails first");
+                    }
+
+                    // These tests drive Till.execute alone; this ledger is never given a batch.
+                    @Override
+                    public io.till.core.BatchSnapshot loadBatch(java.util.List<Command> commands) {
+                        throw new UnsupportedOperationException("not batched in this test");
+                    }
+
+                    @Override
+                    public boolean applyBatch(io.till.core.BatchDecision decision) {
+                        throw new UnsupportedOperationException("not batched in this test");
                     }
                 };
         Till till = Till.builder(broken).clock(fixed(T0)).build();
