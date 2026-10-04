@@ -210,6 +210,17 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     /** "tilloutb" in ASCII. Any fixed number would do; this one says whose it is in {@code pg_locks}. */
     private static final long PUBLISHING_LOCK = 0x74696c6c6f757462L;
 
+    /**
+     * Flushes the server's WAL to disk as far as it has been written, before a batch is sent: past the
+     * commit of every row the publisher has just read. A hold commits without waiting for that flush
+     * (ADR 15), and any connection can read its event from the moment it commits; a crash before the
+     * flush takes the hold back, and an event already sent cannot be. The statement writes a logical
+     * message that nothing decodes, outside the transaction, and flushes it at once
+     * ({@code flush => true}, from PostgreSQL 17). A commit would flush as well, but the claim is this
+     * transaction's, and committing would give it up in the middle of a batch.
+     */
+    private static final String FLUSH_WAL = "select pg_logical_emit_message(false, 'till.outbox', '', true)";
+
     /** A SKU's level is its shards added up; the version too, so it moves when any of them does. */
     private static final String LEVELS =
             "select sku, sum(on_hand) as on_hand, sum(reserved) as reserved, sum(version) as version, "
@@ -730,6 +741,9 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
      * the batch is sent — the one place the ledger does, because the claim has to last exactly as
      * long as the send. It locks no row: the command path only ever inserts into the outbox, and
      * another publisher that finds the claim taken goes away rather than waiting.
+     *
+     * <p>Between reading the batch and sending it, the WAL is flushed ({@link #FLUSH_WAL}), so that no
+     * event leaves while a crash of the database could still take back the decision that wrote it.
      */
     @Override
     public OptionalInt publishNext(int limit, Instant at, Consumer<List<OutboxEntry>> publish) {
@@ -743,6 +757,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 }
                 List<OutboxEntry> batch = readUnpublished(connection, limit);
                 if (!batch.isEmpty()) {
+                    flushWal(connection);
                     publish.accept(batch);
                     try (PreparedStatement statement = connection.prepareStatement(MARK_PUBLISHED)) {
                         statement.setObject(1, offset(at));
@@ -761,6 +776,12 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
             }
         } catch (SQLException e) {
             throw new LedgerException("publishing the outbox", e);
+        }
+    }
+
+    private static void flushWal(Connection connection) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(FLUSH_WAL)) {
+            statement.execute();
         }
     }
 

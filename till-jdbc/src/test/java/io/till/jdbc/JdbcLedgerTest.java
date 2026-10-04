@@ -3,12 +3,14 @@ package io.till.jdbc;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.till.core.Codec;
 import io.till.core.Command;
 import io.till.core.Decision;
+import io.till.core.Event;
 import io.till.core.IdempotencyKey;
 import io.till.core.Kernel;
 import io.till.core.Line;
@@ -245,6 +247,96 @@ class JdbcLedgerTest {
         assertEquals(OptionalInt.of(0), ledger.publishNext(10, T0, batch -> {
             throw new AssertionError("nothing was waiting");
         }));
+    }
+
+    @Test
+    @DisplayName("an event leaves for the broker only once the commit that wrote it is on disk")
+    void anEventLeavesOnlyOnceItIsDurable() throws Exception {
+        // An event committed the way a hold is (ADR 15): with synchronous_commit off, so that the
+        // commit returns once its WAL is in the server's buffers, before anything is flushed. Every
+        // connection can read it from that moment, the publisher's included. A commit can wake the WAL
+        // writer from hibernating, which then flushes it at once, so the test writes events until it
+        // has one that is visible and not yet flushed.
+        slowWalWriter();
+        try {
+            String written = null;
+            for (int attempt = 1; attempt <= 10 && written == null; attempt++) {
+                String lsn = commitAsynchronously(rid("r" + attempt));
+                if (!flushedTo(lsn)) {
+                    written = lsn;
+                }
+            }
+            assertNotNull(written, "each of ten events committed asynchronously was flushed at once, so this server "
+                    + "cannot show one that is visible and not yet on disk");
+
+            String last = written;
+            List<Boolean> onDiskWhenSent = new ArrayList<>();
+            ledger.publishNext(20, T0, batch -> onDiskWhenSent.add(flushedTo(last)));
+
+            assertEquals(List.of(true), onDiskWhenSent, "a batch was handed over while a crash could still take it back");
+        } finally {
+            execute("alter system reset wal_writer_delay");
+            execute("select pg_reload_conf()");
+        }
+    }
+
+    /**
+     * Slows the server's WAL writer to one flush in ten seconds, until the test resets it. At its
+     * default of one in 200 ms, it flushes an asynchronous commit by itself often enough that a
+     * publisher which takes a while to reach the broker — a cold JVM's first round does — finds the
+     * batch on disk whether or not it flushed it, and the test above passes without the flush half the
+     * time. {@code ALTER SYSTEM} needs a superuser, which the user Testcontainers and CI connect as is.
+     */
+    private void slowWalWriter() throws InterruptedException {
+        execute("alter system set wal_writer_delay = '10s'");
+        execute("select pg_reload_conf()");
+        // The reload signals the WAL writer, which wakes and rereads its settings at once; this is
+        // only so that it has before the first commit the test makes.
+        Thread.sleep(250);
+    }
+
+    /**
+     * Writes a hold's event the way ADR 15 commits a hold, with synchronous_commit off for its
+     * transaction, and returns where the WAL stood just after: at or past the end of that commit.
+     */
+    private String commitAsynchronously(ReservationId id) {
+        Event event = new Event.StockReserved(id, List.of(Line.of("widget", 1)), T0.plus(TTL), T0);
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (Statement statement = connection.createStatement();
+                    PreparedStatement insert = connection.prepareStatement(
+                            "insert into till_outbox (dedupe_key, payload, recorded_at) values (?, ?, ?)")) {
+                statement.execute("set local synchronous_commit = off");
+                insert.setString(1, event.dedupeKey());
+                insert.setString(2, Codec.encodeEvent(event));
+                insert.setObject(3, T0.atOffset(ZoneOffset.UTC));
+                insert.executeUpdate();
+                connection.commit();
+            } finally {
+                connection.setAutoCommit(true);
+            }
+            try (Statement statement = connection.createStatement();
+                    ResultSet rows = statement.executeQuery("select pg_current_wal_insert_lsn()::text")) {
+                rows.next();
+                return rows.getString(1);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Whether the server has flushed its WAL to disk at least as far as {@code lsn}. */
+    private boolean flushedTo(String lsn) {
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement("select pg_current_wal_flush_lsn() >= ?::pg_lsn")) {
+            statement.setString(1, lsn);
+            try (ResultSet rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getBoolean(1);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** Runs on another thread, as a second publisher would, and waits for it. */
