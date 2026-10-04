@@ -43,7 +43,9 @@ its own transaction only. Every other decision waits for the disk, as before.**
   but this one. With the default, that call reaches the one function and commits durably, as it always
   did. Without it, every write of theirs would fail with "function does not exist" until they were
   replaced; with V4's function left beside V5's, with "not unique". Rolling the code back is safe for
-  the same reason: V5 stays, and the old call still works.
+  the same reason: V5 stays, and the old call still works. ADR 14 expected a change of arguments to
+  add an overload beside the old function, for this reason; a default does it with one function, and
+  an overload beside a function with a default would leave the old call ambiguous.
 - The outbox publisher flushes the WAL between reading a batch and sending it, so that no event leaves
   while a crash could still take back the decision that wrote it (below).
 
@@ -157,6 +159,13 @@ system kills PostgreSQL, or the power goes.
 that asks again with the same key afterwards is decided again rather than answered from the record: a
 refusal for want of stock can become a hold, if the stock is there by then. A refusal wrote nothing
 else that a second decision could contradict.
+
+**The deploy that brings this has a window of its own.** While it rolls, an instance of the last
+version can hold the publishing claim and send without the flush, while new instances already commit
+holds without waiting. A crash of the database in those minutes could still put a lost hold's event on
+the stream, which is what the flush exists to prevent; rolling the change back opens the same window.
+Shipping the flush on its own first, and the rest after it, would close it. This ships as one change,
+and the window is the length of a deploy.
 
 **The publisher writes to the WAL once a batch**: a message of a few dozen bytes, and the flush it
 forces, which the WAL writer or a durable commit has often done already. The `flush` argument is
