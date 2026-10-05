@@ -29,10 +29,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import javax.sql.DataSource;
@@ -62,7 +66,10 @@ import org.junit.jupiter.api.parallel.ResourceLock;
  * one time in ten, its release — as the load test's shoppers do, with stock enough that nobody is
  * refused. {@code -Dbench.callers}, {@code bench.pool}, {@code bench.skus}, {@code bench.seconds} and
  * {@code bench.warmup} change the shape, and {@code bench.shards} splits every SKU that many ways
- * before the run (ADR 9).
+ * before the run (ADR 9). {@code -Dbench.batch=64} puts every command through a queue and one worker
+ * that runs whatever has queued, up to that many, as one batch, as the server's batcher does (ADR 16);
+ * the decisions and conflicts it reports are then batch writes. The tables are analyzed once, when
+ * the warmup ends, as a database running for longer than a run would have had them analyzed.
  */
 @EnabledIfSystemProperty(named = "till.benchmark", matches = "true")
 @ResourceLock("till-database")
@@ -79,6 +86,7 @@ class ContentionBenchmark {
         int seconds = Integer.getInteger("bench.seconds", 30);
         int warmup = Integer.getInteger("bench.warmup", 5);
         int shards = Integer.getInteger("bench.shards", 1);
+        int batch = Integer.getInteger("bench.batch", 0);
 
         PostgresFixture.dataSource();
         PostgresFixture.reset();
@@ -102,6 +110,7 @@ class ContentionBenchmark {
                 }
             }
 
+            Batcher batcher = batch > 0 ? new Batcher(till, batch) : null;
             AtomicLong serial = new AtomicLong();
             LongAdder checkouts = new LongAdder();
             LongAdder exhausted = new LongAdder();
@@ -123,12 +132,13 @@ class ContentionBenchmark {
                             boolean measured = t0 >= measureFrom;
                             try {
                                 ReservationId id = ReservationId.of("r-" + n);
-                                Outcome held = till.reserve(IdempotencyKey.of("c-" + n), id, List.of(new Line(sku, 1)), TTL);
+                                Outcome held = run(till, batcher,
+                                        new Command.Reserve(IdempotencyKey.of("c-" + n), id, List.of(new Line(sku, 1)), TTL));
                                 if (held.ok()) {
                                     if (random.nextInt(10) == 0) {
-                                        till.release(IdempotencyKey.of("x-" + n), id);
+                                        run(till, batcher, new Command.Release(IdempotencyKey.of("x-" + n), id));
                                     } else {
-                                        till.commit(IdempotencyKey.of("p-" + n), id);
+                                        run(till, batcher, new Command.Commit(IdempotencyKey.of("p-" + n), id));
                                     }
                                 }
                                 if (measured) {
@@ -147,6 +157,10 @@ class ContentionBenchmark {
                         return Arrays.copyOf(times, count);
                     }));
                 }
+                // Analyzed a second before the measurement starts, so the statements planned again
+                // afterwards are not planned inside it.
+                Thread.sleep(Math.max(0, Duration.ofNanos(measureFrom - System.nanoTime()).toMillis() - 1_000));
+                analyze(pool);
                 Thread.sleep(Math.max(0, Duration.ofNanos(measureFrom - System.nanoTime()).toMillis()));
                 resetStatements(pool);
                 before = Counters.read(pool);
@@ -155,6 +169,9 @@ class ContentionBenchmark {
             }
             ledger.measuring = false;
             wire.measuring = false;
+            if (batcher != null) {
+                batcher.close();
+            }
             // A backend reports its transactions when it goes idle, and waits up to ten seconds to.
             Thread.sleep(11_000);
             Counters after = Counters.read(pool);
@@ -162,14 +179,19 @@ class ContentionBenchmark {
             long[] all = latencies.stream().flatMapToLong(f -> Arrays.stream(join(f))).sorted().toArray();
             double perSecond = checkouts.sum() / (double) seconds;
             double commands = ledger.decided.sum();
-            System.out.printf(Locale.ROOT, "%nContention: %d callers, %d connections, %d SKUs in %d shards each, %d s measured after %d s%n",
-                    callers, poolSize, skuCount, shards, seconds, warmup);
+            System.out.printf(Locale.ROOT, "%nContention: %d callers, %d connections, %d SKUs in %d shards each, %d s measured after %d s, %s%n",
+                    callers, poolSize, skuCount, shards, seconds, warmup,
+                    batch > 0 ? "in batches of up to " + batch : "one command at a time");
             System.out.printf(Locale.ROOT, "  checkouts           %,d (%.1f a second)%n", checkouts.sum(), perSecond);
             System.out.printf(Locale.ROOT, "  checkout latency    p50 %.1f ms, p99 %.1f ms%n", percentile(all, 0.50), percentile(all, 0.99));
             System.out.printf(Locale.ROOT, "  gave up (conflicts) %,d%n", exhausted.sum());
             System.out.printf(Locale.ROOT, "  decisions applied   %,.0f, of which conflicted %,d (%.1f%%)%n",
                     commands, ledger.conflicts.sum(), 100.0 * ledger.conflicts.sum() / Math.max(1, commands));
             System.out.printf(Locale.ROOT, "  snapshots loaded    %,d%n", ledger.loads.sum());
+            if (ledger.batches.sum() > 0) {
+                System.out.printf(Locale.ROOT, "  batches written     %,d, of %.1f commands on average%n",
+                        ledger.batches.sum(), ledger.batched.sum() / (double) ledger.batches.sum());
+            }
             if (before != null && after != null) {
                 long commits = after.commits - before.commits;
                 long rollbacks = after.rollbacks - before.rollbacks;
@@ -189,6 +211,8 @@ class ContentionBenchmark {
         private final LongAdder loads = new LongAdder();
         private final LongAdder decided = new LongAdder();
         private final LongAdder conflicts = new LongAdder();
+        private final LongAdder batches = new LongAdder();
+        private final LongAdder batched = new LongAdder();
         private volatile boolean measuring;
 
         private Counting(Ledger inner) {
@@ -230,10 +254,75 @@ class ContentionBenchmark {
                 decided.increment();
                 if (!applied) {
                     conflicts.increment();
+                } else {
+                    batches.increment();
+                    batched.add(decision.records().size());
                 }
             }
             return applied;
         }
+    }
+
+    private static Outcome run(Till till, Batcher batcher, Command command) {
+        return batcher == null ? till.execute(command) : batcher.submit(command);
+    }
+
+    /** A queue and one worker that runs whatever has queued as one batch, as the server's batcher does. */
+    private static final class Batcher implements AutoCloseable {
+
+        private final Till till;
+        private final int maxBatch;
+        private final BlockingQueue<Pending> queue = new LinkedBlockingQueue<>();
+        private final Thread worker;
+        private volatile boolean running = true;
+
+        Batcher(Till till, int maxBatch) {
+            this.till = till;
+            this.maxBatch = maxBatch;
+            this.worker = Thread.ofPlatform().daemon().name("bench-batcher").start(this::work);
+        }
+
+        Outcome submit(Command command) {
+            Pending pending = new Pending(new Till.Call(command, null), new CompletableFuture<>());
+            queue.add(pending);
+            return pending.answer().join().get();
+        }
+
+        private void work() {
+            List<Pending> batch = new ArrayList<>(maxBatch);
+            while (running) {
+                try {
+                    Pending first = queue.poll(100, TimeUnit.MILLISECONDS);
+                    if (first == null) {
+                        continue;
+                    }
+                    batch.add(first);
+                    queue.drainTo(batch, maxBatch - 1);
+                    Till.BatchResult result = till.executeAll(batch.stream().map(Pending::call).toList());
+                    for (int i = 0; i < batch.size(); i++) {
+                        batch.get(i).answer().complete(result.answers().get(i));
+                    }
+                } catch (InterruptedException e) {
+                    return;
+                } catch (RuntimeException e) {
+                    batch.forEach(pending -> pending.answer().complete(Till.Answer.failed(e)));
+                } finally {
+                    batch.clear();
+                }
+            }
+        }
+
+        @Override
+        public void close() {
+            running = false;
+            worker.interrupt();
+            Pending pending;
+            while ((pending = queue.poll()) != null) {
+                pending.answer().complete(Till.Answer.failed(new IllegalStateException("the run is over")));
+            }
+        }
+
+        private record Pending(Till.Call call, CompletableFuture<Till.Answer> answer) {}
     }
 
     /**
@@ -318,6 +407,20 @@ class ContentionBenchmark {
                 rows.next();
                 return new Counters(rows.getLong(1), rows.getLong(2));
             }
+        }
+    }
+
+    /**
+     * What autovacuum would have done by now on a database that has been running for longer than a
+     * run: gathered statistics on the tables the warmup filled. A run starts on a database created for
+     * it, and is over before autovacuum first looks at it; until then the planner has no statistics,
+     * guesses that each key of an array matches half a percent of a table, and reads a batch's lines
+     * by scanning the table instead of looking them up.
+     */
+    private static void analyze(DataSource pool) throws SQLException {
+        try (Connection connection = pool.getConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("analyze till_stock, till_reservation, till_reservation_line, till_idempotency, till_outbox");
         }
     }
 
