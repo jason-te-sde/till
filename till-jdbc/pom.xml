@@ -27,12 +27,15 @@
       <artifactId>slf4j-api</artifactId>
     </dependency>
 
-    <!-- The driver is the caller's to choose and the caller's to upgrade: this module talks to a
-         DataSource and never names a driver class. It is here for the tests only. -->
+    <!-- The driver is the caller's to supply and the caller's to upgrade: this module talks to a
+         DataSource and loads no driver class. It compiles against one of pgjdbc's interfaces,
+         PGStatement, to plan a batch's load for its own arrays rather than once for every batch
+         (JdbcLedger.loadBatch), so a caller supplies pgjdbc; a statement of another driver's is left
+         as that driver prepares it. -->
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
-      <scope>test</scope>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>io.github.jason-te-sde</groupId>

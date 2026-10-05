@@ -650,6 +650,37 @@ class JdbcLedgerTest {
     }
 
     @Test
+    @DisplayName("run often on one connection, a batch load is planned for its own arrays every time")
+    void aBatchLoadIsNeverGivenAGenericPlan() throws SQLException {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 2)), TTL);
+
+        // The opposite of the lean load's rule, and for the arrays: a generic plan cannot know how many
+        // keys an array holds, guesses ten, and on a table that is small when the plan is made, ten
+        // lookups cost more than reading the table. A connection that settled on that plan early in a
+        // run went on reading every record and every reservation for each batch after the tables had
+        // grown past a hundred thousand rows, at about 16 ms a load instead of 0.1 (ContentionBenchmark).
+        try (Connection connection =
+                DriverManager.getConnection(TestDatabase.url(), TestDatabase.username(), TestDatabase.password())) {
+            JdbcLedger onOneConnection = new JdbcLedger(alwaysTheOne(connection));
+            for (int i = 0; i < 20; i++) {
+                onOneConnection.loadBatch(List.of(
+                        new Command.Commit(key("pay-" + i), rid("r1")),
+                        new Command.Reserve(key("c-" + i), rid("r-" + i), List.of(Line.of("widget", 1)), TTL)));
+            }
+
+            try (Statement statement = connection.createStatement();
+                    ResultSet plans =
+                            statement.executeQuery(
+                                    "select coalesce(sum(generic_plans), 0) from pg_prepared_statements "
+                                            + "where statement like '%reservation_id = any%'")) {
+                assertTrue(plans.next());
+                assertEquals(0, plans.getLong(1), "PostgreSQL ran a batch load with a plan made without its arrays");
+            }
+        }
+    }
+
+    @Test
     @DisplayName("a lean snapshot is the snapshot a reclaiming load reads, whatever the command names")
     void aLeanSnapshotIsTheTransactionalOne() {
         populateEveryShape();

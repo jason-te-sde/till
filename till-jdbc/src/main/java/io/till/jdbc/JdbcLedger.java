@@ -46,6 +46,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import javax.sql.DataSource;
+import org.postgresql.PGStatement;
 
 /**
  * The {@link Ledger} on PostgreSQL.
@@ -737,6 +738,14 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
         }
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(BATCH_SNAPSHOT_QUERY)) {
+            // Planned for its own arrays every time, never prepared on the server: a plan made without
+            // them guesses ten keys an array, and on tables that were small when it was made, reading
+            // them costs less than ten lookups. A connection that kept that plan read every record and
+            // reservation for each batch once the tables had grown, at about 16 ms a load instead of
+            // 0.1. Planning a load costs a fraction of a millisecond, once a batch.
+            if (statement.isWrapperFor(PGStatement.class)) {
+                statement.unwrap(PGStatement.class).setPrepareThreshold(0);
+            }
             statement.setArray(1, connection.createArrayOf("varchar", targets.toArray()));
             statement.setArray(2, connection.createArrayOf("varchar", keys.toArray()));
             statement.setArray(3, connection.createArrayOf("varchar", targets.toArray()));
