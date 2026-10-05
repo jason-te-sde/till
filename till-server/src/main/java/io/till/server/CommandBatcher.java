@@ -35,9 +35,7 @@ final class CommandBatcher implements AutoCloseable {
     private final Till till;
     private final int maxBatch;
     private final BlockingQueue<Pending> queue;
-    private final DistributionSummary sizes;
-    private final Counter conflicts;
-    private final Counter refused;
+    private final MeterRegistry registry;
     private final Thread worker;
     private volatile boolean running = true;
 
@@ -48,15 +46,7 @@ final class CommandBatcher implements AutoCloseable {
         this.till = till;
         this.maxBatch = maxBatch;
         this.queue = new ArrayBlockingQueue<>(capacity);
-        this.sizes = DistributionSummary.builder("till.batch.size")
-                .description("Commands decided together in one load and one write")
-                .register(registry);
-        this.conflicts = Counter.builder("till.batch.conflicts")
-                .description("Batch writes refused because a row had moved, each decided again")
-                .register(registry);
-        this.refused = Counter.builder("till.batch.refused")
-                .description("Commands refused because the queue in front of the ledger was full")
-                .register(registry);
+        this.registry = registry;
         this.worker = new Thread(this::work, "till-batcher");
         this.worker.setDaemon(true);
         this.worker.start();
@@ -76,7 +66,7 @@ final class CommandBatcher implements AutoCloseable {
         // Checked before queueing and again after: a close between the two either drained this
         // command, and answered it with a refusal, or left it to be taken back here.
         if (!running || !queue.offer(pending) || (!running && queue.remove(pending))) {
-            refused.increment();
+            refused().increment();
             throw new QueueFullException();
         }
         return pending.answer().join();
@@ -112,10 +102,10 @@ final class CommandBatcher implements AutoCloseable {
         for (Pending pending : batch) {
             calls.add(pending.call());
         }
-        sizes.record(batch.size());
+        sizes().record(batch.size());
         try {
             Till.BatchResult result = till.executeAll(calls);
-            conflicts.increment(result.conflicts());
+            conflicts().increment(result.conflicts());
             for (int i = 0; i < batch.size(); i++) {
                 batch.get(i).answer().complete(result.answers().get(i));
             }
@@ -138,6 +128,26 @@ final class CommandBatcher implements AutoCloseable {
         while ((pending = queue.poll()) != null) {
             pending.answer().complete(Till.Answer.failed(new QueueFullException()));
         }
+    }
+
+    // Looked up at each use rather than held, as Commands does: a meter held from construction is
+    // dropped by a registry that is cleared, and goes on counting where nothing reads it.
+    private DistributionSummary sizes() {
+        return DistributionSummary.builder("till.batch.size")
+                .description("Commands decided together in one load and one write")
+                .register(registry);
+    }
+
+    private Counter conflicts() {
+        return Counter.builder("till.batch.conflicts")
+                .description("Batch writes refused because a row had moved, each decided again")
+                .register(registry);
+    }
+
+    private Counter refused() {
+        return Counter.builder("till.batch.refused")
+                .description("Commands refused because the queue in front of the ledger was full")
+                .register(registry);
     }
 
     private record Pending(Till.Call call, CompletableFuture<Till.Answer> answer) {}

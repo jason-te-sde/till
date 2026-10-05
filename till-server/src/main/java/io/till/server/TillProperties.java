@@ -24,6 +24,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param sweeper the background expiry job
  * @param outbox the background publisher
  * @param retention how long history is kept
+ * @param batch the queue that runs commands waiting together as one batch
  */
 @ConfigurationProperties(prefix = "till")
 public record TillProperties(
@@ -36,7 +37,8 @@ public record TillProperties(
         @DefaultValue Sweeper sweeper,
         @DefaultValue Outbox outbox,
         @DefaultValue Kafka kafka,
-        @DefaultValue RetentionPolicy retention) {
+        @DefaultValue RetentionPolicy retention,
+        @DefaultValue Batch batch) {
 
     public TillProperties {
         if (maxAttempts < 1) {
@@ -217,6 +219,25 @@ public record TillProperties(
          */
         public boolean isConfigured() {
             return !bootstrapServers.isBlank();
+        }
+    }
+
+    /**
+     * Commands that wait together, decided together (ADR 16).
+     *
+     * @param enabled whether commands go through the batcher at all
+     * @param maxSize the most commands one batch takes
+     * @param queueCapacity how many commands may wait; one more is refused at once, 503 OVERLOADED
+     */
+    public record Batch(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("64") int maxSize,
+            @DefaultValue("1024") int queueCapacity) {
+
+        public Batch {
+            if (maxSize < 1 || queueCapacity < 1) {
+                throw new IllegalArgumentException("till.batch.max-size and till.batch.queue-capacity must be at least 1");
+            }
         }
     }
 }

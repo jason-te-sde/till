@@ -127,6 +127,18 @@ class CommandBatcherTest {
         assertThrows(io.till.core.DeadlineExceededException.class, answer::get);
     }
 
+    @Test
+    @DisplayName("batch sizes are still reported after the registry has been cleared")
+    void metersSurviveAClearedRegistry() {
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, registry);
+        stock("widget", 5);
+        registry.clear();
+
+        batcher.submit(reserve("k1", "r1", "widget", 1), null).get();
+
+        assertEquals(1, registry.get("till.batch.size").summary().count());
+    }
+
     private void awaitQueued(int count) throws InterruptedException {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (batcher.queued() < count) {

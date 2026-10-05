@@ -1,5 +1,6 @@
 package io.till.server;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
@@ -12,6 +13,7 @@ import io.till.core.Till;
 import io.till.jdbc.JdbcLedger;
 import java.time.Clock;
 import javax.sql.DataSource;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -45,6 +47,22 @@ class TillConfiguration {
                 .maxAttempts(properties.maxAttempts())
                 .reclaimLimit(properties.reclaimLimit())
                 .build();
+    }
+
+    /**
+     * What every command goes through, so that the ones waiting at the same time are decided in one
+     * load and written in one call (ADR 16). Off, each command runs on its own.
+     *
+     * @param till what decides each batch
+     * @param properties the batch's limits
+     * @param registry where batch sizes, conflicts and refusals are counted
+     * @return the batcher; closed on shutdown, which answers whatever is still queued with a refusal
+     */
+    @Bean(destroyMethod = "close")
+    @ConditionalOnProperty(prefix = "till.batch", name = "enabled", havingValue = "true", matchIfMissing = true)
+    CommandBatcher commandBatcher(Till till, TillProperties properties, MeterRegistry registry) {
+        TillProperties.Batch batch = properties.batch();
+        return new CommandBatcher(till, batch.maxSize(), batch.queueCapacity(), registry);
     }
 
     /**
