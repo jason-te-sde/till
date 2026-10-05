@@ -5,7 +5,8 @@
 - JDK 21 or newer, Maven 3.9 or newer.
 - Docker. The store's suites start PostgreSQL, Redis and Kafka with Testcontainers, and the whole
   platform runs under `docker compose`. The ledger's adapter and integration suites can use a
-  PostgreSQL server you already have instead; without either, they **skip**.
+  PostgreSQL 17 server you already have instead — the publisher's WAL flush and the login-timeout
+  suite need 17; without either, they **skip**.
 - Node 24 or newer, **only if you are touching the storefront**. `mvn verify` does not need it.
 
 ```bash

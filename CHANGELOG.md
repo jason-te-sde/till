@@ -193,6 +193,30 @@ explicitly not: it is a testing tool and it will change.
 
 ### Changed
 
+- **Commands that wait together are decided together, and written in one call**
+  ([ADR 16](docs/design/0016-batched-commands.md)). Every command now goes through a batcher in front
+  of the ledger: a bounded queue (`till.batch.queue-capacity`, 1024) and one worker that takes whatever
+  has queued, up to `till.batch.max-size` (64), loads it in one statement, decides each command in turn
+  against that snapshot, and writes the net change in one call to `till_apply`, every row checked
+  against the version the batch read. Each caller gets the answer running its command alone would
+  have given, in the order the commands arrived: for random histories in batches of random sizes, the
+  suite compares the answers and the final state, row for row and version for version, on
+  `InMemoryLedger` and on `JdbcLedger`. A full queue is answered 503 `OVERLOADED` at once, and
+  `till.batch.enabled=false` runs every command on its own, as before. New: `Till.executeAll`;
+  `Ledger.loadBatch` and `Ledger.applyBatch`, which every ledger implements; `V6__apply_batches.sql`,
+  which extends `till_apply` and still answers V5's and V4's calls; and `till.batch.size`,
+  `till.batch.conflicts` and `till.batch.refused`. In the contention benchmark at the load test's
+  shape (`-Dbench.batch=64 -Dbench.shards=16 -Dbench.pool=16 -Dbench.callers=256`, three interleaved
+  pairs), checkouts a second went from 1,009–1,307 to 4,022–4,260, about 3.4 times at the median; the
+  p99 from 1.17–1.32 s to 83–106 ms; and no batch write conflicted, where 13–14% of single decisions
+  had. The batch's
+  load is planned for its own arrays on every call: a plan PostgreSQL made once, while the tables were
+  small, went on reading them whole after they had grown — about 16 ms a load instead of 0.1, and
+  600 checkouts a second instead of 4,400, in one benchmark run in five — so `till-jdbc` now compiles
+  against pgjdbc's `PGStatement` (`provided`: the caller still supplies the driver). The load test
+  runs one ledger task of two vCPUs where it ran two of one, because two tasks' batches would meet on
+  the same rows. The benchmark analyzes its tables when its warmup ends, as autovacuum would have on a
+  database older than a run. A contract and a schema change, so a minor version when released.
 - **A hold commits without waiting for the disk; a sale, an adjustment and a split still wait**
   ([ADR 15](docs/design/0015-async-commit-for-holds.md)). Database Insights put `COMMIT` at 20% of the
   ledger database's load by statement, and the WAL waits at about 11% of it by wait event, and most

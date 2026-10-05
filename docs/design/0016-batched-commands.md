@@ -4,13 +4,13 @@
 
 ## Context
 
-A load test of 8,000 shoppers with the ledger on a `db.t4g.micro` of its own ran that database at 93%
-CPU. Database Insights put about thirteen sessions active on its two vCPUs, `till_apply` at 73.5% of
-the load, the snapshot statement at 18%, and waits on the write-ahead log at about 21%, which
-[ADR 15](0015-async-commit-for-holds.md) has cut since. The scenario is a closed loop: every speed-up
-lets shoppers order sooner, which brings the database back to saturation. Unconstrained, the 8,000
-would place about 136 orders a second and pay for 128; the ledger served 107 and 85. For a checkout's
-p99 to fall under a second, the ledger needs about twice the capacity it has.
+A load test of 8,000 shoppers with the ledger on a `db.t4g.micro` of its own, after
+[ADR 15](0015-async-commit-for-holds.md), ran that database at up to 89% CPU. Database Insights put
+about eleven sessions active on its two vCPUs, two thirds of the load on the CPU, and of that
+`till_apply` 73% and the snapshot statement 18%. The scenario is a closed loop: every speed-up lets
+shoppers order sooner, which brings the database back to saturation. Unconstrained, the 8,000 would
+place about 136 orders a second and pay for 128; the ledger served 108 and 86. For a checkout's p99
+to fall under a second, the ledger needs about twice the capacity it has.
 
 [ADR 14](0014-one-round-trip-apply.md) wrote a decision in one statement instead of a transaction of
 seven, wrote exactly the same rows, and the checkouts a second rose by two fifths. So a large share of
@@ -94,6 +94,14 @@ The `Ledger` contract gains two methods, and both ledgers implement them.
   snapshot statement ([ADR 12](0012-one-statement-snapshot.md)) with an array in place of each scalar:
   the records of `idem_key = any(?)`, the reservations of `id = any(?)`, the lines of all of those
   (`reservation_id = any(?)`), and the stock of `sku = any(? || array(select sku from target_lines))`.
+  Unlike the lean statement, it is **planned for its own arrays on every call** and never prepared on
+  the server. A plan made without them guesses ten keys an array, and on tables that were small when
+  it was made, reading them costs less than ten lookups: in the contention benchmark, a connection
+  that settled on that plan early in a run went on reading every record and every reservation for each
+  batch after the tables had passed a hundred thousand rows, about 16 ms a load instead of 0.1, and
+  the run's checkouts fell from about 4,400 a second to 600. Planning costs a fraction of a
+  millisecond, once a batch. `JdbcLedger` sets this through pgjdbc's `PGStatement`, the one driver
+  interface the module compiles against.
   A `BatchSnapshot` refuses a reservation whose SKUs it does not hold, and `executeAll` refuses to
   decide a command whose SKUs it does not hold, with `IncompleteSnapshotException`: a SKU the adapter
   forgot must not look like a SKU that was never stocked (ADR 1).
@@ -123,14 +131,16 @@ whatever has queued, up to `till.batch.max-size` (64), runs it through `executeA
 caller its own answer. It does not wait for a batch to fill: it takes the first command as soon as
 there is one, and then what else is already there. So batches form only while the worker is busy with
 the last one — that is, under load — and a request on its own waits for nothing but the batch already
-in flight. When the queue is full (`till.batch.queue-capacity`, 256) a command is refused at once with
-the existing 503 `OVERLOADED`, before anything reaches the database. `till.batch.enabled` turns it off,
-and every command goes through `execute` as before.
+in flight. When the queue is full (`till.batch.queue-capacity`, 1024) a command is refused at once with
+the existing 503 `OVERLOADED`, before anything reaches the database. The bound is well above the 200
+requests the servlet container serves at once, so an ordinary burst never reaches it; a command that
+waits too long in the queue is answered by its own deadline (step 1), also without reaching the
+database. `till.batch.enabled` turns it off, and every command goes through `execute` as before.
 
 Each request keeps its own HTTP semantics: its own outcome, status, idempotency behaviour and problem
 body, and its own count in `till.outcome` and `till.late`. The batcher adds `till.batch.size`, the
-commands in each batch, as a distribution; `till.batch.retries`, the batch writes refused; and
-`till.batch.refused`, the commands turned away by a full queue.
+commands in each batch, as a distribution; `till.batch.conflicts`, the batch writes refused because a
+row had moved; and `till.batch.refused`, the commands turned away by a full queue.
 
 ### One writer
 

@@ -141,6 +141,26 @@ waiting for this call?", decided by `Till` before the kernel is ever invoked.
 precision on the way to disk comes back different, and a recorded outcome that no longer equals the
 one that was returned is not a recorded outcome.
 
+## Batches
+
+Under load the server does not run the loop once per command. Every command goes through a
+**batcher**: a bounded queue, and one worker that takes whatever has queued, up to
+`till.batch.max-size`, and runs it through `Till.executeAll` ([ADR 16](design/0016-batched-commands.md)).
+The batch is loaded in one statement; each command is decided in turn against an in-memory copy of
+that snapshot, seeing what the ones before it did; and the net change is written in one call, every
+row checked against the version the batch read. A row that moved refuses the whole write, and the
+batch is decided again, as a single command would be. The answers are the ones the commands would
+have had one at a time, in the order they arrived: for random histories in batches of random sizes,
+the suite checks the answers and the final state, row for row and version for version, on both
+ledgers.
+
+Nothing waits on purpose. A command that reaches an idle worker is a batch of one, and batches grow
+only while the one before them is being written, which is when there is something to share. A
+command short of stock while expired holds might cover it, and a sweep, run on their own through
+`execute`, at the place in the batch where they arrived. A full queue is refused at once with 503
+`OVERLOADED`, before anything reaches the database, and `till.batch.enabled=false` sends every
+command through `execute` again.
+
 ## The adapter
 
 `till-jdbc` reads a snapshot and writes a decision. A snapshot has to be one instant — at read
@@ -182,6 +202,14 @@ carrying the version the kernel read. If a row moved, its update matches no row,
 the statement takes everything it wrote with it, and `apply` returns `false`. The stock rows go first,
 because they are the rows most likely to have moved: every command on a SKU writes its row. Finding
 that out before inserting the reservation saves the inserts a conflict would roll back.
+
+A batch is the same two statements with longer arrays. `loadBatch` reads the records, reservations,
+lines and stock of every command in one `union all`, and `applyBatch` writes the batch's net change
+with one call to `till_apply`, which the sixth migration taught to move a stock row's version by as
+many commands as wrote it and to insert an idempotency record for each command. `apply` sends the same
+statement as a batch of one. The batch's load is the one statement planned on every call: a plan made
+without its arrays, on tables that were small at the time, reads the tables instead of looking keys
+up, and goes on doing so as they grow.
 
 **A hold commits without waiting for the disk** ([ADR 15](design/0015-async-commit-for-holds.md)).
 A decision that takes a hold, gives one back, writes expired ones off or refuses a command tells
@@ -254,9 +282,12 @@ callers free to move between them, and counts how often the second one happened.
 
 ## Threads
 
-`Till` and `JdbcLedger` are immutable and safe to share. `Kernel` has no state at all. The server
-runs the sweeper and the publisher on Spring's scheduler, and both are safe on every instance at
-once: two sweepers reaching the same hold produce one write and one conflict, and the conflict is
+`Till` and `JdbcLedger` are immutable and safe to share. `Kernel` has no state at all. With batching
+on, one worker thread an instance loads and writes every command, and the request threads wait for
+their answers; so one instance keeps one database session busy with commands, and a second instance's
+batches meet the first's on the same rows. The load test runs one ledger task with the cores two had
+(ADR 16, "One writer"). The server runs the sweeper and the publisher on Spring's scheduler, and both
+are safe on every instance at once: two sweepers reaching the same hold produce one write and one conflict, and the conflict is
 answered by doing nothing, because the hold is now in the state the loser wanted.
 
 The publisher is at-least-once by construction — it marks rows **after** delivering them, so a crash
