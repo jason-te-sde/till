@@ -44,7 +44,13 @@ class MigrationTest extends ApiTestBase {
         }
 
         assertEquals(
-                List.of("1 till schema", "2 listing indexes", "3 stock shards", "4 apply function", "5 apply durability"),
+                List.of(
+                        "1 till schema",
+                        "2 listing indexes",
+                        "3 stock shards",
+                        "4 apply function",
+                        "5 apply durability",
+                        "6 apply batches"),
                 applied,
                 "the schema history is not what this build ships");
     }
