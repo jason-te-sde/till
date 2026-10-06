@@ -8,6 +8,7 @@ import io.till.core.Till;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -129,25 +130,27 @@ final class CommandBatcher implements AutoCloseable {
         sizes().record(batch.size());
         InFlight batchInFlight = new InFlight(batch.size(), System.nanoTime());
         inFlight = batchInFlight;
+        List<Till.Answer> answers;
         try {
             Till.BatchResult result = till.executeAll(calls);
             conflicts().increment(result.conflicts());
-            for (int i = 0; i < batch.size(); i++) {
-                batch.get(i).answer().complete(result.answers().get(i));
-            }
+            answers = result.answers();
         } catch (RuntimeException e) {
             // executeAll answers every command's failure itself; anything that escapes it is a fault
             // in the batch machinery, and every caller of the batch hears about it.
             LOG.error("a batch of {} commands failed", batch.size(), e);
-            for (Pending pending : batch) {
-                pending.answer().complete(Till.Answer.failed(e));
-            }
+            answers = Collections.nCopies(batch.size(), Till.Answer.failed(e));
         } finally {
+            // Before any answer goes out: a caller holding its answer must never find the batch that
+            // gave it still counted as running.
             inFlight = null;
             if (wasReported(batchInFlight)) {
                 LOG.warn("the batch of {} commands that stalled took {} ms in all", batchInFlight.size(),
                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - batchInFlight.since()));
             }
+        }
+        for (int i = 0; i < batch.size(); i++) {
+            batch.get(i).answer().complete(answers.get(i));
         }
     }
 
