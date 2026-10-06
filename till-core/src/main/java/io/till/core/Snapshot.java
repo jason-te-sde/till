@@ -46,8 +46,11 @@ public record Snapshot(
         }
     }
 
-    /** A SKU's shards in index order, refusing a gap: a snapshot with part of a SKU is not one. */
-    private static List<StockShard> inOrder(Sku sku, List<StockShard> shards) {
+    /**
+     * A SKU's shards in index order, refusing a gap: a snapshot with part of a SKU is not one. A
+     * {@link BatchSnapshot} holds its SKUs to the same rule.
+     */
+    static List<StockShard> inOrder(Sku sku, List<StockShard> shards) {
         List<StockShard> sorted = new ArrayList<>(shards);
         sorted.sort(StockShard.ORDER);
         for (int i = 0; i < sorted.size(); i++) {

@@ -194,6 +194,7 @@ class OutboxThroughputBenchmark {
                 new TillProperties.Outbox(true, INTERVAL, batch, passes),
                 new TillProperties.Kafka("", TOPIC, Duration.ofSeconds(30), Map.of(), 12, (short) 1),
                 new TillProperties.RetentionPolicy(
-                        false, Duration.ofHours(1), 1000, 20, Duration.ofDays(7), Duration.ofDays(30), Duration.ZERO));
+                        false, Duration.ofHours(1), 1000, 20, Duration.ofDays(7), Duration.ofDays(30), Duration.ZERO),
+                new TillProperties.Batch(false, 64, 1024));
     }
 }

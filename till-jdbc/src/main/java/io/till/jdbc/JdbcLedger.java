@@ -1,6 +1,8 @@
 package io.till.jdbc;
 
 import io.till.core.Allocation;
+import io.till.core.BatchDecision;
+import io.till.core.BatchSnapshot;
 import io.till.core.Codec;
 import io.till.core.Command;
 import io.till.core.Decision;
@@ -28,12 +30,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -44,6 +46,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import javax.sql.DataSource;
+import org.postgresql.PGStatement;
 
 /**
  * The {@link Ledger} on PostgreSQL.
@@ -164,6 +167,41 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                     + "from till_stock where sku = any(?::varchar[] || array(select sku from target_lines))";
 
     /**
+     * Everything a batch's load ({@link #loadBatch}) reads, in one statement: {@link #SNAPSHOT_QUERY}
+     * with an array wherever it has a scalar — the records of every key the commands carry, every
+     * reservation they name and the lines of all of those, and the stock of every SKU they name or
+     * those reservations hold. The same arms and the same columns, read by
+     * {@link #assembleBatchSnapshot}, with one more column in use: a line's {@code text2} is the
+     * reservation it belongs to, which a load of one reservation never needed.
+     *
+     * <p>The parameters, in the order they appear: the reservations named (for {@code target_lines}),
+     * the keys, the reservations named again (for their headers), and the SKUs the commands name.
+     * Like the statement it is built from, it returns its rows in no order, and nothing depends on one.
+     */
+    private static final String BATCH_SNAPSHOT_QUERY =
+            "with target_lines as ("
+                    + "  select reservation_id, sku, shard, quantity from till_reservation_line "
+                    + "  where reservation_id = any(?::varchar[])"
+                    + ") "
+                    + "select 'record' as kind, idem_key::text as text1, fingerprint::text as text2, "
+                    + "       outcome::text as text3, null::integer as int1, null::bigint as num1, "
+                    + "       null::bigint as num2, null::bigint as num3, recorded_at as ts1, "
+                    + "       null::timestamptz as ts2 "
+                    + "from till_idempotency where idem_key = any(?::varchar[]) "
+                    + "union all "
+                    + "select 'reservation', id::text, idem_key::text, state::text, null::integer, "
+                    + "       version, null::bigint, null::bigint, created_at, expires_at "
+                    + "from till_reservation where id = any(?::varchar[]) "
+                    + "union all "
+                    + "select 'line', sku::text, reservation_id::text, null::text, shard, quantity, null::bigint, "
+                    + "       null::bigint, null::timestamptz, null::timestamptz "
+                    + "from target_lines "
+                    + "union all "
+                    + "select 'stock', sku::text, null::text, null::text, shard, on_hand, reserved, "
+                    + "       version, null::timestamptz, null::timestamptz "
+                    + "from till_stock where sku = any(?::varchar[] || array(select sku from target_lines))";
+
+    /**
      * Ordering is {@code collate "C"} throughout, which is code point order and therefore the order
      * Java sorts these strings in. A database created with a language collation sorts punctuation
      * differently, and two ledgers that offer the same rows in different orders cannot be compared
@@ -181,21 +219,25 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                     + "where state = 'HELD' and expires_at <= ? order by id collate \"C\" limit ?";
 
     /**
-     * A whole decision, written by {@code till_apply} ({@code V5__apply_durability.sql}): every
-     * mutation, event and record as arrays, a column of them to an argument, and whether it has to be
-     * on disk before the call returns. The text is the same for every decision, whatever it holds, so
-     * the driver prepares it once per connection and the server plans it once. The arguments are
-     * named, so the call says which column each placeholder is; {@link #bind} sets them in this order.
+     * A whole decision, or a whole batch's, written by {@code till_apply} ({@code V6__apply_batches.sql}):
+     * every stock row, state change, new reservation and its lines, event and record as arrays, a
+     * column of them to an argument, and whether it has to be on disk before the call returns. The
+     * text is the same for every decision and every batch, whatever it holds, so the driver prepares
+     * it once per connection and the server plans it once. The arguments are named, so the call says
+     * which column each placeholder is; {@link #bind} sets them in this order. The idempotency record
+     * goes in the {@code records_} arrays, a decision's one record as a batch's many; V5's scalar
+     * {@code record_} arguments are left to their defaults, there for the last version's call.
      */
     private static final String APPLY =
             "select till_apply("
                     + "put_sku => ?, put_shard => ?, put_on_hand => ?, put_reserved => ?, put_version => ?, "
+                    + "put_new_version => ?, "
                     + "set_id => ?, set_state => ?, set_version => ?, "
                     + "insert_id => ?, insert_key => ?, insert_state => ?, insert_created_at => ?, "
-                    + "insert_expires_at => ?, "
+                    + "insert_expires_at => ?, insert_version => ?, "
                     + "line_reservation => ?, line_sku => ?, line_shard => ?, line_quantity => ?, "
                     + "event_key => ?, event_payload => ?, event_recorded_at => ?, "
-                    + "record_key => ?, record_fingerprint => ?, record_outcome => ?, record_recorded_at => ?, "
+                    + "records_key => ?, records_fingerprint => ?, records_outcome => ?, records_recorded_at => ?, "
                     + "durable => ?)";
 
     /**
@@ -655,7 +697,138 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
      */
     @Override
     public boolean apply(Decision decision) {
-        Rows rows = Rows.of(decision);
+        requireKernelOrder(decision);
+        // A decision is a batch of one: the same statement, the same function, the same arguments.
+        return write(BatchDecision.of(List.of(decision)), "applying " + decision.outcome());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One statement, in autocommit, as {@link #apply} is: the same call to {@code till_apply},
+     * with every row of the batch in its arrays. Each stock row is written once, at the version the
+     * batch's decisions would have left it at one at a time; a reservation created and finished in the
+     * batch is inserted as it was left; every command's record goes in. The batch waits for the disk
+     * if any of its decisions has to ({@link #ASYNCHRONOUS}, ADR 15): with a sale in it, it commits as
+     * a sale does.
+     *
+     * <p>A row not at the version the batch read, or a key it inserts already taken, is {@code false},
+     * and nothing of the batch is written; every other error is an exception (ADR 16).
+     */
+    @Override
+    public boolean applyBatch(BatchDecision decision) {
+        return write(decision, "applying a batch of " + decision.outcomes().size() + " decisions");
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One statement, in autocommit, built like the lean load ({@link #BATCH_SNAPSHOT_QUERY}), so
+     * the whole batch reads at one instant without a transaction to say so.
+     */
+    @Override
+    public BatchSnapshot loadBatch(List<Command> commands) {
+        Set<String> targets = new LinkedHashSet<>();
+        Set<String> keys = new LinkedHashSet<>();
+        Set<Sku> declared = new LinkedHashSet<>();
+        for (Command command : commands) {
+            command.targetReservation().ifPresent(id -> targets.add(id.value()));
+            command.idempotencyKey().ifPresent(key -> keys.add(key.value()));
+            declared.addAll(command.declaredSkus());
+        }
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(BATCH_SNAPSHOT_QUERY)) {
+            // Planned for its own arrays every time, never prepared on the server: a plan made without
+            // them guesses ten keys an array, and on tables that were small when it was made, reading
+            // them costs less than ten lookups. A connection that kept that plan read every record and
+            // reservation for each batch once the tables had grown, at about 16 ms a load instead of
+            // 0.1. Planning a load costs a fraction of a millisecond, once a batch.
+            if (statement.isWrapperFor(PGStatement.class)) {
+                statement.unwrap(PGStatement.class).setPrepareThreshold(0);
+            }
+            statement.setArray(1, connection.createArrayOf("varchar", targets.toArray()));
+            statement.setArray(2, connection.createArrayOf("varchar", keys.toArray()));
+            statement.setArray(3, connection.createArrayOf("varchar", targets.toArray()));
+            statement.setArray(4, skuArray(connection, declared));
+            try (ResultSet rows = statement.executeQuery()) {
+                return assembleBatchSnapshot(commands, rows);
+            }
+        } catch (SQLException e) {
+            throw new LedgerException("loading a snapshot for a batch of " + commands.size() + " commands", e);
+        }
+    }
+
+    /**
+     * Reads {@link #BATCH_SNAPSHOT_QUERY}'s rows into the {@link BatchSnapshot} an
+     * {@link io.till.core.mem.InMemoryLedger} would have read: the columns as
+     * {@link #assembleLeanSnapshot} reads them, a line's reservation in {@code text2}.
+     *
+     * <p>Everything is put in the order the commands name it — their keys, their reservations, their
+     * SKUs and then their reservations' — rather than the order the rows arrived in, which is none.
+     */
+    private BatchSnapshot assembleBatchSnapshot(List<Command> commands, ResultSet rows) throws SQLException {
+        Map<IdempotencyKey, OutcomeRecord> records = new HashMap<>();
+        Map<ReservationId, Row> headers = new HashMap<>();
+        Map<ReservationId, List<Allocation>> lines = new HashMap<>();
+        Map<Sku, List<StockShard>> stock = new HashMap<>();
+        while (rows.next()) {
+            switch (rows.getString("kind")) {
+                case "record" -> {
+                    OutcomeRecord record = new OutcomeRecord(
+                            IdempotencyKey.of(rows.getString("text1")),
+                            rows.getString("text2"),
+                            rows.getString("text3"),
+                            instant(rows, "ts1"));
+                    records.put(record.key(), record);
+                }
+                case "reservation" -> {
+                    Row header = new Row(
+                            rows.getString("text1"),
+                            rows.getString("text2"),
+                            rows.getString("text3"),
+                            instant(rows, "ts1"),
+                            instant(rows, "ts2"),
+                            rows.getLong("num1"));
+                    headers.put(ReservationId.of(header.id()), header);
+                }
+                case "line" -> lines.computeIfAbsent(ReservationId.of(rows.getString("text2")), ignored -> new ArrayList<>())
+                        .add(new Allocation(Sku.of(rows.getString("text1")), rows.getInt("int1"), rows.getLong("num1")));
+                case "stock" -> {
+                    Sku sku = Sku.of(rows.getString("text1"));
+                    stock.computeIfAbsent(sku, ignored -> new ArrayList<>()).add(new StockShard(
+                            sku, rows.getInt("int1"), rows.getLong("num1"), rows.getLong("num2"), rows.getLong("num3")));
+                }
+                default -> throw new IllegalStateException(
+                        "a batch's snapshot query returned an unknown row kind " + rows.getString("kind"));
+            }
+        }
+
+        Map<IdempotencyKey, OutcomeRecord> used = new LinkedHashMap<>();
+        Map<ReservationId, Reservation> named = new LinkedHashMap<>();
+        Set<Sku> scope = new LinkedHashSet<>();
+        for (Command command : commands) {
+            command.idempotencyKey().filter(records::containsKey).ifPresent(key -> used.put(key, records.get(key)));
+            scope.addAll(command.declaredSkus());
+            Optional<ReservationId> target = command.targetReservation().filter(headers::containsKey);
+            if (target.isPresent()) {
+                Reservation reservation = named.computeIfAbsent(
+                        target.get(), id -> headers.get(id).toReservation(requireLines(lines, id)));
+                scope.addAll(reservation.skus());
+            }
+        }
+        Map<Sku, List<StockShard>> levels = new LinkedHashMap<>();
+        for (Sku sku : scope) {
+            levels.put(sku, stock.getOrDefault(sku, List.of()));
+        }
+        return new BatchSnapshot(levels, named, used);
+    }
+
+    /**
+     * Writes a batch, a decision's included, with one call to {@code till_apply}, in autocommit.
+     * {@code false} for {@link #REFUSED}; every other error an exception, a check violation above all.
+     */
+    private boolean write(BatchDecision decision, String what) {
+        boolean durable = decision.outcomes().stream().anyMatch(outcome -> !ASYNCHRONOUS.contains(outcome.getClass()));
         try (Connection connection = dataSource.getConnection()) {
             boolean autoCommit = connection.getAutoCommit();
             if (!autoCommit) {
@@ -664,7 +837,7 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 connection.setAutoCommit(true);
             }
             try (PreparedStatement statement = connection.prepareStatement(APPLY)) {
-                bind(connection, statement, rows, !ASYNCHRONOUS.contains(decision.outcome().getClass()));
+                bind(connection, statement, decision, durable);
                 statement.execute();
                 return true;
             } finally {
@@ -682,42 +855,48 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
                 throw new LedgerException(
                         "the database refused an impossible stock level, which is a bug rather than contention", e);
             }
-            throw new LedgerException("applying " + decision.outcome(), e);
+            throw new LedgerException(what, e);
         }
     }
 
-    /** Binds a decision's rows, and whether it is durable, to {@link #APPLY}, in the order its placeholders are in. */
-    private static void bind(Connection connection, PreparedStatement statement, Rows rows, boolean durable)
+    /** Binds a batch's rows, and whether it is durable, to {@link #APPLY}, in the order its placeholders are in. */
+    private static void bind(Connection connection, PreparedStatement statement, BatchDecision decision, boolean durable)
             throws SQLException {
-        OutcomeRecord record = rows.record().orElse(null);
+        List<BatchDecision.StockWrite> puts = decision.stock();
+        List<LineRow> lines = new ArrayList<>();
+        for (Reservation reservation : decision.inserts()) {
+            reservation.allocations().forEach(allocation -> lines.add(new LineRow(reservation.id(), allocation)));
+        }
+        List<OutcomeRecord> records = decision.records();
         int at = 0;
-        statement.setArray(++at, array(connection, "varchar", rows.puts(), put -> put.sku().value()));
-        statement.setArray(++at, array(connection, "integer", rows.puts(), Mutation.PutStock::shard));
-        statement.setArray(++at, array(connection, "bigint", rows.puts(), Mutation.PutStock::onHand));
-        statement.setArray(++at, array(connection, "bigint", rows.puts(), Mutation.PutStock::reserved));
+        statement.setArray(++at, array(connection, "varchar", puts, put -> put.sku().value()));
+        statement.setArray(++at, array(connection, "integer", puts, BatchDecision.StockWrite::shard));
+        statement.setArray(++at, array(connection, "bigint", puts, BatchDecision.StockWrite::onHand));
+        statement.setArray(++at, array(connection, "bigint", puts, BatchDecision.StockWrite::reserved));
         // No version for a row the decision creates: the kernel's ABSENT stays the kernel's.
+        statement.setArray(++at, array(connection, "bigint", puts, put -> put.isInsert() ? null : put.expectedVersion()));
+        statement.setArray(++at, array(connection, "bigint", puts, BatchDecision.StockWrite::newVersion));
+        statement.setArray(++at, array(connection, "varchar", decision.states(), set -> set.reservationId().value()));
+        statement.setArray(++at, array(connection, "varchar", decision.states(), set -> set.state().name()));
         statement.setArray(
-                ++at, array(connection, "bigint", rows.puts(), put -> put.isInsert() ? null : put.expectedVersion()));
-        statement.setArray(++at, array(connection, "varchar", rows.sets(), set -> set.reservationId().value()));
-        statement.setArray(++at, array(connection, "varchar", rows.sets(), set -> set.state().name()));
-        statement.setArray(
-                ++at, array(connection, "bigint", rows.sets(), Mutation.SetReservationState::expectedVersion));
-        statement.setArray(++at, array(connection, "varchar", rows.inserts(), held -> held.id().value()));
-        statement.setArray(++at, array(connection, "varchar", rows.inserts(), held -> held.key().value()));
-        statement.setArray(++at, array(connection, "varchar", rows.inserts(), held -> held.state().name()));
-        statement.setArray(++at, array(connection, "timestamptz", rows.inserts(), held -> text(held.createdAt())));
-        statement.setArray(++at, array(connection, "timestamptz", rows.inserts(), held -> text(held.expiresAt())));
-        statement.setArray(++at, array(connection, "varchar", rows.lines(), line -> line.reservation().value()));
-        statement.setArray(++at, array(connection, "varchar", rows.lines(), line -> line.allocation().sku().value()));
-        statement.setArray(++at, array(connection, "integer", rows.lines(), line -> line.allocation().shard()));
-        statement.setArray(++at, array(connection, "bigint", rows.lines(), line -> line.allocation().quantity()));
-        statement.setArray(++at, array(connection, "varchar", rows.events(), Event::dedupeKey));
-        statement.setArray(++at, array(connection, "text", rows.events(), Codec::encodeEvent));
-        statement.setArray(++at, array(connection, "timestamptz", rows.events(), event -> text(event.occurredAt())));
-        statement.setString(++at, record == null ? null : record.key().value());
-        statement.setString(++at, record == null ? null : record.fingerprint());
-        statement.setString(++at, record == null ? null : record.encodedOutcome());
-        statement.setObject(++at, record == null ? null : offset(record.recordedAt()), Types.TIMESTAMP_WITH_TIMEZONE);
+                ++at, array(connection, "bigint", decision.states(), Mutation.SetReservationState::expectedVersion));
+        statement.setArray(++at, array(connection, "varchar", decision.inserts(), held -> held.id().value()));
+        statement.setArray(++at, array(connection, "varchar", decision.inserts(), held -> held.key().value()));
+        statement.setArray(++at, array(connection, "varchar", decision.inserts(), held -> held.state().name()));
+        statement.setArray(++at, array(connection, "timestamptz", decision.inserts(), held -> text(held.createdAt())));
+        statement.setArray(++at, array(connection, "timestamptz", decision.inserts(), held -> text(held.expiresAt())));
+        statement.setArray(++at, array(connection, "bigint", decision.inserts(), Reservation::version));
+        statement.setArray(++at, array(connection, "varchar", lines, line -> line.reservation().value()));
+        statement.setArray(++at, array(connection, "varchar", lines, line -> line.allocation().sku().value()));
+        statement.setArray(++at, array(connection, "integer", lines, line -> line.allocation().shard()));
+        statement.setArray(++at, array(connection, "bigint", lines, line -> line.allocation().quantity()));
+        statement.setArray(++at, array(connection, "varchar", decision.events(), Event::dedupeKey));
+        statement.setArray(++at, array(connection, "text", decision.events(), Codec::encodeEvent));
+        statement.setArray(++at, array(connection, "timestamptz", decision.events(), event -> text(event.occurredAt())));
+        statement.setArray(++at, array(connection, "varchar", records, record -> record.key().value()));
+        statement.setArray(++at, array(connection, "varchar", records, OutcomeRecord::fingerprint));
+        statement.setArray(++at, array(connection, "text", records, OutcomeRecord::encodedOutcome));
+        statement.setArray(++at, array(connection, "timestamptz", records, record -> text(record.recordedAt())));
         statement.setBoolean(++at, durable);
     }
 
@@ -1098,58 +1277,28 @@ public final class JdbcLedger implements Ledger, LedgerInspector, Outbox, Retent
     }
 
     /**
-     * A decision's rows, by kind, in the order {@code till_apply} writes them: stock rows, state
-     * changes, new reservations and their lines, events, and the idempotency record.
+     * Refuses a decision that lists its mutations in an order other than the kernel's — stock rows,
+     * then state changes, then new reservations — which is the order {@code till_apply} writes them in.
+     * A decision applied in any other order would lock its rows in an order nobody chose.
+     *
+     * @throws IllegalArgumentException if a mutation follows one of a kind the function writes later
      */
-    private record Rows(
-            List<Mutation.PutStock> puts,
-            List<Mutation.SetReservationState> sets,
-            List<Reservation> inserts,
-            List<LineRow> lines,
-            List<Event> events,
-            Optional<OutcomeRecord> record) {
-
-        /**
-         * Sorts a decision's mutations by kind, refusing a decision that lists them in any other order.
-         * The kernel lists them in this one; the function cannot keep another, and a decision applied
-         * in an order other than its own would lock its rows in an order nobody chose.
-         *
-         * @throws IllegalArgumentException if a mutation follows one of a kind the function writes later
-         */
-        static Rows of(Decision decision) {
-            List<Mutation.PutStock> puts = new ArrayList<>();
-            List<Mutation.SetReservationState> sets = new ArrayList<>();
-            List<Reservation> inserts = new ArrayList<>();
-            int reached = 0;
-            for (Mutation mutation : decision.mutations()) {
-                int kind =
-                        switch (mutation) {
-                            case Mutation.PutStock m -> {
-                                puts.add(m);
-                                yield 0;
-                            }
-                            case Mutation.SetReservationState m -> {
-                                sets.add(m);
-                                yield 1;
-                            }
-                            case Mutation.InsertReservation m -> {
-                                inserts.add(m.reservation());
-                                yield 2;
-                            }
-                        };
-                if (kind < reached) {
-                    throw new IllegalArgumentException(
-                            "a decision lists its stock rows, then its state changes, then its new reservations, "
-                                    + "which is the order till_apply writes them in; " + mutation
-                                    + " comes too late in " + decision.mutations());
-                }
-                reached = kind;
+    private static void requireKernelOrder(Decision decision) {
+        int reached = 0;
+        for (Mutation mutation : decision.mutations()) {
+            int kind =
+                    switch (mutation) {
+                        case Mutation.PutStock ignored -> 0;
+                        case Mutation.SetReservationState ignored -> 1;
+                        case Mutation.InsertReservation ignored -> 2;
+                    };
+            if (kind < reached) {
+                throw new IllegalArgumentException(
+                        "a decision lists its stock rows, then its state changes, then its new reservations, "
+                                + "which is the order till_apply writes them in; " + mutation
+                                + " comes too late in " + decision.mutations());
             }
-            List<LineRow> lines = new ArrayList<>();
-            for (Reservation reservation : inserts) {
-                reservation.allocations().forEach(allocation -> lines.add(new LineRow(reservation.id(), allocation)));
-            }
-            return new Rows(puts, sets, inserts, lines, decision.events(), decision.outcomeRecord());
+            reached = kind;
         }
     }
 

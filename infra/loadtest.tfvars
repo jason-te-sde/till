@@ -1,8 +1,10 @@
 # The sizes a load test runs at (docs/load-test.md). `scripts/aws.sh up --loadtest` applies these
 # with loadtest = true; everything not named here is as it is for customers.
 #
-# More than one of each service, so the edge balances across stores and the store across ledgers as
-# they would in any deployment worth load-testing.
+# More than one of each service but the ledger, so the edge balances across stores as it would in
+# any deployment worth load-testing. The ledger is one task with the cores two had: each task writes
+# its commands' batches through one worker, and two tasks' batches meet on the same rows
+# (docs/design/0016-batched-commands.md, "One writer").
 #
 # The database stays db.t4g.micro — two vCPUs and a gigabyte — because it is the largest an AWS
 # free-plan account may create: a db.m7g.large was refused with FreeTierRestrictionError. RDS runs
@@ -14,7 +16,7 @@ size = {
   edge = { cpu = 1024, memory = 2048, count = 2 }
   # Four: at two, the second run's stores were at 93% CPU.
   store  = { cpu = 1024, memory = 2048, count = 4 }
-  ledger = { cpu = 1024, memory = 2048, count = 2 }
+  ledger = { cpu = 2048, memory = 4096, count = 1 }
   # Per broker — three run regardless of `count` here (runtime/services.tf), so this is 1 vCPU and
   # 4 GB times three, not once.
   kafka   = { cpu = 1024, memory = 4096 }
@@ -24,8 +26,9 @@ size = {
 
 db_instance_class = "db.t4g.micro"
 
-# Four stores at eight connections and two ledgers at sixteen are the 64 the second run had, under the
-# hundred or so a db.t4g.micro allows.
+# Four stores at eight connections and the ledger at sixteen: 48, under the hundred or so a
+# db.t4g.micro allows, whether the two share a server or not. With batching the ledger's commands use
+# one of its sixteen at a time, and its reads, sweeper and publisher the rest.
 db_pool = { store = 8, ledger = 16 }
 
 # Every game's stock in sixteen rows, as an operator would split a game about to be busy: in the

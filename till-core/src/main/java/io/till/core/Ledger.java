@@ -1,12 +1,15 @@
 package io.till.core;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Where the rows live.
  *
  * <p>Two methods, and the whole difficulty of the project is in the contract between them rather
- * than in either signature.
+ * than in either signature. Two more do the same for a batch of commands (ADR 16):
+ * {@link #loadBatch} reads at one instant what each of them would load, and {@link #applyBatch}
+ * writes, all of it or none of it, what they decided.
  *
  * <h2>load</h2>
  *
@@ -49,4 +52,35 @@ public interface Ledger {
      * @return true if it was written, false if a version moved and the decision must be made again
      */
     boolean apply(Decision decision);
+
+    /**
+     * Reads what a batch of commands needs, at one consistent instant.
+     *
+     * <p>For each command, what {@link #load} with a reclaim limit of zero reads for it: its key's
+     * record, the reservation it names with its lines, and every shard of every SKU it names or that
+     * reservation holds — each row once, however many commands name it. One instant, as for
+     * {@link #load}: the batch's decisions are only right together if the rows they were made from
+     * were all true at once.
+     *
+     * <p>No expired holds, and nothing for a sweep: a command that needs those is decided on its
+     * own, through {@link #load}.
+     *
+     * @param commands the commands about to be decided together
+     * @return a consistent snapshot of what all of them need
+     */
+    BatchSnapshot loadBatch(List<Command> commands);
+
+    /**
+     * Writes what a batch of commands decided, all of it or none of it, in one transaction.
+     *
+     * <p>Refuses the whole batch, as {@link #apply} refuses a decision, if any row it writes is not at
+     * the version the batch read, or any reservation, event or idempotency key it inserts is taken.
+     * Each stock row is written at the version the batch says, which is as far as its decisions one at
+     * a time would have moved it; each reservation it inserts, in the state and at the version it
+     * says.
+     *
+     * @param decision the batch's decisions, folded by {@link BatchDecision#of}
+     * @return true if it was written, false if something moved and the batch must be decided again
+     */
+    boolean applyBatch(BatchDecision decision);
 }

@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.till.core.BatchDecision;
+import io.till.core.BatchSnapshot;
 import io.till.core.Codec;
 import io.till.core.Command;
 import io.till.core.Decision;
@@ -26,7 +28,9 @@ import io.till.core.ReservationState;
 import io.till.core.Sku;
 import io.till.core.Snapshot;
 import io.till.core.StockItem;
+import io.till.core.StockShard;
 import io.till.core.Till;
+import io.till.core.mem.InMemoryLedger;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -646,6 +650,37 @@ class JdbcLedgerTest {
     }
 
     @Test
+    @DisplayName("run often on one connection, a batch load is planned for its own arrays every time")
+    void aBatchLoadIsNeverGivenAGenericPlan() throws SQLException {
+        till.adjust(key("d1"), sku("widget"), 10);
+        till.reserve(key("c1"), rid("r1"), List.of(Line.of("widget", 2)), TTL);
+
+        // The opposite of the lean load's rule, and for the arrays: a generic plan cannot know how many
+        // keys an array holds, guesses ten, and on a table that is small when the plan is made, ten
+        // lookups cost more than reading the table. A connection that settled on that plan early in a
+        // run went on reading every record and every reservation for each batch after the tables had
+        // grown past a hundred thousand rows, at about 16 ms a load instead of 0.1 (ContentionBenchmark).
+        try (Connection connection =
+                DriverManager.getConnection(TestDatabase.url(), TestDatabase.username(), TestDatabase.password())) {
+            JdbcLedger onOneConnection = new JdbcLedger(alwaysTheOne(connection));
+            for (int i = 0; i < 20; i++) {
+                onOneConnection.loadBatch(List.of(
+                        new Command.Commit(key("pay-" + i), rid("r1")),
+                        new Command.Reserve(key("c-" + i), rid("r-" + i), List.of(Line.of("widget", 1)), TTL)));
+            }
+
+            try (Statement statement = connection.createStatement();
+                    ResultSet plans =
+                            statement.executeQuery(
+                                    "select coalesce(sum(generic_plans), 0) from pg_prepared_statements "
+                                            + "where statement like '%reservation_id = any%'")) {
+                assertTrue(plans.next());
+                assertEquals(0, plans.getLong(1), "PostgreSQL ran a batch load with a plan made without its arrays");
+            }
+        }
+    }
+
+    @Test
     @DisplayName("a lean snapshot is the snapshot a reclaiming load reads, whatever the command names")
     void aLeanSnapshotIsTheTransactionalOne() {
         populateEveryShape();
@@ -1169,6 +1204,271 @@ class JdbcLedgerTest {
         assertEquals(List.of(), executed, "nothing was sent");
         assertEquals(List.of(rid("r1")), ledger.allReservations().stream().map(Reservation::id).toList());
         assertEquals(ReservationState.HELD, ledger.allReservations().get(0).state());
+    }
+
+    @Test
+    @DisplayName("more expired holds than a load may take: PostgreSQL and the ledger in a few maps offer the same ones")
+    void reclaimOffersWhatTheInMemoryLedgerOffers() {
+        InMemoryLedger memory = new InMemoryLedger();
+        for (Till on : List.of(till, Till.builder(memory).clock(Clock.fixed(T0, ZoneOffset.UTC)).build())) {
+            on.adjust(key("d1"), sku("widget"), 10);
+            // Taken in this order, and ordered by id the other way: "r10" sorts before "r9".
+            on.reserve(key("k1"), rid("r9"), List.of(Line.of("widget", 1)), Duration.ofMinutes(1));
+            on.reserve(key("k2"), rid("r10"), List.of(Line.of("widget", 1)), Duration.ofMinutes(1));
+            on.reserve(key("k3"), rid("r11"), List.of(Line.of("widget", 1)), Duration.ofMinutes(1));
+        }
+        Instant later = T0.plus(Duration.ofHours(1));
+        Command reserve = new Command.Reserve(key("k4"), rid("r4"), List.of(Line.of("widget", 9)), TTL);
+
+        for (int limit = 1; limit <= 3; limit++) {
+            assertEquals(memory.load(new Command.Sweep(limit), later, limit), ledger.load(new Command.Sweep(limit), later, limit),
+                    "a sweep of " + limit);
+            assertEquals(memory.load(reserve, later, limit), ledger.load(reserve, later, limit), "a reclaiming load of " + limit);
+        }
+    }
+
+    @Test
+    @DisplayName("a batch's load is one statement, with no SET, BEGIN or COMMIT, however many commands it is for")
+    void aBatchLoadIsOneStatement() {
+        populateEveryShape();
+        List<String> settings = new CopyOnWriteArrayList<>();
+        List<String> statements = new CopyOnWriteArrayList<>();
+        DataSource observed = interfering(dataSource, settings, statements, null, () -> {});
+
+        BatchSnapshot snapshot = new JdbcLedger(observed).loadBatch(everyShapeOfBatchedCommand());
+
+        assertEquals(1, statements.size(), "one statement and nothing to set, begin or commit around it, got " + statements);
+        assertTrue(statements.get(0).contains("till_stock"), "must be the batch's snapshot query, got " + statements);
+        assertEquals(List.of(), settings);
+        // Not just one statement: the one that found everything, a SKU the hold brings and a SKU
+        // nobody has stocked included.
+        assertEquals(Set.of(sku("alpha"), sku("beta"), sku("gamma"), sku("Delta"), sku("ghost")), snapshot.stock().keySet());
+        assertEquals(Set.of(rid("r1")), snapshot.reservations().keySet());
+        assertEquals(Set.of(key("hold-1"), key("d-beta")), snapshot.records().keySet());
+    }
+
+    @Test
+    @DisplayName("a batch's snapshot, seeded into a ledger of its own, answers every command's load as PostgreSQL does")
+    void aBatchSnapshotAnswersEveryLoadAsTheDatabaseDoes() {
+        populateEveryShape();
+        List<Command> commands = everyShapeOfBatchedCommand();
+
+        InMemoryLedger seeded = InMemoryLedger.from(ledger.loadBatch(commands));
+
+        for (Command command : commands) {
+            Snapshot expected = ledger.load(command, T0, 0);
+            Snapshot actual = seeded.load(command, T0, 0);
+            assertEquals(expected, actual, "the batch's rows answer something else for " + command);
+            assertEquals(
+                    List.copyOf(expected.stock().keySet()),
+                    List.copyOf(actual.stock().keySet()),
+                    "the SKUs come in a different order for " + command);
+        }
+    }
+
+    @Test
+    @DisplayName("a batch's snapshot does not depend on the order the database returns its rows in")
+    void aBatchSnapshotDoesNotDependOnRowOrder() {
+        populateEveryShape();
+        List<Command> commands = everyShapeOfBatchedCommand();
+        BatchSnapshot expected = ledger.loadBatch(commands);
+
+        for (long seed = 1; seed <= 5; seed++) {
+            long chosen = seed;
+            BatchSnapshot actual = new JdbcLedger(reordering(dataSource, rows -> reorder(rows, copy -> Collections.shuffle(copy, new Random(chosen)))))
+                    .loadBatch(commands);
+            assertEquals(expected, actual, "rows shuffled with seed " + chosen + " changed the snapshot");
+            assertEquals(List.copyOf(expected.stock().keySet()), List.copyOf(actual.stock().keySet()), "and the order of its SKUs");
+        }
+        BatchSnapshot reversed =
+                new JdbcLedger(reordering(dataSource, rows -> reorder(rows, Collections::reverse))).loadBatch(commands);
+        assertEquals(expected, reversed);
+    }
+
+    @Test
+    @DisplayName("a batch is written in one statement, nothing begun or committed around it, every row where its commands left it")
+    void aBatchIsOneStatement() {
+        populateEveryShape();
+        List<Command> commands = List.of(
+                new Command.Reserve(key("b1"), rid("b-r1"), List.of(Line.of("alpha", 2), Line.of("beta", 3)), TTL),
+                new Command.Commit(key("b2"), rid("b-r1")),
+                new Command.Reserve(key("b3"), rid("b-r3"), List.of(Line.of("alpha", 1)), TTL),
+                new Command.Release(key("b4"), rid("r1")),
+                new Command.Adjust(key("b5"), sku("ghost"), 7),
+                new Command.Shard(key("b6"), sku("alpha"), 3));
+        InMemoryLedger decidedOn = InMemoryLedger.from(ledger.loadBatch(commands));
+        List<Decision> decisions = new ArrayList<>();
+        for (Command command : commands) {
+            Decision decision = Kernel.decide(decidedOn.load(command, T0, 0), command, T0);
+            assertTrue(decidedOn.apply(decision));
+            decisions.add(decision);
+        }
+        assertEquals(
+                List.of(Outcome.Reserved.class, Outcome.Committed.class, Outcome.Reserved.class, Outcome.Released.class,
+                        Outcome.Adjusted.class, Outcome.Sharded.class),
+                decisions.stream().map(decision -> decision.outcome().getClass()).toList(),
+                "the batch was meant to do one of each, every one of them writing: " + decisions);
+        List<String> calls = new CopyOnWriteArrayList<>();
+        List<String> executed = new CopyOnWriteArrayList<>();
+        JdbcLedger observed = new JdbcLedger(interfering(dataSource, new CopyOnWriteArrayList<>(), calls, executed, null, () -> {}));
+
+        assertTrue(observed.applyBatch(BatchDecision.of(decisions)));
+
+        assertEquals(1, executed.size(), "one statement executed, got " + executed);
+        assertEquals(executed, calls, "and no transaction begun, committed or rolled back around it");
+        // Every row the batch read is where the commands left it, its version included: alpha three
+        // times written and split, b-r1 created committed at version 1, r1 released.
+        List<StockShard> batchRows = decidedOn.allShards();
+        assertEquals(
+                batchRows,
+                ledger.allShards().stream().filter(shard -> batchRows.stream().anyMatch(row -> row.sku().equals(shard.sku()))).toList());
+        for (Reservation reservation : decidedOn.allReservations()) {
+            assertEquals(Optional.of(reservation), ledger.reservation(reservation.id()), "reservation " + reservation.id());
+        }
+        assertEquals(ReservationState.COMMITTED, ledger.reservation(rid("b-r1")).orElseThrow().state());
+        assertEquals(1, ledger.reservation(rid("b-r1")).orElseThrow().version());
+        assertEquals(
+                List.of("reserved:b-r1", "committed:b-r1", "reserved:b-r3", "released:r1", "adjusted:b5"),
+                dedupeKeys().subList(dedupeKeys().size() - 5, dedupeKeys().size()));
+        for (Command command : commands) {
+            assertEquals(decidedOn.load(command, T0, 0).recordedOutcome(), ledger.load(command, T0, 0).recordedOutcome(),
+                    "the record of " + command);
+        }
+    }
+
+    @Test
+    @DisplayName("a batch with one row that moved since it was read is refused in one statement, and nothing of it is written")
+    void aStaleBatchWritesNothing() {
+        till.adjust(key("d1"), sku("gadget"), 10);
+        till.adjust(key("d2"), sku("widget"), 10);
+        List<Command> commands = List.of(
+                new Command.Reserve(key("k1"), rid("r1"), List.of(Line.of("gadget", 1)), TTL),
+                new Command.Commit(key("k2"), rid("r1")),
+                new Command.Reserve(key("k3"), rid("r3"), List.of(Line.of("widget", 1)), TTL));
+        InMemoryLedger decidedOn = InMemoryLedger.from(ledger.loadBatch(commands));
+        List<Decision> decisions = new ArrayList<>();
+        for (Command command : commands) {
+            Decision decision = Kernel.decide(decidedOn.load(command, T0, 0), command, T0);
+            assertTrue(decidedOn.apply(decision));
+            decisions.add(decision);
+        }
+        // Gadget's row is written before widget's, so with widget's moved the refusal comes after the
+        // same statement has written gadget's, inserted r1 committed, and more.
+        till.adjust(key("d3"), sku("widget"), 5);
+
+        boolean applied = ledger.applyBatch(BatchDecision.of(decisions));
+
+        StockItem gadget = ledger.stock(sku("gadget")).orElseThrow();
+        assertEquals(new StockItem(sku("gadget"), 10, 0, 0), gadget, "the row written before the refusal must not survive it");
+        assertEquals(15, ledger.stock(sku("widget")).orElseThrow().onHand(), "the adjustment that moved it stands");
+        assertEquals(0, count("select count(*) from till_reservation"), "no reservation");
+        assertEquals(0, count("select count(*) from till_reservation_line"), "no line");
+        assertEquals(List.of("adjusted:d1", "adjusted:d2", "adjusted:d3"), dedupeKeys(), "no event");
+        assertEquals(0, count("select count(*) from till_idempotency where idem_key in ('k1', 'k2', 'k3')"), "no record");
+        assertFalse(applied, "and the caller is told to decide again");
+    }
+
+    @Test
+    @DisplayName("a batch waits for the disk when any of its commands has to: a sale in it makes it a sale")
+    void aBatchIsDurableWhenAnyOfItMustBe() {
+        execute("create table till_test_commit_mode (idem_key varchar primary key, synchronous_commit text)");
+        execute("create function till_test_commit_mode() returns trigger language plpgsql as $$ begin "
+                + "insert into till_test_commit_mode values (new.idem_key, current_setting('synchronous_commit')); "
+                + "return null; end $$");
+        execute("create trigger till_test_commit_mode after insert on till_idempotency "
+                + "for each row execute function till_test_commit_mode()");
+        try {
+            Outcome hold = new Outcome.Reserved(rid("r1"), List.of(Line.of("widget", 1)), T0.plus(TTL));
+            Outcome giveBack = new Outcome.Released(rid("r2"), T0);
+            Outcome sale = new Outcome.Committed(rid("r3"), T0);
+
+            assertTrue(ledger.applyBatch(recordsOnly(Map.of("holds-1", hold, "holds-2", giveBack))));
+            assertTrue(ledger.applyBatch(recordsOnly(Map.of("mixed-1", hold, "mixed-2", sale))));
+
+            assertEquals("off", text("select synchronous_commit from till_test_commit_mode where idem_key = 'holds-2'"),
+                    "holds alone need not wait (ADR 15)");
+            assertEquals("on", text("select synchronous_commit from till_test_commit_mode where idem_key = 'mixed-1'"),
+                    "with a sale among them, the hold's record waits with it");
+        } finally {
+            execute("drop trigger till_test_commit_mode on till_idempotency");
+            execute("drop function till_test_commit_mode()");
+            execute("drop table till_test_commit_mode");
+        }
+    }
+
+    @Test
+    @DisplayName("an instance still sending V5's call, with one record and no versions to write, is answered as V5 answered it")
+    void theV5CallIsStillAnswered() throws SQLException {
+        till.adjust(key("d1"), sku("widget"), 10);
+        // During a rolling deploy, an instance of the last version writes a reserve's stock row at the
+        // version it read plus one, a record in the scalar arguments, and names durable.
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement call = connection.prepareStatement(
+                        "select till_apply("
+                                + "put_sku => array['widget'], put_shard => array[0], put_on_hand => array[10::bigint], "
+                                + "put_reserved => array[1::bigint], put_version => array[0::bigint], "
+                                + "set_id => '{}', set_state => '{}', set_version => '{}', "
+                                + "insert_id => '{}', insert_key => '{}', insert_state => '{}', "
+                                + "insert_created_at => '{}', insert_expires_at => '{}', "
+                                + "line_reservation => '{}', line_sku => '{}', line_shard => '{}', line_quantity => '{}', "
+                                + "event_key => '{}', event_payload => '{}', event_recorded_at => '{}', "
+                                + "record_key => 'from-v5', record_fingerprint => 'fingerprint', record_outcome => 'outcome', "
+                                + "record_recorded_at => '2026-09-10T12:00:00Z', durable => false)")) {
+            call.execute();
+        }
+
+        assertEquals(new StockItem(sku("widget"), 10, 1, 1), ledger.stock(sku("widget")).orElseThrow(), "one write, one version");
+        assertEquals(1, count("select count(*) from till_idempotency where idem_key = 'from-v5'"));
+    }
+
+    @Test
+    @DisplayName("arrays of one kind that disagree in length, or a version that does not move forwards, are a malformed call, not a refusal")
+    void aMalformedBatchCallIsNotARefusal() throws SQLException {
+        till.adjust(key("d1"), sku("widget"), 10);
+        String records = "records_key => array['a', 'b'], records_fingerprint => array['f'], "
+                + "records_outcome => array['o', 'p'], records_recorded_at => array[now(), now()]";
+        String backwards = "put_sku => array['widget'], put_shard => array[0], put_on_hand => array[10::bigint], "
+                + "put_reserved => array[0::bigint], put_version => array[0::bigint], put_new_version => array[0::bigint]";
+        String newVersions = "put_sku => array['widget'], put_shard => array[0], put_on_hand => array[10::bigint], "
+                + "put_reserved => array[0::bigint], put_version => array[0::bigint], put_new_version => array[]::bigint[]";
+
+        for (String arguments : List.of(records, backwards, newVersions)) {
+            try (Connection connection = dataSource.getConnection();
+                    PreparedStatement call = connection.prepareStatement("select till_apply(" + withEmpty(arguments) + ")")) {
+                SQLException thrown = assertThrows(SQLException.class, call::execute, arguments);
+                assertEquals("22023", thrown.getSQLState(), arguments + ": " + thrown.getMessage());
+            }
+        }
+        assertEquals(new StockItem(sku("widget"), 10, 0, 0), ledger.stock(sku("widget")).orElseThrow(), "nothing written");
+    }
+
+    /** Every argument of {@code till_apply} that {@code given} does not name, empty. */
+    private static String withEmpty(String given) {
+        StringBuilder call = new StringBuilder(given);
+        for (String argument : List.of(
+                "put_sku", "put_shard", "put_on_hand", "put_reserved", "put_version", "set_id", "set_state",
+                "set_version", "insert_id", "insert_key", "insert_state", "insert_created_at", "insert_expires_at",
+                "line_reservation", "line_sku", "line_shard", "line_quantity", "event_key", "event_payload",
+                "event_recorded_at")) {
+            if (!given.contains(argument + " =>")) {
+                call.append(", ").append(argument).append(" => '{}'");
+            }
+        }
+        return call.toString();
+    }
+
+    /** A batch that writes nothing but a record for each of {@code outcomes}, under their keys. */
+    private static BatchDecision recordsOnly(Map<String, Outcome> outcomes) {
+        List<Decision> decisions = new ArrayList<>();
+        new java.util.TreeMap<>(outcomes).forEach((key, outcome) -> decisions.add(new Decision(
+                outcome, List.of(), List.of(),
+                Optional.of(new OutcomeRecord(key(key), "fingerprint", Codec.encodeOutcome(outcome), T0)))));
+        return BatchDecision.of(decisions);
+    }
+
+    /** {@link #everyShapeOfCommand}, without the sweep, which a batch never loads. */
+    private static List<Command> everyShapeOfBatchedCommand() {
+        return everyShapeOfCommand().stream().filter(command -> !(command instanceof Command.Sweep)).toList();
     }
 
     private List<String> dedupeKeys() {

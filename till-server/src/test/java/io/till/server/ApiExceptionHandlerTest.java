@@ -129,6 +129,16 @@ class ApiExceptionHandlerTest {
     }
 
     @Test
+    @DisplayName("a full queue in front of the ledger is the same 503 OVERLOADED, with a Retry-After")
+    void aFullQueueIsOverloaded() {
+        ResponseEntity<ProblemDetail> response = handler.onQueueFull(new CommandBatcher.QueueFullException());
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, HttpStatus.valueOf(response.getStatusCode().value()));
+        assertEquals("1", response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER));
+        assertEquals("OVERLOADED", requireBody(response).getProperties().get("code"));
+    }
+
+    @Test
     @DisplayName("the pool exhausted is a 503 with code OVERLOADED and a Retry-After, same shape as CONTENTION")
     void poolExhaustionIsOverloaded() {
         SQLTransientConnectionException exhausted =

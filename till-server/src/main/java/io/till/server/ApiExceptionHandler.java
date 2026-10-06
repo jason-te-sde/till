@@ -147,10 +147,21 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         // is routine overload rather than a fault. The pool's own message already carries its
         // total/active/idle/waiting figures.
         LOG.warn("the ledger's pool is exhausted: {}", exhausted.getMessage());
-        ProblemDetail problem =
-                ProblemDetail.forStatusAndDetail(
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "the ledger's connection pool is exhausted; the request is fine and can be retried");
+        return overloaded("the ledger's connection pool is exhausted; the request is fine and can be retried");
+    }
+
+    /**
+     * @param e the queue in front of the ledger was full (ADR 16)
+     * @return the same 503 {@code OVERLOADED} as an exhausted pool, with a hint about when to come back
+     */
+    @ExceptionHandler(CommandBatcher.QueueFullException.class)
+    ResponseEntity<ProblemDetail> onQueueFull(CommandBatcher.QueueFullException e) {
+        LOG.warn("the queue in front of the ledger is full");
+        return overloaded("the queue in front of the ledger is full; the request is fine and can be retried");
+    }
+
+    private static ResponseEntity<ProblemDetail> overloaded(String detail) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, detail);
         problem.setTitle("Overloaded");
         problem.setProperty("code", "OVERLOADED");
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)

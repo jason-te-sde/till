@@ -95,6 +95,7 @@ class ExposureCheckTest {
                         20,
                         Duration.ofDays(7),
                         Duration.ofDays(30),
-                        Duration.ZERO));
+                        Duration.ZERO),
+                new TillProperties.Batch(false, 64, 1024));
     }
 }
