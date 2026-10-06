@@ -96,6 +96,6 @@ class ExposureCheckTest {
                         Duration.ofDays(7),
                         Duration.ofDays(30),
                         Duration.ZERO),
-                new TillProperties.Batch(false, 64, 1024));
+                new TillProperties.Batch(false, 64, 1024, java.time.Duration.ofSeconds(1)));
     }
 }

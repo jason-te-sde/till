@@ -2,6 +2,7 @@ package io.till.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +36,9 @@ import org.junit.jupiter.api.Test;
 
 class CommandBatcherTest {
 
+    /** Long enough that the watchdog's own looks never find anything a test did not arrange. */
+    private static final Duration QUIET = Duration.ofSeconds(10);
+
     private final InMemoryLedger memory = new InMemoryLedger();
     private final GatedLedger ledger = new GatedLedger(memory);
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
@@ -53,7 +57,7 @@ class CommandBatcherTest {
     @Test
     @DisplayName("a command on its own is answered as executing it would have been")
     void aLoneCommandIsAnsweredAsExecuteWould() {
-        batcher = new CommandBatcher(Till.on(ledger), 64, 16, registry);
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, QUIET, registry);
         stock("widget", 5);
 
         Outcome outcome = batcher.submit(reserve("k1", "r1", "widget", 2), null).get();
@@ -65,7 +69,7 @@ class CommandBatcherTest {
     @Test
     @DisplayName("commands that wait while a batch is written are taken together, in one load")
     void commandsThatWaitTogetherShareOneLoad() throws Exception {
-        batcher = new CommandBatcher(Till.on(ledger), 64, 16, registry);
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, QUIET, registry);
         stock("widget", 100);
         ledger.closeAfter(1);
 
@@ -90,7 +94,7 @@ class CommandBatcherTest {
     @Test
     @DisplayName("a command arriving at a full queue is refused at once, without waiting")
     void aFullQueueIsRefusedAtOnce() throws Exception {
-        batcher = new CommandBatcher(Till.on(ledger), 64, 1, registry);
+        batcher = new CommandBatcher(Till.on(ledger), 64, 1, QUIET, registry);
         stock("widget", 100);
         ledger.closeAfter(1);
 
@@ -107,7 +111,7 @@ class CommandBatcherTest {
     @Test
     @DisplayName("a closed batcher refuses a command at once instead of queueing it for nobody")
     void aClosedBatcherRefusesAtOnce() {
-        batcher = new CommandBatcher(Till.on(ledger), 64, 16, registry);
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, QUIET, registry);
         batcher.close();
 
         // Preemptively timed: a closed batcher that queued the command would wait for it forever.
@@ -119,7 +123,7 @@ class CommandBatcherTest {
     @Test
     @DisplayName("a command's failure reaches its own caller, as executing it would have thrown it")
     void aFailureReachesItsCaller() {
-        batcher = new CommandBatcher(Till.on(ledger), 64, 16, registry);
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, QUIET, registry);
         stock("widget", 5);
 
         Till.Answer answer = batcher.submit(reserve("k1", "r1", "widget", 1), Instant.EPOCH);
@@ -130,13 +134,72 @@ class CommandBatcherTest {
     @Test
     @DisplayName("batch sizes are still reported after the registry has been cleared")
     void metersSurviveAClearedRegistry() {
-        batcher = new CommandBatcher(Till.on(ledger), 64, 16, registry);
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, QUIET, registry);
         stock("widget", 5);
         registry.clear();
 
         batcher.submit(reserve("k1", "r1", "widget", 1), null).get();
 
         assertEquals(1, registry.get("till.batch.size").summary().count());
+    }
+
+    @Test
+    @DisplayName("a batch that runs past stall-after is reported once, however often the watchdog looks")
+    void aStalledBatchIsReportedOnce() throws Exception {
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, QUIET, registry);
+        stock("widget", 5);
+        ledger.closeAfter(1);
+        Future<Till.Answer> held = callers.submit(() -> batcher.submit(reserve("k1", "r1", "widget", 1), null));
+        ledger.awaitHeld();
+
+        long now = System.nanoTime();
+        batcher.watch(now + QUIET.plusSeconds(1).toNanos());
+        batcher.watch(now + QUIET.plusSeconds(2).toNanos());
+        ledger.open();
+
+        assertInstanceOf(Outcome.Reserved.class, held.get(5, TimeUnit.SECONDS).get());
+        assertEquals(1.0, registry.get("till.batch.stalls").counter().count());
+    }
+
+    @Test
+    @DisplayName("a batch that has finished is not a stall, however late the watchdog looks")
+    void aFinishedBatchIsNotAStall() {
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, QUIET, registry);
+        stock("widget", 5);
+        batcher.submit(reserve("k1", "r1", "widget", 1), null).get();
+
+        batcher.watch(System.nanoTime() + QUIET.plusSeconds(1).toNanos());
+
+        assertNull(registry.find("till.batch.stalls").counter());
+    }
+
+    @Test
+    @DisplayName("a look that comes long after the one before it is a pause of the whole process")
+    void aLateLookIsAPause() {
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, QUIET, registry);
+        long now = System.nanoTime();
+
+        batcher.watch(now);
+        batcher.watch(now + QUIET.multipliedBy(3).toNanos());
+
+        assertEquals(1.0, registry.get("till.batch.pauses").counter().count());
+        assertNull(registry.find("till.batch.stalls").counter());
+    }
+
+    @Test
+    @DisplayName("the watchdog looks by itself: a held batch is reported without anyone asking")
+    void theWatchdogLooksByItself() throws Exception {
+        batcher = new CommandBatcher(Till.on(ledger), 64, 16, Duration.ofMillis(50), registry);
+        stock("widget", 5);
+        ledger.closeAfter(1);
+        callers.submit(() -> batcher.submit(reserve("k1", "r1", "widget", 1), null));
+        ledger.awaitHeld();
+
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (registry.find("till.batch.stalls").counter() == null) {
+            assertTrue(System.nanoTime() < until, "the watchdog never reported the held batch");
+            Thread.sleep(10);
+        }
     }
 
     private void awaitQueued(int count) throws InterruptedException {

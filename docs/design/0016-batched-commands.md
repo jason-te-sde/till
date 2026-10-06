@@ -183,6 +183,16 @@ commands of one ledger task.
 writing waits for that write before its own load starts, where before it would have taken a
 connection of its own. Two round trips at most, and none when the worker is idle.
 
+**A batch that stalls holds up every command behind it.** One worker writes for the task, so a batch
+that does not finish — a statement that does not return, a connection that does not answer, a
+process that is not running — is a wait for every command queued behind it, where one at a time it
+held up one connection's. The first load test with batching found the worker stopped for six to
+eight seconds at a time, every minute or so, with the database idle and the task's CPU at 12%, and
+the orders that waited it out were its order p99 of five seconds. A watchdog looks at the worker
+several times a `till.batch.stall-after` (1 s): a batch running for longer is counted in
+`till.batch.stalls` and logged once, with where the worker is, and a look that comes much later than it
+was due — the whole process held up, not only its worker — is counted in `till.batch.pauses`.
+
 **One command's fault fails its batch.** A write that the database refuses for a reason other than a
 moved row — a check violation, which is a bug ([ADR 2](0002-optimistic-concurrency.md)) — answers every
 command it was writing with the exception, where one at a time it would have failed only the command

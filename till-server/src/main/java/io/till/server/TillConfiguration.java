@@ -62,7 +62,7 @@ class TillConfiguration {
     @ConditionalOnProperty(prefix = "till.batch", name = "enabled", havingValue = "true", matchIfMissing = true)
     CommandBatcher commandBatcher(Till till, TillProperties properties, MeterRegistry registry) {
         TillProperties.Batch batch = properties.batch();
-        return new CommandBatcher(till, batch.maxSize(), batch.queueCapacity(), registry);
+        return new CommandBatcher(till, batch.maxSize(), batch.queueCapacity(), batch.stallAfter(), registry);
     }
 
     /**

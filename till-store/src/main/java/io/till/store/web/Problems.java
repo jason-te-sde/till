@@ -77,7 +77,9 @@ class Problems extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler(LedgerUnavailableException.class)
     ResponseEntity<ProblemDetail> unavailable(LedgerUnavailableException e) {
-        LOG.warn("the ledger is unavailable: {}", e.getMessage());
+        // With what failed underneath: "could not be reached" is a timeout, a refused connection or a
+        // reset, and which of them it was is the first thing anyone diagnosing it needs.
+        LOG.warn("the ledger is unavailable: {}{}", e.getMessage(), causes(e));
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.SERVICE_UNAVAILABLE, "the store could not reach its stock system; your request is safe to retry");
         problem.setTitle("Temporarily unavailable");
@@ -85,6 +87,19 @@ class Problems extends ResponseEntityExceptionHandler {
         // Safe to retry because every write here carries an idempotency key, which is the only reason
         // it is honest to say so.
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "2").body(problem);
+    }
+
+    /** The causes under a failure, each as its class and message, or nothing if it has none. */
+    private static String causes(Throwable e) {
+        StringBuilder chain = new StringBuilder();
+        Throwable cause = e.getCause();
+        for (int depth = 0; cause != null && depth < 5; depth++, cause = cause.getCause()) {
+            chain.append(chain.isEmpty() ? " — " : "; ")
+                    .append(cause.getClass().getSimpleName())
+                    .append(": ")
+                    .append(cause.getMessage());
+        }
+        return chain.toString();
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

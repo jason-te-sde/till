@@ -11,6 +11,16 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **A watchdog on the batch worker** ([ADR 16](docs/design/0016-batched-commands.md), "A batch that
+  stalls"). Every command waits behind the batch in front of it, and the first load test with
+  batching found the worker stopped for six to eight seconds at a time with the database idle. A
+  batch running for longer than `till.batch.stall-after` (1 s) is counted in `till.batch.stalls` and
+  logged once with the worker's stack; a look of the watchdog's that comes much later than due is
+  counted in `till.batch.pauses`, because only a pause of the whole process explains it. The store's
+  warning for a ledger it could not reach now carries what failed underneath — a timeout, a refused
+  connection, a reset — where it said only that it failed, and a load test's ledger logs every
+  collection and safepoint (`-Xlog:gc,safepoint`).
+
 - **A snapshot benchmark** (`SnapshotBenchmark` in `till-jdbc`, only with `-Dtill.benchmark=true`): the
   lean snapshot statement against the one it replaced, call by call, on the data one load test leaves in
   the ledger's database — 100,000 reservations, 120,000 lines, 170,000 idempotency records. It reports
