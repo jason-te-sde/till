@@ -54,6 +54,7 @@ module "runtime" {
   db_instance_class    = var.db_instance_class
   database             = var.database
   database_per_service = var.database_per_service
+  express_clusters     = var.express_clusters
   cache_node_type      = var.cache_node_type
   demo                 = var.demo
   loadtest             = var.loadtest

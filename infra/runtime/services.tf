@@ -35,6 +35,12 @@ locals {
   # The store's own server when database_per_service, otherwise the same one as local.jdbc above
   # (state.tf's local.store_db_endpoint). The ledger always uses local.jdbc, never this.
   store_jdbc = "jdbc:postgresql://${local.store_db_endpoint}:5432"
+  # Aurora with express configuration takes IAM tokens and nothing else, over TLS through its internet
+  # access gateway (docs/design/0017-aurora-express.md): each service connects as the cluster's admin
+  # user to its default database, verifies the gateway's certificate against the JVM's own roots, and
+  # has till-rds-iam sign a token for every connection it opens. No password exists to give it.
+  express     = var.database == "aurora-express"
+  iam_options = "sslmode=verify-full&sslfactory=org.postgresql.ssl.DefaultJavaSSLFactory&authenticationPluginClassName=io.till.rds.IamAuthentication"
 
   logs = { for name, group in var.log_groups : name => {
     logDriver = "awslogs"
@@ -243,8 +249,8 @@ resource "aws_ecs_task_definition" "ledger" {
 
     environment = [for name, value in merge({
       # RDS for PostgreSQL 17 refuses a connection without TLS.
-      TILL_DB_URL        = "${local.jdbc}/till?sslmode=require"
-      TILL_DB_USER       = "till"
+      TILL_DB_URL        = local.express ? "${local.jdbc}/postgres?${local.iam_options}" : "${local.jdbc}/till?sslmode=require"
+      TILL_DB_USER       = local.express ? "postgres" : "till"
       TILL_DB_POOL       = tostring(var.db_pool.ledger)
       TILL_KAFKA_BROKERS = local.kafka_brokers
       # Matches the cluster it is talking to: three brokers (above), so the topic this declares —
@@ -264,11 +270,10 @@ resource "aws_ecs_task_definition" "ledger" {
       JAVA_TOOL_OPTIONS = "-Xlog:gc,safepoint:stdout:time,level,tags"
     } : {}) : { name = name, value = value }]
 
-    secrets = [for name, arn in {
-      TILL_DB_PASSWORD  = var.secrets.db_password
+    secrets = [for name, arn in merge(local.express ? {} : { TILL_DB_PASSWORD = var.secrets.db_password }, {
       TILL_CLIENT_TOKEN = var.secrets.ledger_client_token
       TILL_ADMIN_TOKEN  = var.secrets.ledger_admin_token
-    } : { name = name, valueFrom = arn }]
+    }) : { name = name, valueFrom = arn }]
 
     healthCheck = merge(local.readiness, {
       command = ["CMD", "curl", "-fsS", "http://127.0.0.1:9101/actuator/health/readiness"]
@@ -337,11 +342,12 @@ resource "aws_ecs_task_definition" "store" {
     cpu_architecture        = "ARM64"
   }
 
-  container_definitions = jsonencode([
+  container_definitions = jsonencode(concat(local.express ? [] : [
     # What docker/initdb does for the compose stack: the store's own database, beside the ledger's
     # when they share a server, or alone on the store's own (local.store_db_endpoint, either way).
     # Every start asks, and creates it only if it is missing; two starting at once cannot both fail,
-    # because the loser finds the winner's.
+    # because the loser finds the winner's. Not on an express cluster, whose default database is the
+    # store's alone, and which would not take this container's password anyway.
     {
       name      = "create-database"
       image     = var.images.postgres
@@ -365,17 +371,18 @@ resource "aws_ecs_task_definition" "store" {
       secrets          = [{ name = "PGPASSWORD", valueFrom = var.secrets.db_password }]
       logConfiguration = local.logs.store
     },
-    {
+    ], [merge(local.express ? {} : {
+      dependsOn = [{ containerName = "create-database", condition = "SUCCESS" }]
+      }, {
       name         = "store"
       image        = var.images.runtime
       essential    = true
       entryPoint   = ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/till-store.jar"]
       portMappings = [{ containerPort = 8081, protocol = "tcp" }]
-      dependsOn    = [{ containerName = "create-database", condition = "SUCCESS" }]
 
       environment = [for name, value in merge(local.identity, {
-        STORE_DB_URL  = "${local.store_jdbc}/store?sslmode=require"
-        STORE_DB_USER = "till"
+        STORE_DB_URL  = local.express ? "${local.store_jdbc}/postgres?${local.iam_options}" : "${local.store_jdbc}/store?sslmode=require"
+        STORE_DB_USER = local.express ? "postgres" : "till"
         STORE_DB_POOL = tostring(var.db_pool.store)
 
         STORE_REDIS_HOST = aws_elasticache_replication_group.sessions.primary_endpoint_address
@@ -390,20 +397,19 @@ resource "aws_ecs_task_definition" "store" {
         STORE_DEMO_SHARDS     = tostring(var.stock_shards)
       }) : { name = name, value = value }]
 
-      secrets = [for name, arn in {
-        STORE_DB_PASSWORD        = var.secrets.db_password
+      secrets = [for name, arn in merge(local.express ? {} : { STORE_DB_PASSWORD = var.secrets.db_password }, {
         TILL_CLIENT_TOKEN        = var.secrets.ledger_client_token
         TILL_ADMIN_TOKEN         = var.secrets.ledger_admin_token
         STORE_OIDC_CLIENT_SECRET = local.identity_secret
-      } : { name = name, valueFrom = arn }]
+      }) : { name = name, valueFrom = arn }]
 
       healthCheck = merge(local.readiness, {
         command = ["CMD", "curl", "-fsS", "http://127.0.0.1:9102/actuator/health/readiness"]
       })
 
       logConfiguration = local.logs.store
-    },
-  ])
+    })],
+  ))
 }
 
 resource "aws_ecs_service" "store" {

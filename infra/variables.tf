@@ -86,16 +86,37 @@ variable "db_instance_class" {
 variable "database" {
   description = <<-EOT
     Which PostgreSQL runs: "rds" (an aws_db_instance; the free plan allows only db.t3.micro or
-    db.t4g.micro) or "aurora" (an Aurora PostgreSQL Serverless v2 cluster; the free plan caps it at
-    4 ACU and 1 GiB of storage per cluster). infra/README.md has what each costs.
-    scripts/aws.sh up --database=aurora sets it; the default is unchanged.
+    db.t4g.micro), "aurora" (an Aurora PostgreSQL Serverless v2 cluster in the VPC, which the free
+    plan refuses) or "aurora-express" (Aurora PostgreSQL created with express configuration, the one
+    kind of Aurora the free plan allows: no VPC, reached through its internet access gateway, IAM
+    tokens only; scripts/aws.sh creates the clusters, because Terraform cannot, and passes them in as
+    express_clusters — docs/design/0017-aurora-express.md). infra/README.md has what each costs.
+    scripts/aws.sh up --database=aurora or --database=aurora-express sets it; the default is unchanged.
   EOT
   type        = string
   default     = "rds"
 
   validation {
-    condition     = contains(["rds", "aurora"], var.database)
-    error_message = "database is either \"rds\" or \"aurora\"."
+    condition     = contains(["rds", "aurora", "aurora-express"], var.database)
+    error_message = "database is \"rds\", \"aurora\" or \"aurora-express\"."
+  }
+}
+
+variable "express_clusters" {
+  description = <<-EOT
+    The Aurora clusters scripts/aws.sh created with express configuration, when database is
+    "aurora-express": "till" for the ledger and "store" for the store, each with its writer endpoint
+    and its cluster resource id, which the task role's rds-db:connect names. Empty otherwise.
+  EOT
+  type = map(object({
+    endpoint    = string
+    resource_id = string
+  }))
+  default = {}
+
+  validation {
+    condition     = var.database != "aurora-express" || (contains(keys(var.express_clusters), "till") && contains(keys(var.express_clusters), "store"))
+    error_message = "aurora-express needs express_clusters for both \"till\" and \"store\"."
   }
 }
 

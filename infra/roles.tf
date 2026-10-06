@@ -49,7 +49,7 @@ resource "aws_iam_role_policy" "execution_secrets" {
 
 resource "aws_iam_role" "task" {
   name               = "till-task"
-  description        = "till's running containers: nothing but ECS Exec"
+  description        = "till's running containers: ECS Exec, and logging in to an express Aurora cluster"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks.json
 }
 
@@ -69,6 +69,28 @@ resource "aws_iam_role_policy" "task_exec" {
   name   = "till-exec"
   role   = aws_iam_role.task.id
   policy = data.aws_iam_policy_document.task_exec.json
+}
+
+# With Aurora's express configuration a login is an IAM token, and the role that signs it must be
+# allowed to connect as the user it names: postgres, on each of the two clusters (database =
+# "aurora-express", docs/design/0017-aurora-express.md). Nothing at all otherwise.
+data "aws_iam_policy_document" "task_database" {
+  count = var.database == "aurora-express" ? 1 : 0
+
+  statement {
+    actions = ["rds-db:connect"]
+    resources = [for cluster in values(var.express_clusters) :
+      "arn:${data.aws_partition.current.partition}:rds-db:${var.region}:${data.aws_caller_identity.current.account_id}:dbuser:${cluster.resource_id}/postgres"
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "task_database" {
+  count = var.database == "aurora-express" ? 1 : 0
+
+  name   = "till-database"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_database[0].json
 }
 
 data "aws_iam_policy_document" "scheduler" {

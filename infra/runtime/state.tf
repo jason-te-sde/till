@@ -142,7 +142,13 @@ locals {
   # an instance to answer, and the services wait only for what they refer to: given the cluster's,
   # they would start against an endpoint with nothing behind it. With one instance, its address is
   # the writer's.
-  db_endpoint = var.database == "aurora" ? aws_rds_cluster_instance.till[0].endpoint : aws_db_instance.till[0].address
+  #
+  # With express configuration the cluster is scripts/aws.sh's, not Terraform's (ADR 17), and so is
+  # the wait for its instance: the script hands in the writer endpoint once both are available.
+  db_endpoint = (
+    var.database == "aurora-express" ? var.express_clusters["till"].endpoint :
+    var.database == "aurora" ? aws_rds_cluster_instance.till[0].endpoint : aws_db_instance.till[0].address
+  )
 }
 
 # --- the store's own server, when database_per_service asks for one ------------------------------
@@ -237,6 +243,7 @@ locals {
   # The store's own server once it has one; otherwise the one the ledger is already on. services.tf's
   # store connects here; the ledger always stays on local.db_endpoint above, whichever this is.
   store_db_endpoint = var.database_per_service ? (
+    var.database == "aurora-express" ? var.express_clusters["store"].endpoint :
     var.database == "aurora" ? aws_rds_cluster_instance.store[0].endpoint : aws_db_instance.store[0].address
   ) : local.db_endpoint
 }

@@ -76,6 +76,14 @@
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- IAM database authentication, for a database that allows nothing else (Aurora's express
+         configuration, ADR 17): named in the JDBC URL as authenticationPluginClassName, and otherwise
+         never loaded. -->
+    <dependency>
+      <groupId>io.github.jason-te-sde</groupId>
+      <artifactId>till-rds-iam</artifactId>
+      <scope>runtime</scope>
+    </dependency>
     <dependency>
       <groupId>org.springdoc</groupId>
       <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>

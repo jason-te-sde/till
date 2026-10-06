@@ -37,5 +37,8 @@ output "loadgen" {
     # server to ask then, exactly as before. Set, it is where to override PGHOST to ask the store's
     # own server the same questions (state.tf's local.store_db_endpoint).
     store_db_host = var.database_per_service ? local.store_db_endpoint : null
+    # The ledger's server: what the dbstat task asks by default, and, on an express cluster, the host
+    # scripts/aws.sh signs that run's token for.
+    db_host = local.db_endpoint
   } : null
 }
