@@ -241,7 +241,7 @@ resource "aws_ecs_task_definition" "ledger" {
     essential    = true
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
 
-    environment = [for name, value in {
+    environment = [for name, value in merge({
       # RDS for PostgreSQL 17 refuses a connection without TLS.
       TILL_DB_URL        = "${local.jdbc}/till?sslmode=require"
       TILL_DB_USER       = "till"
@@ -256,7 +256,13 @@ resource "aws_ecs_task_definition" "ledger" {
       # eleven of sixteen at the peak with nothing at INFO or WARN saying why (docs/load-test.md);
       # Hikari logs a closed connection's reason only at DEBUG. A few dozen lines a minute.
       LOGGING_LEVEL_COM_ZAXXER_HIKARI = var.loadtest ? "DEBUG" : "INFO"
-    } : { name = name, value = value }]
+      }, var.loadtest ? {
+      # Under a load test, every collection and every safepoint, with how long each held the threads
+      # up. In the first run with batching the worker stalled for seconds at a time with the database
+      # idle (docs/load-test.md), and only the JVM can say whether the JVM was the reason. A few
+      # lines a second.
+      JAVA_TOOL_OPTIONS = "-Xlog:gc,safepoint:stdout:time,level,tags"
+    } : {}) : { name = name, value = value }]
 
     secrets = [for name, arn in {
       TILL_DB_PASSWORD  = var.secrets.db_password
