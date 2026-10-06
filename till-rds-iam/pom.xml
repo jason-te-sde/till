@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.jason-te-sde</groupId>
+    <artifactId>till-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>till-rds-iam</artifactId>
+  <name>till-rds-iam</name>
+  <description>
+    IAM database authentication for pgjdbc: every new connection's password is a token signed for
+    its host, port and user with the process's own AWS credentials. Both services take it at runtime,
+    so that neither depends on the AWS SDK otherwise.
+  </description>
+
+  <dependencies>
+    <!-- Only RdsUtilities, which signs a token locally and makes no call, so neither of the SDK's
+         HTTP clients: the credentials of an ECS task come from its metadata endpoint, which the
+         SDK reads with the JDK's own HTTP connection. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>rds</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>apache-client</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <!-- The interface pgjdbc calls; the driver itself is the caller's. -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+</project>
