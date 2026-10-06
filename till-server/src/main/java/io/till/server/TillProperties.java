@@ -228,15 +228,22 @@ public record TillProperties(
      * @param enabled whether commands go through the batcher at all
      * @param maxSize the most commands one batch takes
      * @param queueCapacity how many commands may wait; one more is refused at once, 503 OVERLOADED
+     * @param stallAfter how long a batch may run before it is reported, with where the worker is. Every
+     *     command waits behind the batch in front of it, so a batch that does not finish holds up all
+     *     of them
      */
     public record Batch(
             @DefaultValue("true") boolean enabled,
             @DefaultValue("64") int maxSize,
-            @DefaultValue("1024") int queueCapacity) {
+            @DefaultValue("1024") int queueCapacity,
+            @DefaultValue("1s") Duration stallAfter) {
 
         public Batch {
             if (maxSize < 1 || queueCapacity < 1) {
                 throw new IllegalArgumentException("till.batch.max-size and till.batch.queue-capacity must be at least 1");
+            }
+            if (stallAfter.isZero() || stallAfter.isNegative()) {
+                throw new IllegalArgumentException("till.batch.stall-after must be longer than zero");
             }
         }
     }

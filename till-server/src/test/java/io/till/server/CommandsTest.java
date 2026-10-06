@@ -277,7 +277,7 @@ class CommandsTest {
         Till till = Till.builder(memory).clock(fixed(T0)).build();
         till.adjust(IdempotencyKey.of("stock"), Sku.of("widget"), 10);
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        try (CommandBatcher batcher = new CommandBatcher(till, 64, 16, registry)) {
+        try (CommandBatcher batcher = new CommandBatcher(till, 64, 16, java.time.Duration.ofSeconds(10), registry)) {
             Commands commands = new Commands(till, registry, batcher);
 
             Outcome outcome = commands.run(reserve("c1", "r1", 3));
@@ -293,7 +293,7 @@ class CommandsTest {
     void aRefusedCommandIsCountedAsOverloaded() {
         Till till = Till.builder(new io.till.core.mem.InMemoryLedger()).clock(fixed(T0)).build();
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        CommandBatcher batcher = new CommandBatcher(till, 1, 1, registry);
+        CommandBatcher batcher = new CommandBatcher(till, 1, 1, java.time.Duration.ofSeconds(10), registry);
         batcher.close();
         Commands commands = new Commands(till, registry, batcher);
 
