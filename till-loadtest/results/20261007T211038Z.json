@@ -1,0 +1,341 @@
+{
+  "commit": "000bab96288c",
+  "exit_code": 0,
+  "store_catalogue_cache": true,
+  "stock_shards": 16,
+  "database": "aurora-express",
+  "database_per_service": true,
+  "db_pool": {
+    "ledger": 4,
+    "store": 8
+  },
+  "k6": {
+    "window": {
+      "from": "2026-10-07T21:05:20.623Z",
+      "to": "2026-10-07T21:06:20.623Z"
+    },
+    "shoppers": 100,
+    "concurrent_max": 100,
+    "steady_seconds": 60,
+    "requests": 2764,
+    "requests_per_second": 46.1,
+    "latency_ms": {
+      "p50": 1.7,
+      "p95": 47.5,
+      "p99": 67.3,
+      "max": 396.7
+    },
+    "p99_ms_by_class": {
+      "page": 1.6,
+      "session": 32.5,
+      "catalogue": 15.7,
+      "search": 41,
+      "signin": 44,
+      "order": 94.8
+    },
+    "unexpected_rate": 0,
+    "per_second": {
+      "orders_placed": 1.9,
+      "orders_paid": 1.8,
+      "orders_cancelled": 0.2,
+      "refusals": 0,
+      "sign_ins": 1
+    },
+    "targets": {
+      "p99_under_1s": true,
+      "errors_under_0_1_percent": true
+    }
+  },
+  "catalogue_reads": {
+    "cache": {
+      "reads": 0,
+      "mean_ms": null
+    },
+    "database": {
+      "reads": 0,
+      "mean_ms": null
+    },
+    "mean_ms": null,
+    "store_minutes": 0
+  },
+  "cloudwatch": {
+    "window_seconds": 120,
+    "alb_requests_per_second": 35.1,
+    "alb_target_p99_ms": 77,
+    "alb_target_5xx": 0,
+    "alb_own_5xx": 0,
+    "db_cpu_max_percent": 17,
+    "db_acu_max_capacity": 4.0,
+    "store_db_cpu_max_percent": 18,
+    "store_db_acu_max_capacity": 4.0,
+    "edge_cpu_max_percent": 0.6,
+    "store_cpu_max_percent": 27.1,
+    "ledger_cpu_max_percent": 2.7,
+    "kafka_1_cpu_max_percent": 37.5,
+    "kafka_2_cpu_max_percent": 29.2,
+    "kafka_3_cpu_max_percent": 28.2
+  },
+  "database_top_statements": [
+    {
+      "db": "rdsadmin",
+      "rows": 17485,
+      "calls": 269,
+      "query": "SELECT viewname, md5(pg_get_viewdef($1 || viewname)::text) FROM pg_views WHERE schemaname = $2 ORDER BY viewname",
+      "mean_ms": 98.32,
+      "total_ms": 26447
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 10780,
+      "calls": 5390,
+      "query": "SELECT name, setting FROM pg_settings WHERE name IN ($1, $2)",
+      "mean_ms": 3.79,
+      "total_ms": 20406
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 269,
+      "calls": 269,
+      "query": "SELECT count(*) FROM pg_show_all_settings() WHERE name = $1 AND setting SIMILAR TO $2",
+      "mean_ms": 10.57,
+      "total_ms": 2844
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 2695,
+      "calls": 2695,
+      "query": "select sum(blks_read), sum(blks_hit) from pg_stat_database",
+      "mean_ms": 0.46,
+      "total_ms": 1252
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 0,
+      "calls": 25211,
+      "query": "SET statement_timeout=$1",
+      "mean_ms": 0.05,
+      "total_ms": 1206
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 0,
+      "calls": 2716,
+      "query": "SET application_name = $1",
+      "mean_ms": 0.39,
+      "total_ms": 1063
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 269,
+      "calls": 269,
+      "query": "SELECT count(*) FROM pg_catalog.pg_hba_file_rules WHERE auth_method = $1",
+      "mean_ms": 3.19,
+      "total_ms": 859
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 3,
+      "calls": 3,
+      "query": "Select * from aurora_scale_buffer_cache($1)",
+      "mean_ms": 251.69,
+      "total_ms": 755
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 8085,
+      "calls": 8085,
+      "query": "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2",
+      "mean_ms": 0.08,
+      "total_ms": 638
+    },
+    {
+      "db": "postgres",
+      "rows": 400,
+      "calls": 400,
+      "query": "select till_apply(put_sku => $1, put_shard => $2, put_on_hand => $3, put_reserved => $4, put_version => $5, put_new_version => $6, set_id => $7, set_state => $8, set_version => $9, insert_id => $10, insert_key => $11, insert_state => $12, i",
+      "mean_ms": 0.98,
+      "total_ms": 392
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 2695,
+      "calls": 2695,
+      "query": "select valid_pages, unused_pages, reuse_pages from aurora_storage_metadata_metrics()",
+      "mean_ms": 0.12,
+      "total_ms": 315
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 2709,
+      "calls": 2689,
+      "query": "select s.*, extract($1 from s.lastattempt) as lastattempt_ts from rds_get_stat_dxl_counters() as s where s.lastattempt > (now() - interval $2 second) limit $3",
+      "mean_ms": 0.10,
+      "total_ms": 274
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 2704,
+      "calls": 2691,
+      "query": "select s.*, extract($1 from s.lastattempt) as lastattempt_ts from rds_get_stat_connections_counters() as s where s.lastattempt > (now() - interval $2 second) limit $3",
+      "mean_ms": 0.09,
+      "total_ms": 238
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 2756,
+      "calls": 2756,
+      "query": "select max(age(datfrozenxid)) from pg_catalog.pg_database where datconnlimit <> $1",
+      "mean_ms": 0.08,
+      "total_ms": 234
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 2712,
+      "calls": 2712,
+      "query": "select sum(aurora_stat_get_db_commit_latency(oid)) from pg_database",
+      "mean_ms": 0.08,
+      "total_ms": 212
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 1495,
+      "calls": 23,
+      "query": "SELECT viewname, md5(pg_get_viewdef($1 || viewname)::text) FROM pg_views WHERE schemaname = $2 ORDER BY viewname",
+      "mean_ms": 85.25,
+      "total_ms": 1961
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 946,
+      "calls": 473,
+      "query": "SELECT name, setting FROM pg_settings WHERE name IN ($1, $2)",
+      "mean_ms": 3.44,
+      "total_ms": 1629
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 3,
+      "calls": 3,
+      "query": "Select * from aurora_scale_buffer_cache($1)",
+      "mean_ms": 291.73,
+      "total_ms": 875
+    },
+    {
+      "db": "postgres",
+      "rows": 1,
+      "calls": 1,
+      "query": "SELECT E.NAME, X.EXTVERSION, X.EXTVERSION=E.DEFAULT_VERSION IS_DEFAULT_VERSION FROM PG_CATALOG.PG_AVAILABLE_EXTENSIONS() E INNER JOIN PG_EXTENSION X ON (E.NAME=X.EXTNAME)",
+      "mean_ms": 589.40,
+      "total_ms": 589
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 23,
+      "calls": 23,
+      "query": "SELECT count(*) FROM pg_show_all_settings() WHERE name = $1 AND setting SIMILAR TO $2",
+      "mean_ms": 7.34,
+      "total_ms": 169
+    },
+    {
+      "db": "postgres",
+      "rows": 0,
+      "calls": 1,
+      "query": "-- Search. A generated column, so the vector can never disagree with the text it came from, and -- weighted so that a match in the title outranks a match three sentences into the description. -- -- The text search configuration is named exp",
+      "mean_ms": 119.31,
+      "total_ms": 119
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 2,
+      "calls": 1,
+      "query": "SELECT DATNAME, LARGEST_DB_BYTES, ALL_DB_BYTES, OLDEST_XACT_SEC, OLDEST_XACT_XID FROM ( SELECT DATNAME, DATALLOWCONN, CONNECTIONS, BYTES ,MAX(BYTES) OVER () LARGEST_DB_BYTES ,SUM(BYTES) OVER () ALL_DB_BYTES ,MAX(SEC) OVER () OLDEST_XACT_SEC",
+      "mean_ms": 109.40,
+      "total_ms": 109
+    },
+    {
+      "db": "postgres",
+      "rows": 446,
+      "calls": 446,
+      "query": "insert into store_availability (sku, on_hand, reserved, available, updated_at) values ($1, $2, $3, $4, $5) on conflict (sku) do update set on_hand = store_availability.on_hand + excluded.on_hand, reserved = store_availability.reserved + exc",
+      "mean_ms": 0.24,
+      "total_ms": 108
+    },
+    {
+      "db": "postgres",
+      "rows": 0,
+      "calls": 1,
+      "query": "CREATE TABLE \"public\".\"flyway_schema_history\" ( \"installed_rank\" INT NOT NULL, \"version\" VARCHAR(50), \"description\" VARCHAR(200) NOT NULL, \"type\" VARCHAR(20) NOT NULL, \"script\" VARCHAR(1000) NOT NULL, \"checksum\" INTEGER, \"installed_by\" VARC",
+      "mean_ms": 105.14,
+      "total_ms": 105
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 0,
+      "calls": 3145,
+      "query": "SET statement_timeout=$1",
+      "mean_ms": 0.03,
+      "total_ms": 97
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 18,
+      "calls": 18,
+      "query": "select sum(used_bytes) as volume_bytes_used from aurora_stat_file()",
+      "mean_ms": 4.97,
+      "total_ms": 90
+    },
+    {
+      "db": "postgres",
+      "rows": 0,
+      "calls": 1,
+      "query": "create extension if not exists pg_stat_statements",
+      "mean_ms": 87.97,
+      "total_ms": 88
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 0,
+      "calls": 256,
+      "query": "SET application_name = $1",
+      "mean_ms": 0.30,
+      "total_ms": 78
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 237,
+      "calls": 237,
+      "query": "select sum(blks_read), sum(blks_hit) from pg_stat_database",
+      "mean_ms": 0.31,
+      "total_ms": 73
+    },
+    {
+      "db": "postgres",
+      "rows": 0,
+      "calls": 1,
+      "query": "-- One partition per month, from the oldest existing row's month (if any) through at least next -- month, so every row already in the table has a home before it is copied, and the service has a -- month's head start before SalesPartitionMai",
+      "mean_ms": 62.02,
+      "total_ms": 62
+    }
+  ],
+  "database_transactions": {
+    "store": {
+      "commits": 4822,
+      "rollbacks": 0
+    },
+    "till": {
+      "commits": 1504,
+      "rollbacks": 0
+    }
+  },
+  "reservations": {
+    "before": {},
+    "after": {
+      "RELEASED": 14,
+      "COMMITTED": 155
+    }
+  },
+  "stock_rows": {
+    "rows": 512,
+    "skus": 32
+  }
+}
