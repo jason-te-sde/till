@@ -160,6 +160,9 @@ requests.
 | [3 Oct 2026, with Database Insights](../till-loadtest/results/20261003T004854Z.json) | `6069d4b` | sixteen connections again; Database Insights recording the load | 8,000 | 3,261 | 5.0 s | 2.2% | 87.9 | **met**: throughput; **missed**: latency, errors |
 | [4 Oct 2026, one call each way](../till-loadtest/results/20261004T002219Z.json) | `d412174` | the same; a decision written in one call to `till_apply`, a snapshot statement that neither sorts nor joins | 8,000 | 3,298 | 5.0 s | 1.5% | 106.7 | **met**: throughput; **missed**: latency, errors |
 | [4 Oct 2026, holds without waiting for the disk](../till-loadtest/results/20261004T053709Z.json) | `f5c32f3` | the same; a hold commits without waiting for its WAL to be flushed | 8,000 | 3,315 | 5.0 s | 1.5% | 108.0 | **met**: throughput; **missed**: latency, errors |
+| [6 Oct 2026, commands decided together](../till-loadtest/results/20261006T010706Z.json) | `cbc1a23` | the same; the commands waiting for the ledger decided in one load and written in one call, by one ledger task with the two vCPUs two had | 8,000 | 3,460 | **844 ms** | 0.17% | 147.0 | **met**: throughput, latency; **missed**: errors |
+| [6 Oct 2026, with a watchdog](../till-loadtest/results/20261006T041014Z.json) | `bdc6370` | the same; the batch worker watched, and every collection and safepoint logged | 8,000 | 3,458 | **751 ms** | 0.10% | 146.5 | **met**: throughput, latency; **missed**: errors |
+| [7 Oct 2026, four connections](../till-loadtest/results/20261007T070402Z.json) | `bdc6370` | the same, the ledger holding four connections instead of sixteen | 8,000 | 3,473 | **404 ms** | 0.08% | 148.7 | **met**: throughput, latency, errors |
 
 ### 30 September: the first run
 
@@ -430,3 +433,48 @@ those orders are the p99. Every other kind of request had its p99 under 175 ms.
 
 Next is the ledger doing fewer, larger transactions: the commands queued for it decided together and
 written in one call.
+
+### 6 and 7 October: commands decided together, and a server that swaps
+
+Three runs, the store on a server of its own and sixteen rows a game, with the commands waiting for
+the ledger decided together ([ADR 16](design/0016-batched-commands.md)) by one ledger task with the
+two vCPUs two tasks had; each has its trial beside it in the results.
+
+| | Holds without the disk | Commands decided together | With a watchdog | Four connections |
+| --- | ---: | ---: | ---: | ---: |
+| Requests a second | 3,315 | 3,460 | 3,458 | 3,473 |
+| p95 / p99 | 341 ms / 5.0 s | 17 ms / **844 ms** | 19 ms / **751 ms** | 17 ms / **404 ms** |
+| Unexpected responses | 1.52% | 0.17% | 0.10% | **0.08%** |
+| Orders placed, paid, a second | 108.0, 86.0 | 147.0, 131.4 | 146.5, 131.0 | 148.7, 133.0 |
+| The ledger's transactions rolled back | 2.1% | 0 | 0 | 0 |
+| The ledger's database CPU (maximum) | 88.7% | 32.5% | 31.3% | 30.6% |
+| The order class's p99 | 5.0 s | 5.0 s | 5.0 s | 4.8 s |
+
+The p99 is under a second, and the last run met every target the protocol sets. The ledger now
+takes every order the 8,000 place — 147 a second, more than the 136 the trial's rate predicted,
+because each order now comes back sooner — with its database at a third of its CPU and nothing
+rolled back: one writer's batches never meet another's.
+
+What the first run left was the order class's own p99, at the store's five-second deadline: in four
+bursts, five to fifteen seconds long and a minute or so apart, every store task at once heard
+nothing from the ledger. The ledger's database was idle through them, and the ledger task's CPU was
+at 12%. The second run said why. A watchdog on the batch worker reported each batch that ran for
+longer than a second, with where the worker was: always in a call to the database — mostly
+`till_apply`, sometimes the batch's load — reading its reply off the socket, for up to 7.6 seconds.
+Database Insights sampled no active session on the server through the whole of those seconds, and
+the pool's keepalives on the other connections were answered as usual, so the server was not busy
+with the call and the network was not down. The server was swapping. A `db.t4g.micro` has a
+gigabyte of memory; a few minutes into each run its free memory fell to about 65 MB and swap rose
+from nothing to about 45 MB, and the stalls began within a minute of it. A backend whose memory has
+been paged out pages itself back in before it can begin a statement, and is not active while it
+does. The run before batching swapped harder still — 159 MB, with thirty-two connections — but a
+stall there held up one connection's command; with one writer, it holds up all of them.
+
+Four connections in place of sixteen — enough with one writer: the batches, the publisher, the
+sweeper — met every target, with the unexpected responses at 0.08% and the p99 at 404 ms. They did
+not cure it. The swap peaked at 38 MB rather than 45, and the stalls were about as many: 18 batches
+in the steady window against 20, 48 seconds of them against 55, the longest 7.9 seconds against
+7.6. So the difference between the two runs is as much the run as the connections. Those left among
+the unexpected responses are the store's own pool, eight connections a task, refusing new orders
+after two seconds' wait. The free plan allows no RDS class with more memory than this one; Aurora at
+its 4 ACU has about eight times as much.
