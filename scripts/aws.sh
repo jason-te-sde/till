@@ -568,6 +568,25 @@ TOP_STATEMENTS="select coalesce(jsonb_agg(t order by t.total_ms desc), '[]') fro
 DATABASE_TRANSACTIONS="select coalesce(jsonb_object_agg(datname, jsonb_build_object('commits', xact_commit,
   'rollbacks', xact_rollback)), '{}') from pg_stat_database where datname in ('till', 'store')"
 
+# The same, for one server's database on an express cluster (ADR 17): each service's database there
+# is its cluster's own "postgres", so it is reported under the service's name instead.
+database_transactions() {
+  if express; then
+    echo "select coalesce(jsonb_object_agg('$1', jsonb_build_object('commits', xact_commit,
+      'rollbacks', xact_rollback)), '{}') from pg_stat_database where datname = 'postgres'"
+  else
+    echo "$DATABASE_TRANSACTIONS"
+  fi
+}
+
+# Statement statistics from zero, where the database allows it. An express cluster's admin may not
+# reset them ("permission denied for function pg_stat_statements_reset"), and need not: its clusters
+# are this deployment's own, created by its up, so they count from then — a trial's statements
+# included, about a thousandth of a run's.
+statements_reset() {
+  express || echo "select pg_stat_statements_reset();"
+}
+
 # The ledger's reservations by state: how many holds a run took, and how many nobody finished.
 RESERVATIONS="select coalesce(jsonb_object_agg(state, n), '{}') from (select state, count(*) as n
   from till_reservation group by state) s"
@@ -614,13 +633,17 @@ cmd_loadtest() {
   # and pg_stat_database are per server, so with database_per_service this is two servers to reset and
   # read, not one; reservations and stock stay queries against the ledger's alone, below, since those
   # tables exist only there, on either layout.
-  before=$(dbstat "$loadgen" "create extension if not exists pg_stat_statements; select pg_stat_statements_reset();
-    select jsonb_build_object('transactions', ($DATABASE_TRANSACTIONS), 'reservations', ($RESERVATIONS))" | tail -1)
+  # Like the reading after it, a reading that fails leaves the run without those figures rather than
+  # without a run.
+  before=$(dbstat "$loadgen" "create extension if not exists pg_stat_statements; $(statements_reset)
+    select jsonb_build_object('transactions', ($(database_transactions till)), 'reservations', ($RESERVATIONS))" | tail -1) ||
+    before=null
   jq -e . <<< "$before" > /dev/null 2>&1 || before=null
   store_before=null
   if [[ -n $store_db_host ]]; then
-    store_before=$(dbstat "$loadgen" "create extension if not exists pg_stat_statements; select pg_stat_statements_reset();
-      select jsonb_build_object('transactions', ($DATABASE_TRANSACTIONS))" "$store_db_host" | tail -1)
+    store_before=$(dbstat "$loadgen" "create extension if not exists pg_stat_statements; $(statements_reset)
+      select jsonb_build_object('transactions', ($(database_transactions store)))" "$store_db_host" | tail -1) ||
+      store_before=null
     jq -e . <<< "$store_before" > /dev/null 2>&1 || store_before=null
   fi
 
@@ -643,12 +666,12 @@ cmd_loadtest() {
 
   # The run happened whether or not psql can say what the database did in it.
   after=$(dbstat "$loadgen" "select jsonb_build_object('statements', ($TOP_STATEMENTS),
-    'transactions', ($DATABASE_TRANSACTIONS), 'reservations', ($RESERVATIONS), 'stock', ($STOCK_ROWS))" | tail -1) || after=null
+    'transactions', ($(database_transactions till)), 'reservations', ($RESERVATIONS), 'stock', ($STOCK_ROWS))" | tail -1) || after=null
   jq -e . <<< "$after" > /dev/null 2>&1 || after=null
   store_after=null
   if [[ -n $store_db_host ]]; then
     store_after=$(dbstat "$loadgen" "select jsonb_build_object('statements', ($TOP_STATEMENTS),
-      'transactions', ($DATABASE_TRANSACTIONS))" "$store_db_host" | tail -1) || store_after=null
+      'transactions', ($(database_transactions store)))" "$store_db_host" | tail -1) || store_after=null
     jq -e . <<< "$store_after" > /dev/null 2>&1 || store_after=null
   fi
 
