@@ -254,14 +254,16 @@ express_vars() {
 # Deletes whichever express clusters exist, their instances first, as Aurora requires, and waits until
 # both are gone. Asks nothing: down has already been agreed to.
 express_down() {
-  local entry id instance found=false
+  local entry id instance members status found=false
   for entry in "${EXPRESS_CLUSTERS[@]}"; do
     id=${entry#*:}
-    aws rds describe-db-clusters --db-cluster-identifier "$id" > /dev/null 2>&1 || continue
+    status=$(express_status "$id") || exit 1
+    [[ $status == absent ]] && continue
     found=true
     say "Deleting the Aurora cluster $id"
-    for instance in $(aws rds describe-db-clusters --db-cluster-identifier "$id" --output text \
-      --query 'DBClusters[0].DBClusterMembers[].DBInstanceIdentifier'); do
+    members=$(aws rds describe-db-clusters --db-cluster-identifier "$id" --output text \
+      --query 'DBClusters[0].DBClusterMembers[].DBInstanceIdentifier') || express_unknown "$id"
+    for instance in $members; do
       aws rds delete-db-instance --db-instance-identifier "$instance" > /dev/null 2>&1 || true
     done
   done
@@ -269,7 +271,11 @@ express_down() {
   for entry in "${EXPRESS_CLUSTERS[@]}"; do
     id=${entry#*:}
     for _ in $(seq 1 120); do
-      [[ -z $(express_instance "$id") ]] && break
+      status=$(express_status "$id") || exit 1
+      [[ $status == absent ]] && break
+      members=$(aws rds describe-db-clusters --db-cluster-identifier "$id" --output text \
+        --query 'length(DBClusters[0].DBClusterMembers)') || express_unknown "$id"
+      [[ $members == 0 ]] && break
       sleep 10
     done
     aws rds delete-db-cluster --db-cluster-identifier "$id" --skip-final-snapshot > /dev/null 2>&1 || true
@@ -277,12 +283,32 @@ express_down() {
   for entry in "${EXPRESS_CLUSTERS[@]}"; do
     id=${entry#*:}
     for _ in $(seq 1 120); do
-      aws rds describe-db-clusters --db-cluster-identifier "$id" > /dev/null 2>&1 || break
+      status=$(express_status "$id") || exit 1
+      [[ $status == absent ]] && break
       sleep 10
     done
-    ! aws rds describe-db-clusters --db-cluster-identifier "$id" > /dev/null 2>&1 ||
+    [[ $status == absent ]] ||
       fail "$id is still there after twenty minutes: aws rds describe-db-clusters --db-cluster-identifier $id"
   done
+}
+
+# A cluster's status, or "absent" when AWS says there is no such cluster. Anything else that stops it
+# answering — an expired login above all — is not an absence, and ends this script: a down that took
+# an expired login's errors for "gone" once reported two clusters deleted that it had not seen go.
+express_status() {
+  local answer
+  if answer=$(aws rds describe-db-clusters --db-cluster-identifier "$1" --query 'DBClusters[0].Status' \
+    --output text 2>&1); then
+    echo "$answer"
+  elif [[ $answer == *DBClusterNotFoundFault* ]]; then
+    echo absent
+  else
+    express_unknown "$1" "$answer"
+  fi
+}
+
+express_unknown() {
+  fail "Could not ask AWS about $1${2:+ ($2)}. Whether it still exists is unknown: scripts/aws.sh status, then down again."
 }
 
 # --db-pool=STORE,LEDGER: the connections each store and each ledger may hold, in place of the
