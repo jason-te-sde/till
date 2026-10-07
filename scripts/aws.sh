@@ -70,6 +70,7 @@ EOF
 terraform() { AWS_CONFIG_FILE="$TERRAFORM_AWS_CONFIG" AWS_PROFILE=till-terraform command terraform "$@"; }
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 fail() {
   printf '\033[31m%s\033[0m\n' "$*" >&2
   exit 1
@@ -224,9 +225,13 @@ express_up() {
     aws rds modify-db-cluster --db-cluster-identifier "$id" --apply-immediately \
       --serverless-v2-scaling-configuration "MinCapacity=$floor,MaxCapacity=4" > /dev/null ||
       fail "Could not set $id's capacity."
-    aws rds modify-db-instance --db-instance-identifier "$instance" --apply-immediately \
-      --enable-performance-insights --performance-insights-retention-period 7 > /dev/null ||
-      fail "Could not turn on Database Insights for $instance."
+    # On the cluster, not its instance: an express cluster keeps Database Insights at the cluster
+    # level, and the instance refuses the setting ("EnablePerformanceInsights conflicts with cluster
+    # level parameter"). Worth a warning rather than a failed up: the run is still a run without it.
+    aws rds modify-db-cluster --db-cluster-identifier "$id" --apply-immediately \
+      --database-insights-mode standard --enable-performance-insights \
+      --performance-insights-retention-period 7 > /dev/null ||
+      warn "Database Insights stays off for $id: the run goes ahead without its per-statement load."
   done
 }
 
