@@ -11,6 +11,17 @@ explicitly not: it is a testing tool and it will change.
 
 ### Added
 
+- **Aurora PostgreSQL through express configuration** (`scripts/aws.sh up --database=aurora-express
+  --database-per-service`, [ADR 17](docs/design/0017-aurora-express.md)), the one kind of Aurora the
+  free plan allows: no VPC, an internet access gateway, IAM tokens and nothing else. The script
+  creates a cluster for each service, `till-express` and `till-store-express`, before the apply —
+  Terraform cannot — holds them at 4 ACU for a load test, turns on Database Insights, and deletes
+  them on `down`. A new module, `till-rds-iam`, is pgjdbc's `AuthenticationPlugin` for IAM: the
+  password of every new connection is a token signed for its host, port and user with the process's
+  own credentials, by the AWS SDK's `RdsUtilities`, locally. Both services take it at runtime; the
+  task role may `rds-db:connect` as `postgres` to exactly those two clusters; the load test's
+  `dbstat` gets a token the script signs for each run. No database password exists for them.
+
 - **A watchdog on the batch worker** ([ADR 16](docs/design/0016-batched-commands.md), "A batch that
   stalls"). Every command waits behind the batch in front of it, and the first load test with
   batching found the worker stopped for six to eight seconds at a time with the database idle. A
