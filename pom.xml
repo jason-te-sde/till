@@ -48,6 +48,7 @@
     <module>till-core</module>
     <module>till-testkit</module>
     <module>till-jdbc</module>
+    <module>till-rds-iam</module>
     <module>till-client</module>
     <module>till-kafka</module>
     <module>till-server</module>
@@ -71,6 +72,7 @@
     <spring-boot.version>4.1.1</spring-boot.version>
     <springdoc.version>3.1.1</springdoc.version>
     <postgresql.version>42.7.13</postgresql.version>
+    <awssdk.version>2.46.7</awssdk.version>
 
     <!-- Spring Boot 4 serialises with Jackson 3 (tools.jackson) and manages Jackson 2 only for the
          things that still need it. springdoc's Swagger dependencies and Flyway want a newer Jackson 2
@@ -132,6 +134,14 @@
         <type>pom</type>
         <scope>import</scope>
       </dependency>
+      <!-- The AWS SDK, for till-rds-iam. It manages only its own artifacts. -->
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>bom</artifactId>
+        <version>${awssdk.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>
         <artifactId>slf4j-api</artifactId>
@@ -157,6 +167,11 @@
       <dependency>
         <groupId>io.github.jason-te-sde</groupId>
         <artifactId>till-jdbc</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.jason-te-sde</groupId>
+        <artifactId>till-rds-iam</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

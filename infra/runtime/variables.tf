@@ -95,8 +95,16 @@ variable "db_instance_class" {
 }
 
 variable "database" {
-  description = "Which PostgreSQL runs: \"rds\" or \"aurora\" (state.tf)."
+  description = "Which PostgreSQL runs: \"rds\", \"aurora\" or \"aurora-express\" (state.tf)."
   type        = string
+}
+
+variable "express_clusters" {
+  description = "With database = \"aurora-express\": the clusters scripts/aws.sh created, \"till\" and \"store\", each its writer endpoint and resource id."
+  type = map(object({
+    endpoint    = string
+    resource_id = string
+  }))
 }
 
 variable "database_per_service" {

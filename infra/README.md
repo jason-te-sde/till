@@ -1,7 +1,7 @@
 # till on AWS
 
 The compose stack, on AWS, for as long as it is needed: Fargate for the four services, RDS for
-PostgreSQL by default (or Aurora PostgreSQL Serverless v2 — [below](#the-database-rds-or-aurora)),
+PostgreSQL by default (or Aurora PostgreSQL — [below](#the-database-rds-or-aurora)),
 ElastiCache for the sessions, Cognito for Keycloak, and CloudFront in front. Terraform describes it;
 `scripts/aws.sh` builds the images, starts it, checks it, and stops it again.
 
@@ -136,6 +136,16 @@ This account is on AWS's free plan, which caps each option on its own terms:
   between connections: `min_capacity = 0` in [`infra/runtime/state.tf`](runtime/state.tf) pauses the
   instance entirely rather than floating at a minimum charge, and it resumes on the next connection
   in about fifteen seconds.
+
+**On this account the second option is refused** — the free plan allows Aurora only as *express
+configuration*, which is the third: `scripts/aws.sh up --database=aurora-express
+--database-per-service` ([ADR 17](../docs/design/0017-aurora-express.md)). An express cluster has no
+VPC: it is reached through its internet access gateway, over TLS, and signs in with IAM tokens and
+nothing else, so the services sign one for every connection with `till-rds-iam` and their task role
+may connect as `postgres` to exactly those clusters. Terraform cannot create one, so the script does
+— `till-express` and `till-store-express`, one a service, before the apply — and `down` deletes them.
+They cost what the second option does, held at 4 ACU for a load test, and the free plan's two
+database instances are all of the account's: none may be RDS beside them.
 
 `scripts/aws.sh loadtest` records which one a run used, and, for Aurora, the
 `ServerlessDatabaseCapacity` CloudWatch metric's maximum alongside the usual database CPU — the ACU

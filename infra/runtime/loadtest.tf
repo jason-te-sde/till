@@ -242,15 +242,19 @@ resource "aws_ecs_task_definition" "dbstat" {
     # Unaligned and tuples only: what it prints is the statement's one value, which is JSON.
     command = ["sh", "-c", "psql -X -q -v ON_ERROR_STOP=1 -P pager=off -A -t -c \"$SQL\""]
 
+    # On an express cluster there is no password to read: scripts/aws.sh signs a token for each run
+    # and hands it in as PGPASSWORD, with the rest of the overrides (ADR 17), and libpq verifies the
+    # gateway's certificate against the image's own roots.
     environment = [for name, value in {
       PGHOST            = local.db_endpoint
-      PGUSER            = "till"
-      PGDATABASE        = "till"
-      PGSSLMODE         = "require"
+      PGUSER            = local.express ? "postgres" : "till"
+      PGDATABASE        = local.express ? "postgres" : "till"
+      PGSSLMODE         = local.express ? "verify-full" : "require"
+      PGSSLROOTCERT     = local.express ? "system" : ""
       PGCONNECT_TIMEOUT = "10"
       SQL               = "select 1"
-    } : { name = name, value = value }]
-    secrets = [{ name = "PGPASSWORD", valueFrom = var.secrets.db_password }]
+    } : { name = name, value = value } if value != ""]
+    secrets = local.express ? [] : [{ name = "PGPASSWORD", valueFrom = var.secrets.db_password }]
 
     logConfiguration = local.logs.loadtest
   }])

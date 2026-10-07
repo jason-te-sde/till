@@ -8,6 +8,7 @@ WORKDIR /src
 COPY pom.xml .
 COPY till-core/pom.xml till-core/
 COPY till-jdbc/pom.xml till-jdbc/
+COPY till-rds-iam/pom.xml till-rds-iam/
 COPY till-testkit/pom.xml till-testkit/
 COPY till-client/pom.xml till-client/
 COPY till-kafka/pom.xml till-kafka/
@@ -20,6 +21,7 @@ RUN mvn -B -ntp -q dependency:go-offline -DexcludeGroupIds=io.github.jason-te-sd
 
 COPY till-core till-core
 COPY till-jdbc till-jdbc
+COPY till-rds-iam till-rds-iam
 COPY till-testkit till-testkit
 COPY till-client till-client
 COPY till-kafka till-kafka

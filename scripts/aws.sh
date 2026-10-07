@@ -9,6 +9,8 @@
 #                  --shards=N to keep each game's stock in N rows instead of the load test's 16,
 #                  --database=aurora to run Aurora PostgreSQL Serverless v2 instead of RDS
 #                  (infra/README.md has what each costs and is limited to on the free plan),
+#                  --database=aurora-express for Aurora created with express configuration, the
+#                  one kind the free plan allows (needs --database-per-service; ADR 17),
 #                  --database-per-service to give the store a PostgreSQL server of its own
 #                  instead of sharing the ledger's (infra/README.md has what a second one costs),
 #                  --db-pool=STORE,LEDGER for the connections each store and each ledger holds
@@ -57,7 +59,9 @@ hold=""
 # minutes and two resource waits to one — and a wait that fails leaves its resource tainted, to be
 # destroyed and created again by the next apply.
 TERRAFORM_AWS_CONFIG=$(mktemp)
-trap 'rm -f "$TERRAFORM_AWS_CONFIG"' EXIT
+# Where express_vars writes the clusters it found, for Terraform; a name Terraform reads as JSON.
+EXPRESS_VARS="${TMPDIR:-/tmp}/till-express-$$.tfvars.json"
+trap 'rm -f "$TERRAFORM_AWS_CONFIG" "$EXPRESS_VARS"' EXIT
 cat > "$TERRAFORM_AWS_CONFIG" << EOF
 [profile till-terraform]
 region = $AWS_REGION
@@ -168,7 +172,112 @@ running_vars() {
   if [[ $database_per_service == true ]]; then
     printf '%s\n' -var database_per_service=true
   fi
+  if express; then
+    express_vars
+  fi
   pool_vars
+}
+
+# Aurora created with express configuration (--database=aurora-express,
+# docs/design/0017-aurora-express.md): the one kind of Aurora the free plan allows, and one Terraform
+# cannot create, so this script does, before the apply, and deletes it after a down. One cluster a
+# service: the free plan allows two database instances in all, RDS's included, and the two services'
+# migrations must not share a database. Named apart from everything Terraform manages, so that
+# deleting them can never take anything else with them.
+EXPRESS_CLUSTERS=(till:till-express store:till-store-express)
+
+express() { [[ $database == aurora-express ]]; }
+
+# The one instance express configuration gives a cluster, once it has it.
+express_instance() {
+  aws rds describe-db-clusters --db-cluster-identifier "$1" --output text \
+    --query 'DBClusters[0].DBClusterMembers[0].DBInstanceIdentifier' 2> /dev/null | grep -v '^None$' || true
+}
+
+# Creates whichever clusters do not exist yet, waits until each and its instance can be used, and
+# sets each the way this deployment wants it: up to the free plan's 4 ACU, held at 4 for a load test
+# so that a run does not measure Serverless v2 scaling up partway through, otherwise free to pause at
+# 0 when nothing is connected; and Database Insights in its free standard mode.
+express_up() {
+  local entry id instance status floor=0
+  [[ $loadtest == true ]] && floor=4
+  for entry in "${EXPRESS_CLUSTERS[@]}"; do
+    id=${entry#*:}
+    aws rds describe-db-clusters --db-cluster-identifier "$id" > /dev/null 2>&1 && continue
+    say "Creating the Aurora cluster $id, with express configuration"
+    aws rds create-db-cluster --db-cluster-identifier "$id" --engine aurora-postgresql \
+      --with-express-configuration > /dev/null || fail "Could not create $id."
+  done
+  for entry in "${EXPRESS_CLUSTERS[@]}"; do
+    id=${entry#*:}
+    for _ in $(seq 1 120); do
+      status=$(aws rds describe-db-clusters --db-cluster-identifier "$id" --query 'DBClusters[0].Status' --output text)
+      instance=$(express_instance "$id")
+      if [[ $status == available && -n $instance ]] &&
+        [[ $(aws rds describe-db-instances --db-instance-identifier "$instance" \
+          --query 'DBInstances[0].DBInstanceStatus' --output text) == available ]]; then
+        break
+      fi
+      sleep 10
+    done
+    [[ $status == available && -n $instance ]] || fail "$id is still $status after twenty minutes."
+    aws rds modify-db-cluster --db-cluster-identifier "$id" --apply-immediately \
+      --serverless-v2-scaling-configuration "MinCapacity=$floor,MaxCapacity=4" > /dev/null ||
+      fail "Could not set $id's capacity."
+    aws rds modify-db-instance --db-instance-identifier "$instance" --apply-immediately \
+      --enable-performance-insights --performance-insights-retention-period 7 > /dev/null ||
+      fail "Could not turn on Database Insights for $instance."
+  done
+}
+
+# Each cluster's writer endpoint and resource id, for Terraform: the endpoint is what the services
+# connect to, and the resource id is what their role's rds-db:connect names.
+express_vars() {
+  local entry key id endpoint resource json='{"express_clusters": {}}'
+  for entry in "${EXPRESS_CLUSTERS[@]}"; do
+    key=${entry%%:*} id=${entry#*:}
+    read -r endpoint resource < <(aws rds describe-db-clusters --db-cluster-identifier "$id" --output text \
+      --query 'DBClusters[0].[Endpoint, DbClusterResourceId]' 2> /dev/null) ||
+      fail "$id does not exist: scripts/aws.sh up --database=aurora-express creates it."
+    json=$(jq --arg key "$key" --arg endpoint "$endpoint" --arg resource "$resource" \
+      '.express_clusters[$key] = {endpoint: $endpoint, resource_id: $resource}' <<< "$json")
+  done
+  printf '%s\n' "$json" > "$EXPRESS_VARS"
+  printf '%s\n' "-var-file=$EXPRESS_VARS"
+}
+
+# Deletes whichever express clusters exist, their instances first, as Aurora requires, and waits until
+# both are gone. Asks nothing: down has already been agreed to.
+express_down() {
+  local entry id instance found=false
+  for entry in "${EXPRESS_CLUSTERS[@]}"; do
+    id=${entry#*:}
+    aws rds describe-db-clusters --db-cluster-identifier "$id" > /dev/null 2>&1 || continue
+    found=true
+    say "Deleting the Aurora cluster $id"
+    for instance in $(aws rds describe-db-clusters --db-cluster-identifier "$id" --output text \
+      --query 'DBClusters[0].DBClusterMembers[].DBInstanceIdentifier'); do
+      aws rds delete-db-instance --db-instance-identifier "$instance" > /dev/null 2>&1 || true
+    done
+  done
+  [[ $found == true ]] || return 0
+  for entry in "${EXPRESS_CLUSTERS[@]}"; do
+    id=${entry#*:}
+    for _ in $(seq 1 120); do
+      [[ -z $(express_instance "$id") ]] && break
+      sleep 10
+    done
+    aws rds delete-db-cluster --db-cluster-identifier "$id" --skip-final-snapshot > /dev/null 2>&1 || true
+  done
+  for entry in "${EXPRESS_CLUSTERS[@]}"; do
+    id=${entry#*:}
+    for _ in $(seq 1 120); do
+      aws rds describe-db-clusters --db-cluster-identifier "$id" > /dev/null 2>&1 || break
+      sleep 10
+    done
+    ! aws rds describe-db-clusters --db-cluster-identifier "$id" > /dev/null 2>&1 ||
+      fail "$id is still there after twenty minutes: aws rds describe-db-clusters --db-cluster-identifier $id"
+  done
 }
 
 # --db-pool=STORE,LEDGER: the connections each store and each ledger may hold, in place of the
@@ -233,7 +342,13 @@ cmd_up() {
   init
   same_database
   same_layout
+  if express && [[ $database_per_service != true ]]; then
+    fail "--database=aurora-express needs --database-per-service: a cluster for each service, the free plan's two database instances."
+  fi
   push_images "$tag"
+  if express; then
+    express_up
+  fi
 
   local vars=()
   while read -r line; do vars+=("$line"); done < <(running_vars "$tag")
@@ -280,6 +395,7 @@ cmd_down() {
   started=$(date +%s)
   say "Stopping: the load balancer, CloudFront, the database, the cache and the containers go"
   apply infra "Stop it?" -var running=false -var "kafka_version=$(kafka_version)"
+  express_down
   say "Stopped in $(elapsed "$started")"
   cmd_status
 }
@@ -344,6 +460,8 @@ cmd_status() {
     --query "VpcOriginList.Items[?Name=='till-edge'].Status"
   probe "load balancer" elbv2 describe-load-balancers --names till --output text \
     --query 'LoadBalancers[0].State.Code'
+  probe "Aurora, express" rds describe-db-clusters --output text \
+    --query "DBClusters[?ends_with(DBClusterIdentifier, '-express')].join(':', [DBClusterIdentifier, Status])"
   probe "database" rds describe-db-instances --db-instance-identifier till --output text \
     --query 'DBInstances[0].[DBInstanceClass, DBInstanceStatus]'
   probe "cache" elasticache describe-replication-groups --replication-group-id till-sessions --output text \
@@ -410,12 +528,22 @@ run_once() {
 # ledger is on (loadtest.tf's dbstat task, local.db_endpoint) — every call before database_per_service
 # existed, and still every call that does not pass one. With database_per_service, cmd_loadtest passes
 # the store's own server's address (the loadgen output's store_db_host) to ask it the same questions.
+#
+# On an express cluster (ADR 17) the login is an IAM token, signed here for the host this run asks —
+# good for fifteen minutes, and handed in as the run's PGPASSWORD, since the task has no password to
+# read. The identity running this script needs rds-db:connect, as the deploy identity has.
 dbstat() {
-  local loadgen="$1" sql="$2" pghost="${3:-}" log overrides
+  local loadgen="$1" sql="$2" pghost="${3:-}" log overrides token=""
   log=$(mktemp)
-  overrides=$(jq -nc --arg sql "$sql" --arg pghost "$pghost" '
+  if [[ $(output database) == aurora-express ]]; then
+    token=$(aws rds generate-db-auth-token --hostname "${pghost:-$(jq -r .db_host <<< "$loadgen")}" \
+      --port 5432 --username postgres) || fail "Could not sign a token to ask the database."
+  fi
+  overrides=$(jq -nc --arg sql "$sql" --arg pghost "$pghost" --arg token "$token" '
     {containerOverrides: [{name: "dbstat", environment:
-      ([{name: "SQL", value: $sql}] + (if $pghost == "" then [] else [{name: "PGHOST", value: $pghost}] end))}]}')
+      ([{name: "SQL", value: $sql}]
+        + (if $pghost == "" then [] else [{name: "PGHOST", value: $pghost}] end)
+        + (if $token == "" then [] else [{name: "PGPASSWORD", value: $token}] end))}]}')
   run_once "$(jq -r .dbstat_task_definition <<< "$loadgen")" "$(jq -r .dbstat_security_group <<< "$loadgen")" \
     "$(jq -r '.subnets | join(",")' <<< "$loadgen")" "$overrides" "$log" dbstat
   [[ $task_exit == 0 ]] || fail "psql failed ($task_reason, exit $task_exit): $(tail -3 "$log")"
@@ -521,7 +649,11 @@ cmd_loadtest() {
 
   # Nothing is written until everything is known, and a CloudWatch that cannot be read costs the
   # CloudWatch figures only: the run's own result is saved regardless.
-  cloudwatch=$(server_side "$result") || cloudwatch=null
+  local db_instance=till store_db_instance=till-store
+  if [[ $database == aurora-express ]]; then
+    db_instance=$(express_instance till-express) store_db_instance=$(express_instance till-store-express)
+  fi
+  cloudwatch=$(server_side "$result" "$db_instance" "$store_db_instance") || cloudwatch=null
   jq -e . <<< "$cloudwatch" > /dev/null 2>&1 || cloudwatch=null
   file="till-loadtest/results/$(date -u +%Y%m%dT%H%M%SZ).json"
   mkdir -p till-loadtest/results
@@ -598,13 +730,13 @@ print(json.dumps(answer))'
 # What the load balancer, the database and the containers said about the steady window, from
 # CloudWatch, as a check on the load generator's own figures.
 server_side() {
-  local result="$1" balancer
+  local result="$1" db_instance="$2" store_db_instance="$3" balancer
   balancer=$(aws elbv2 describe-load-balancers --names till --query 'LoadBalancers[0].LoadBalancerArn' --output text)
   # The last minute of the window reaches CloudWatch a minute or two after it ends.
   sleep 90
-  python3 - "$result" "${balancer#*:loadbalancer/}" << 'PY' > "${TMPDIR:-/tmp}/till-metrics.json"
+  python3 - "$result" "${balancer#*:loadbalancer/}" "$db_instance" "$store_db_instance" << 'PY' > "${TMPDIR:-/tmp}/till-metrics.json"
 import datetime, json, sys
-result, balancer = json.loads(sys.argv[1]), sys.argv[2]
+result, balancer, db_instance, store_db_instance = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 # The steady window as the load generator measured it, whole minutes of it: CloudWatch's are minutes.
 parse = lambda text: datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
 start, end = parse(result["window"]["from"]), parse(result["window"]["to"])
@@ -625,17 +757,17 @@ queries = [
     stat("alb_target_p99", "AWS/ApplicationELB", "TargetResponseTime", alb, "p99", length),
     stat("alb_target_5xx", "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", alb, "Sum"),
     stat("alb_own_5xx", "AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", alb, "Sum"),
-    stat("db_cpu_max", "AWS/RDS", "CPUUtilization", {"DBInstanceIdentifier": "till"}, "Maximum"),
+    stat("db_cpu_max", "AWS/RDS", "CPUUtilization", {"DBInstanceIdentifier": db_instance}, "Maximum"),
     # Empty when it is RDS: the metric only exists for Aurora, and CloudWatch returns no data points
     # for a dimension value that does not rather than an error. Dimensioned by DBInstanceIdentifier,
     # not DBClusterIdentifier, the same as CPUUtilization above — AWS's own example for this metric
     # queries it that way (infra/runtime/state.tf has the link).
-    stat("db_acu_max", "AWS/RDS", "ServerlessDatabaseCapacity", {"DBInstanceIdentifier": "till"}, "Maximum"),
+    stat("db_acu_max", "AWS/RDS", "ServerlessDatabaseCapacity", {"DBInstanceIdentifier": db_instance}, "Maximum"),
     # Empty on a shared deployment: "till-store" (infra/runtime/state.tf) exists only with
     # database_per_service, and the same "no data points for a dimension that does not exist" as
     # db_acu_max above is what makes asking unconditionally safe either way.
-    stat("store_db_cpu_max", "AWS/RDS", "CPUUtilization", {"DBInstanceIdentifier": "till-store"}, "Maximum"),
-    stat("store_db_acu_max", "AWS/RDS", "ServerlessDatabaseCapacity", {"DBInstanceIdentifier": "till-store"}, "Maximum"),
+    stat("store_db_cpu_max", "AWS/RDS", "CPUUtilization", {"DBInstanceIdentifier": store_db_instance}, "Maximum"),
+    stat("store_db_acu_max", "AWS/RDS", "ServerlessDatabaseCapacity", {"DBInstanceIdentifier": store_db_instance}, "Maximum"),
 ] + [stat(f"{service.replace('-', '_')}_cpu_max", "AWS/ECS", "CPUUtilization", {"ClusterName": "till", "ServiceName": service}, "Maximum")
      for service in ("edge", "store", "ledger", "kafka-1", "kafka-2", "kafka-3")]
 print(json.dumps({"MetricDataQueries": queries, "StartTime": start.isoformat(), "EndTime": end.isoformat()}))
