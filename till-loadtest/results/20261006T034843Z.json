@@ -1,0 +1,341 @@
+{
+  "commit": "bdc6370ff381",
+  "exit_code": 0,
+  "store_catalogue_cache": true,
+  "stock_shards": 16,
+  "database": "rds",
+  "database_per_service": true,
+  "db_pool": {
+    "ledger": 16,
+    "store": 8
+  },
+  "k6": {
+    "window": {
+      "from": "2026-10-06T03:43:23.433Z",
+      "to": "2026-10-06T03:44:23.433Z"
+    },
+    "shoppers": 100,
+    "concurrent_max": 100,
+    "steady_seconds": 60,
+    "requests": 2768,
+    "requests_per_second": 46.1,
+    "latency_ms": {
+      "p50": 1.8,
+      "p95": 31.9,
+      "p99": 49.2,
+      "max": 310.8
+    },
+    "p99_ms_by_class": {
+      "page": 1.7,
+      "session": 39.6,
+      "catalogue": 7.8,
+      "search": 29.1,
+      "signin": 76.8,
+      "order": 121.2
+    },
+    "unexpected_rate": 0,
+    "per_second": {
+      "orders_placed": 2,
+      "orders_paid": 1.8,
+      "orders_cancelled": 0.2,
+      "refusals": 0,
+      "sign_ins": 1.1
+    },
+    "targets": {
+      "p99_under_1s": true,
+      "errors_under_0_1_percent": true
+    }
+  },
+  "catalogue_reads": {
+    "cache": {
+      "reads": 0,
+      "mean_ms": null
+    },
+    "database": {
+      "reads": 0,
+      "mean_ms": null
+    },
+    "mean_ms": null,
+    "store_minutes": 0
+  },
+  "cloudwatch": {
+    "window_seconds": 120,
+    "alb_requests_per_second": 34.8,
+    "alb_target_p99_ms": 60,
+    "alb_target_5xx": 0,
+    "alb_own_5xx": 0,
+    "db_cpu_max_percent": 4.7,
+    "db_acu_max_capacity": null,
+    "store_db_cpu_max_percent": 6,
+    "store_db_acu_max_capacity": null,
+    "edge_cpu_max_percent": 1.3,
+    "store_cpu_max_percent": 27.8,
+    "ledger_cpu_max_percent": 3.6,
+    "kafka_1_cpu_max_percent": 29.5,
+    "kafka_2_cpu_max_percent": 29.9,
+    "kafka_3_cpu_max_percent": 37.3
+  },
+  "database_top_statements": [
+    {
+      "db": "till",
+      "rows": 94,
+      "calls": 94,
+      "query": "select pg_logical_emit_message($1, $2, $3, $4)",
+      "mean_ms": 3.23,
+      "total_ms": 303
+    },
+    {
+      "db": "till",
+      "rows": 352,
+      "calls": 352,
+      "query": "select till_apply(put_sku => $1, put_shard => $2, put_on_hand => $3, put_reserved => $4, put_version => $5, put_new_version => $6, set_id => $7, set_state => $8, set_version => $9, insert_id => $10, insert_key => $11, insert_state => $12, i",
+      "mean_ms": 0.59,
+      "total_ms": 207
+    },
+    {
+      "db": "till",
+      "rows": 7766,
+      "calls": 352,
+      "query": "with target_lines as ( select reservation_id, sku, shard, quantity from till_reservation_line where reservation_id = any($1::varchar[])) select $5 as kind, idem_key::text as text1, fingerprint::text as text2, outcome::text as text3, $6::int",
+      "mean_ms": 0.21,
+      "total_ms": 75
+    },
+    {
+      "db": "till",
+      "rows": 2,
+      "calls": 1,
+      "query": "SELECT E.NAME, X.EXTVERSION, X.EXTVERSION=E.DEFAULT_VERSION IS_DEFAULT_VERSION FROM PG_CATALOG.PG_AVAILABLE_EXTENSIONS() E INNER JOIN PG_EXTENSION X ON (E.NAME=X.EXTNAME)",
+      "mean_ms": 56.74,
+      "total_ms": 57
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 2,
+      "calls": 274,
+      "query": "select pid, usename, client_addr, client_hostname, wait_event_type, wait_event_type || $1 || wait_event as wait_event, query, datname, application_name, backend_type, trunc(extract($2 from backend_start))::integer as backend_start, query_id",
+      "mean_ms": 0.10,
+      "total_ms": 28
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 3,
+      "calls": 1,
+      "query": "SELECT DATNAME, LARGEST_DB_BYTES, ALL_DB_BYTES, OLDEST_XACT_SEC, OLDEST_XACT_XID FROM ( SELECT DATNAME, DATALLOWCONN, CONNECTIONS, BYTES ,MAX(BYTES) OVER () LARGEST_DB_BYTES ,SUM(BYTES) OVER () ALL_DB_BYTES ,MAX(SEC) OVER () OLDEST_XACT_SEC",
+      "mean_ms": 14.26,
+      "total_ms": 14
+    },
+    {
+      "db": "till",
+      "rows": 352,
+      "calls": 94,
+      "query": "update till_outbox set published_at = $1 where sequence = any($2) and published_at is null",
+      "mean_ms": 0.12,
+      "total_ms": 11
+    },
+    {
+      "db": "till",
+      "rows": 352,
+      "calls": 272,
+      "query": "select sequence, payload, recorded_at from till_outbox where published_at is null order by sequence limit $1",
+      "mean_ms": 0.04,
+      "total_ms": 11
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 0,
+      "calls": 760,
+      "query": "SET statement_timeout=10000",
+      "mean_ms": 0.01,
+      "total_ms": 9
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 1180,
+      "calls": 4,
+      "query": "SELECT name,setting FROM pg_settings where vartype in ($1,$2 ,$3)",
+      "mean_ms": 1.75,
+      "total_ms": 7
+    },
+    {
+      "db": "postgres",
+      "rows": 1,
+      "calls": 1,
+      "query": "SELECT E.NAME, X.EXTVERSION, X.EXTVERSION=E.DEFAULT_VERSION IS_DEFAULT_VERSION FROM PG_CATALOG.PG_AVAILABLE_EXTENSIONS() E INNER JOIN PG_EXTENSION X ON (E.NAME=X.EXTNAME)",
+      "mean_ms": 2.78,
+      "total_ms": 3
+    },
+    {
+      "db": "template1",
+      "rows": 1,
+      "calls": 1,
+      "query": "SELECT E.NAME, X.EXTVERSION, X.EXTVERSION=E.DEFAULT_VERSION IS_DEFAULT_VERSION FROM PG_CATALOG.PG_AVAILABLE_EXTENSIONS() E INNER JOIN PG_EXTENSION X ON (E.NAME=X.EXTNAME)",
+      "mean_ms": 2.31,
+      "total_ms": 2
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 493,
+      "calls": 493,
+      "query": "SELECT $1",
+      "mean_ms": 0.00,
+      "total_ms": 2
+    },
+    {
+      "db": "till",
+      "rows": 272,
+      "calls": 272,
+      "query": "select pg_try_advisory_xact_lock($1)",
+      "mean_ms": 0.01,
+      "total_ms": 2
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 5,
+      "calls": 5,
+      "query": "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2",
+      "mean_ms": 0.39,
+      "total_ms": 2
+    },
+    {
+      "db": "store",
+      "rows": 1,
+      "calls": 1,
+      "query": "SELECT E.NAME, X.EXTVERSION, X.EXTVERSION=E.DEFAULT_VERSION IS_DEFAULT_VERSION FROM PG_CATALOG.PG_AVAILABLE_EXTENSIONS() E INNER JOIN PG_EXTENSION X ON (E.NAME=X.EXTNAME)",
+      "mean_ms": 60.20,
+      "total_ms": 60
+    },
+    {
+      "db": "store",
+      "rows": 460,
+      "calls": 460,
+      "query": "insert into store_availability (sku, on_hand, reserved, available, updated_at) values ($1, $2, $3, $4, $5) on conflict (sku) do update set on_hand = store_availability.on_hand + excluded.on_hand, reserved = store_availability.reserved + exc",
+      "mean_ms": 0.08,
+      "total_ms": 38
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 1,
+      "calls": 278,
+      "query": "select pid, usename, client_addr, client_hostname, wait_event_type, wait_event_type || $1 || wait_event as wait_event, query, datname, application_name, backend_type, trunc(extract($2 from backend_start))::integer as backend_start, query_id",
+      "mean_ms": 0.11,
+      "total_ms": 32
+    },
+    {
+      "db": "store",
+      "rows": 230,
+      "calls": 230,
+      "query": "insert into store_order_line (order_id, sku, title, unit_price_cents, quantity) values ($1, $2, $3, $4, $5)",
+      "mean_ms": 0.14,
+      "total_ms": 32
+    },
+    {
+      "db": "store",
+      "rows": 3110,
+      "calls": 622,
+      "query": "select sku, on_hand, reserved, available, updated_at from store_availability where sku in ($1, $2, $3, $4, $5)",
+      "mean_ms": 0.05,
+      "total_ms": 28
+    },
+    {
+      "db": "store",
+      "rows": 352,
+      "calls": 352,
+      "query": "insert into store_consumed_event (dedupe_key, sequence, consumed_at) values ($1, $2, $3) on conflict (dedupe_key) do nothing",
+      "mean_ms": 0.08,
+      "total_ms": 28
+    },
+    {
+      "db": "store",
+      "rows": 176,
+      "calls": 176,
+      "query": "insert into store_order (id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (customer, idem_key) do nothing",
+      "mean_ms": 0.14,
+      "total_ms": 25
+    },
+    {
+      "db": "store",
+      "rows": 176,
+      "calls": 176,
+      "query": "update store_order set status = $1, closed_at = $2 where id = $3 and status = $4",
+      "mean_ms": 0.12,
+      "total_ms": 21
+    },
+    {
+      "db": "store",
+      "rows": 210,
+      "calls": 210,
+      "query": "insert into store_sales_daily (sku, day, units) values ($1, $2, $3) on conflict (sku, day) do update set units = store_sales_daily.units + excluded.units",
+      "mean_ms": 0.09,
+      "total_ms": 18
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 4,
+      "calls": 1,
+      "query": "SELECT DATNAME, LARGEST_DB_BYTES, ALL_DB_BYTES, OLDEST_XACT_SEC, OLDEST_XACT_XID FROM ( SELECT DATNAME, DATALLOWCONN, CONNECTIONS, BYTES ,MAX(BYTES) OVER () LARGEST_DB_BYTES ,SUM(BYTES) OVER () ALL_DB_BYTES ,MAX(SEC) OVER () OLDEST_XACT_SEC",
+      "mean_ms": 16.55,
+      "total_ms": 17
+    },
+    {
+      "db": "store",
+      "rows": 690,
+      "calls": 528,
+      "query": "select order_id, sku, title, unit_price_cents, quantity from store_order_line where order_id in ($1) order by order_id, sku",
+      "mean_ms": 0.03,
+      "total_ms": 16
+    },
+    {
+      "db": "store",
+      "rows": 172,
+      "calls": 128,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank, count(*) over () as total, ts_rank_cd(g.search, websearch_to_tsquery($7, $1)) ",
+      "mean_ms": 0.11,
+      "total_ms": 14
+    },
+    {
+      "db": "store",
+      "rows": 176,
+      "calls": 352,
+      "query": "select id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at from store_order where customer = $1 and idem_key = $2",
+      "mean_ms": 0.04,
+      "total_ms": 13
+    },
+    {
+      "db": "store",
+      "rows": 352,
+      "calls": 352,
+      "query": "select id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at from store_order where id = $1 and customer = $2",
+      "mean_ms": 0.04,
+      "total_ms": 13
+    },
+    {
+      "db": "store",
+      "rows": 398,
+      "calls": 398,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank from store_game g where g.sku = $1",
+      "mean_ms": 0.03,
+      "total_ms": 12
+    }
+  ],
+  "database_transactions": {
+    "till": {
+      "commits": 1472,
+      "rollbacks": 0
+    },
+    "store": {
+      "commits": 4848,
+      "rollbacks": 0
+    }
+  },
+  "reservations": {
+    "before": {},
+    "after": {
+      "RELEASED": 16,
+      "COMMITTED": 160
+    }
+  },
+  "stock_rows": {
+    "rows": 512,
+    "skus": 32
+  }
+}

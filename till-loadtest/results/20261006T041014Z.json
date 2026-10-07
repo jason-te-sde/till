@@ -1,0 +1,345 @@
+{
+  "commit": "bdc6370ff381",
+  "exit_code": 99,
+  "store_catalogue_cache": true,
+  "stock_shards": 16,
+  "database": "rds",
+  "database_per_service": true,
+  "db_pool": {
+    "ledger": 16,
+    "store": 8
+  },
+  "k6": {
+    "window": {
+      "from": "2026-10-06T03:55:51.593Z",
+      "to": "2026-10-06T04:05:51.593Z"
+    },
+    "shoppers": 8000,
+    "concurrent_max": 8000,
+    "steady_seconds": 600,
+    "requests": 2074982,
+    "requests_per_second": 3458.3,
+    "latency_ms": {
+      "p50": 1.5,
+      "p95": 18.9,
+      "p99": 750.8,
+      "max": 5658.1
+    },
+    "p99_ms_by_class": {
+      "page": 0.7,
+      "session": 150,
+      "catalogue": 109.5,
+      "search": 99.8,
+      "signin": 353.3,
+      "order": 5006.8
+    },
+    "unexpected_rate": 0.0010404909536564655,
+    "per_second": {
+      "orders_placed": 146.5,
+      "orders_paid": 131,
+      "orders_cancelled": 14.5,
+      "refusals": 0,
+      "sign_ins": 2.4
+    },
+    "targets": {
+      "p99_under_1s": true,
+      "errors_under_0_1_percent": false
+    }
+  },
+  "catalogue_reads": {
+    "cache": {
+      "reads": 25141,
+      "mean_ms": 0.8
+    },
+    "database": {
+      "reads": 1064,
+      "mean_ms": 52.23
+    },
+    "mean_ms": 2.89,
+    "store_minutes": 36
+  },
+  "cloudwatch": {
+    "window_seconds": 540,
+    "alb_requests_per_second": 3463.8,
+    "alb_target_p99_ms": 430,
+    "alb_target_5xx": 1835,
+    "alb_own_5xx": 0,
+    "db_cpu_max_percent": 31.3,
+    "db_acu_max_capacity": null,
+    "store_db_cpu_max_percent": 44,
+    "store_db_acu_max_capacity": null,
+    "edge_cpu_max_percent": 25.1,
+    "store_cpu_max_percent": 81.6,
+    "ledger_cpu_max_percent": 14,
+    "kafka_1_cpu_max_percent": 28.5,
+    "kafka_2_cpu_max_percent": 27.9,
+    "kafka_3_cpu_max_percent": 34.4
+  },
+  "database_top_statements": [
+    {
+      "db": "till",
+      "rows": 147682,
+      "calls": 147682,
+      "query": "select till_apply(put_sku => $1, put_shard => $2, put_on_hand => $3, put_reserved => $4, put_version => $5, put_new_version => $6, set_id => $7, set_state => $8, set_version => $9, insert_id => $10, insert_key => $11, insert_state => $12, i",
+      "mean_ms": 0.91,
+      "total_ms": 134518
+    },
+    {
+      "db": "till",
+      "rows": 4550574,
+      "calls": 147683,
+      "query": "with target_lines as ( select reservation_id, sku, shard, quantity from till_reservation_line where reservation_id = any($1::varchar[])) select $5 as kind, idem_key::text as text1, fingerprint::text as text2, outcome::text as text3, $6::int",
+      "mean_ms": 0.34,
+      "total_ms": 50450
+    },
+    {
+      "db": "till",
+      "rows": 226818,
+      "calls": 886,
+      "query": "update till_outbox set published_at = $1 where sequence = any($2) and published_at is null",
+      "mean_ms": 13.86,
+      "total_ms": 12282
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 474,
+      "calls": 1068,
+      "query": "select pid, usename, client_addr, client_hostname, wait_event_type, wait_event_type || $1 || wait_event as wait_event, query, datname, application_name, backend_type, trunc(extract($2 from backend_start))::integer as backend_start, query_id",
+      "mean_ms": 8.68,
+      "total_ms": 9275
+    },
+    {
+      "db": "till",
+      "rows": 226818,
+      "calls": 1052,
+      "query": "select sequence, payload, recorded_at from till_outbox where published_at is null order by sequence limit $1",
+      "mean_ms": 7.44,
+      "total_ms": 7829
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 0,
+      "calls": 3069,
+      "query": "SET statement_timeout=10000",
+      "mean_ms": 1.16,
+      "total_ms": 3568
+    },
+    {
+      "db": "till",
+      "rows": 886,
+      "calls": 886,
+      "query": "select pg_logical_emit_message(false, 'till.outbox', '', true)",
+      "mean_ms": 2.01,
+      "total_ms": 1777
+    },
+    {
+      "db": "till",
+      "rows": 1052,
+      "calls": 1052,
+      "query": "select pg_try_advisory_xact_lock($1)",
+      "mean_ms": 0.49,
+      "total_ms": 514
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 1985,
+      "calls": 1985,
+      "query": "SELECT $1",
+      "mean_ms": 0.24,
+      "total_ms": 483
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 214,
+      "query": "set transaction isolation level repeatable read, read only",
+      "mean_ms": 1.73,
+      "total_ms": 371
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 0,
+      "calls": 3106,
+      "query": "BEGIN",
+      "mean_ms": 0.11,
+      "total_ms": 327
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 0,
+      "calls": 3095,
+      "query": "COMMIT",
+      "mean_ms": 0.10,
+      "total_ms": 320
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 5310,
+      "calls": 18,
+      "query": "SELECT name,setting FROM pg_settings where vartype in ($1,$2 ,$3)",
+      "mean_ms": 15.57,
+      "total_ms": 280
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 1266,
+      "query": "BEGIN",
+      "mean_ms": 0.18,
+      "total_ms": 222
+    },
+    {
+      "db": "till",
+      "rows": 0,
+      "calls": 214,
+      "query": "select id, idem_key, state, created_at, expires_at, version from till_reservation where state = 'HELD' and expires_at <= $1 order by id collate \"C\" limit $2",
+      "mean_ms": 0.97,
+      "total_ms": 208
+    },
+    {
+      "db": "store",
+      "rows": 112777,
+      "calls": 112777,
+      "query": "insert into store_order (id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (customer, idem_key) do nothing",
+      "mean_ms": 0.64,
+      "total_ms": 71813
+    },
+    {
+      "db": "store",
+      "rows": 292855,
+      "calls": 292855,
+      "query": "insert into store_availability (sku, on_hand, reserved, available, updated_at) values ($1, $2, $3, $4, $5) on conflict (sku) do update set on_hand = store_availability.on_hand + excluded.on_hand, reserved = store_availability.reserved + exc",
+      "mean_ms": 0.21,
+      "total_ms": 61410
+    },
+    {
+      "db": "store",
+      "rows": 111873,
+      "calls": 111873,
+      "query": "update store_order set status = $1, closed_at = $2 where id = $3 and status = 'PENDING'",
+      "mean_ms": 0.54,
+      "total_ms": 60869
+    },
+    {
+      "db": "store",
+      "rows": 145602,
+      "calls": 145602,
+      "query": "insert into store_order_line (order_id, sku, title, unit_price_cents, quantity) values ($1, $2, $3, $4, $5)",
+      "mean_ms": 0.37,
+      "total_ms": 54400
+    },
+    {
+      "db": "store",
+      "rows": 226818,
+      "calls": 226818,
+      "query": "insert into store_consumed_event (dedupe_key, sequence, consumed_at) values ($1, $2, $3) on conflict (dedupe_key) do nothing",
+      "mean_ms": 0.11,
+      "total_ms": 26048
+    },
+    {
+      "db": "store",
+      "rows": 130712,
+      "calls": 130712,
+      "query": "insert into store_sales_daily (sku, day, units) values ($1, $2, $3) on conflict (sku, day) do update set units = store_sales_daily.units + excluded.units",
+      "mean_ms": 0.17,
+      "total_ms": 21878
+    },
+    {
+      "db": "store",
+      "rows": 112777,
+      "calls": 227326,
+      "query": "select id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at from store_order where customer = $1 and idem_key = $2",
+      "mean_ms": 0.08,
+      "total_ms": 18488
+    },
+    {
+      "db": "store",
+      "rows": 224615,
+      "calls": 224615,
+      "query": "select id, customer, idem_key, reservation_id, status, total_cents, currency, created_at, expires_at, closed_at from store_order where id = $1 and customer = $2",
+      "mean_ms": 0.08,
+      "total_ms": 17712
+    },
+    {
+      "db": "store",
+      "rows": 240504,
+      "calls": 240504,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank from store_game g where g.sku in ($1)",
+      "mean_ms": 0.07,
+      "total_ms": 16175
+    },
+    {
+      "db": "store",
+      "rows": 435611,
+      "calls": 337392,
+      "query": "select order_id, sku, title, unit_price_cents, quantity from store_order_line where order_id in ($1) order by order_id, sku",
+      "mean_ms": 0.04,
+      "total_ms": 14227
+    },
+    {
+      "db": "rdsadmin",
+      "rows": 1527,
+      "calls": 1094,
+      "query": "select pid, usename, client_addr, client_hostname, wait_event_type, wait_event_type || $1 || wait_event as wait_event, query, datname, application_name, backend_type, trunc(extract($2 from backend_start))::integer as backend_start, query_id",
+      "mean_ms": 9.10,
+      "total_ms": 9960
+    },
+    {
+      "db": "store",
+      "rows": 197516,
+      "calls": 98758,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank from store_game g where g.sku in ($1, $2)",
+      "mean_ms": 0.09,
+      "total_ms": 8534
+    },
+    {
+      "db": "store",
+      "rows": 638,
+      "calls": 112511,
+      "query": "update store_order set status = $1, closed_at = $2 where reservation_id = $3 and status = 'PENDING'",
+      "mean_ms": 0.04,
+      "total_ms": 4229
+    },
+    {
+      "db": "store",
+      "rows": 1501,
+      "calls": 1147,
+      "query": "select g.sku, g.title, g.studio, g.genre, g.price_cents, g.list_price_cents, g.released_on, g.cover, g.blurb, g.description, g.features, g.tags, g.featured_rank, count(*) over () as total, ts_rank_cd(g.search, websearch_to_tsquery('english'",
+      "mean_ms": 3.18,
+      "total_ms": 3648
+    },
+    {
+      "db": "store",
+      "rows": 0,
+      "calls": 339595,
+      "query": "BEGIN",
+      "mean_ms": 0.01,
+      "total_ms": 3290
+    }
+  ],
+  "database_transactions": {
+    "till": {
+      "commits": 298741,
+      "rollbacks": 0
+    },
+    "store": {
+      "commits": 1624183,
+      "rollbacks": 0
+    }
+  },
+  "reservations": {
+    "before": {
+      "RELEASED": 16,
+      "COMMITTED": 160
+    },
+    "after": {
+      "HELD": 1796,
+      "RELEASED": 11227,
+      "COMMITTED": 101460
+    }
+  },
+  "stock_rows": {
+    "rows": 512,
+    "skus": 32
+  }
+}
