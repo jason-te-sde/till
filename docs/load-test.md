@@ -87,13 +87,16 @@ A figure of its own, measured the same way every time:
 
 `scripts/aws.sh up --loadtest --database=aurora` runs the same protocol against Aurora PostgreSQL
 Serverless v2 instead of RDS — nothing else in [the sizes](../infra/loadtest.tfvars) or the protocol
-changes. The free plan caps it at 4 ACU and 1 GiB of storage per cluster
+changes. The free plan refuses that kind of Aurora; the kind it allows, express configuration, is
+`--database=aurora-express --database-per-service` ([ADR 17](design/0017-aurora-express.md)): a
+cluster for each service, held at 4 ACU for the run, reached through its internet access gateway and
+signed in with IAM tokens. Either way the free plan caps a cluster at 4 ACU and 1 GiB of storage
 ([infra/README.md](../infra/README.md) has what that costs).
 
 Record the same figures as any other run, plus `database` and, from the saved result's
 `cloudwatch.db_acu_max_capacity` (`ServerlessDatabaseCapacity`), whether the run pinned the 4 ACU
 ceiling for its whole window — the Aurora equivalent of the 98% CPU the `db.t4g.micro` runs below
-were at throughout. No run against Aurora has been recorded yet.
+were at throughout. [The first run on it](#7-october-aurora) is below.
 
 ## With the store on a server of its own
 
@@ -163,6 +166,7 @@ requests.
 | [6 Oct 2026, commands decided together](../till-loadtest/results/20261006T010706Z.json) | `cbc1a23` | the same; the commands waiting for the ledger decided in one load and written in one call, by one ledger task with the two vCPUs two had | 8,000 | 3,460 | **844 ms** | 0.17% | 147.0 | **met**: throughput, latency; **missed**: errors |
 | [6 Oct 2026, with a watchdog](../till-loadtest/results/20261006T041014Z.json) | `bdc6370` | the same; the batch worker watched, and every collection and safepoint logged | 8,000 | 3,458 | **751 ms** | 0.10% | 146.5 | **met**: throughput, latency; **missed**: errors |
 | [7 Oct 2026, four connections](../till-loadtest/results/20261007T070402Z.json) | `bdc6370` | the same, the ledger holding four connections instead of sixteen | 8,000 | 3,473 | **404 ms** | 0.08% | 148.7 | **met**: throughput, latency, errors |
+| [7 Oct 2026, Aurora](../till-loadtest/results/20261007T213235Z.json) | `000bab9` | the same, each service on an Aurora PostgreSQL cluster of its own, created with express configuration and held at 4 ACU | 8,000 | 3,498 | **134 ms** | 0.04% | 150.9 | **met**: throughput, latency, errors |
 
 ### 30 September: the first run
 
@@ -478,3 +482,31 @@ in the steady window against 20, 48 seconds of them against 55, the longest 7.9 
 the unexpected responses are the store's own pool, eight connections a task, refusing new orders
 after two seconds' wait. The free plan allows no RDS class with more memory than this one; Aurora at
 its 4 ACU has about eight times as much.
+
+### 7 October: Aurora
+
+One run, the last one's sizes and four ledger connections, with each service on an Aurora PostgreSQL
+cluster of its own — express configuration, the one kind the free plan allows, held at 4 ACU,
+reached through its internet access gateway and signed in with IAM tokens
+([ADR 17](design/0017-aurora-express.md)) — in place of a `db.t4g.micro`.
+
+| | Four connections, on RDS | **On Aurora** |
+| --- | ---: | ---: |
+| Requests a second | 3,473 | 3,498 |
+| p95 / p99 | 17 ms / 404 ms | 49 ms / **134 ms** |
+| The slowest request | 6.4 s | 1.4 s |
+| The order class's p99 | 4.8 s | **295 ms** |
+| Unexpected responses | 0.08% | 0.04% |
+| 5xx from the targets, at the load balancer | 1,588 | 0 |
+| Orders placed, paid, a second | 148.7, 133.0 | 150.9, 135.7 |
+| The ledger's transactions rolled back | 0 | 0 |
+| Its database: CPU (maximum), capacity | 30.6% of two vCPUs | 100% of 4 ACU |
+
+Every class's p99 is under 300 ms, the order class's included, and the load balancer saw no 5xx
+from the services at all: the stalls the micro's swapping caused are gone with the micro. Four ACU
+is about eight gigabytes of memory to its one. The p95 is higher, 49 ms against 17 — most likely the
+round trips to the databases, which now leave the VPC for the gateway and come back; nothing here
+measured them apart. And the clusters ran at their ceiling: both reached 100% of their 4 ACU, which
+is all the free plan allows, so this is the most the deployment holds as it stands, not a load it
+carries with room to spare.
+
