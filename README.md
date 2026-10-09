@@ -1,11 +1,14 @@
 <h1 align="center">till</h1>
 
 <p align="center">
-  A game store that cannot oversell.<br>
-  A React storefront and operator console on a Spring Boot backend-for-frontend with OpenID Connect
-  sign-in — and, deciding every sale, a reservation ledger whose rules are a pure function, tested by a
-  deterministic concurrency simulator, with a transactional outbox to Kafka and an idempotent consumer
-  on the other end.
+  <b>A full-stack game store that serves 8,000 concurrent shoppers on AWS at a p99 of 134 ms —<br>
+  and whose inventory ledger cannot oversell.</b>
+</p>
+
+<p align="center">
+  React storefront and operator console · Spring Boot backend-for-frontend with OpenID Connect ·
+  a reservation ledger whose rules are a pure function · Kafka through a transactional outbox ·
+  Redis · nginx · PostgreSQL and Aurora · Terraform on ECS Fargate
 </p>
 
 <p align="center">
@@ -13,11 +16,33 @@
     <img alt="CI" src="https://github.com/jason-te-sde/till/actions/workflows/ci.yml/badge.svg">
   </a>
   <img alt="Java 21" src="https://img.shields.io/badge/Java-21%2B-orange">
+  <img alt="Spring Boot 4" src="https://img.shields.io/badge/Spring%20Boot-4-6db33f">
   <img alt="React 19" src="https://img.shields.io/badge/React-19-61dafb">
-  <img alt="tests" src="https://img.shields.io/badge/tests-530-brightgreen">
-  <img alt="coverage" src="https://img.shields.io/badge/coverage-88.2%25%20java%20%C2%B7%2087.4%25%20web-brightgreen">
+  <img alt="Kafka" src="https://img.shields.io/badge/Kafka-3%20brokers-231f20">
+  <img alt="AWS" src="https://img.shields.io/badge/AWS-ECS%20%C2%B7%20Aurora-ff9900">
+  <img alt="tests" src="https://img.shields.io/badge/tests-753-brightgreen">
+  <img alt="coverage" src="https://img.shields.io/badge/coverage-89.2%25%20java%20%C2%B7%2087.4%25%20web-brightgreen">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
+
+<div align="center">
+<table>
+<tr>
+<td align="center"><b>8,000</b><br><sub>concurrent shoppers</sub></td>
+<td align="center"><b>3,498</b><br><sub>requests a second</sub></td>
+<td align="center"><b>134 ms</b><br><sub>p99, every request</sub></td>
+<td align="center"><b>0.04%</b><br><sub>unexpected responses</sub></td>
+<td align="center"><b>0</b><br><sub>invariant violations in<br>30 million simulated checks</sub></td>
+</tr>
+</table>
+<sub>
+  Measured on AWS — ECS Fargate, Aurora PostgreSQL, three Kafka brokers — against a
+  <a href="docs/load-test.md">load-test protocol</a> written before the first run.
+  Every run is recorded, the misses included.
+</sub>
+</div>
+
+<br>
 
 <p align="center">
   <img src="docs/images/storefront.jpg" alt="The till games storefront: a featured-game carousel over procedurally painted cover art, the store's promises, and the first shelf of games on sale" width="900">
@@ -52,6 +77,88 @@ would have to be:
 </tr>
 </table>
 
+## Why it is worth a look
+
+- **It cannot oversell, by construction.** One service decides every sale, and the storefront reaches
+  it the way any client would — an HTTP call with an ordinary token, no shortcut — so a bug anywhere in
+  the shop can cost a customer a refused checkout and never an oversold copy. The rules themselves are
+  a pure function: no Spring, no I/O, no threads, no clock. Below them, the database refuses an
+  impossible row whatever the code does. Two hundred threads racing for twenty units sell exactly
+  twenty.
+- **p99 from 20.8 s to 134 ms, one measured bottleneck at a time.** The first run on AWS, at 8,000
+  shoppers, got an unexpected answer to 41.5% of its requests. Every change after it was made
+  because a measurement pointed there — the edge's connections, a Redis read cache that cut the
+  average catalogue read from 398 ms to 34 ms, expired holds written off only when they are in the
+  way, hot-SKU shards, request deadlines, one round trip per write, batching, and finally a database
+  with room to breathe. [The runs, below](#from-208-seconds-to-134-milliseconds).
+- **Concurrent checkouts decided in one write.** A single worker takes whatever commands have queued,
+  decides them in order against one snapshot, and writes the net change with one statement. In the
+  contention benchmark that took checkouts from 1,009–1,307 a second to 4,022–4,260, and their p99
+  from 1.17–1.32 s to 83–106 ms — and every caller still gets exactly the answer its command alone
+  would have had, which an equivalence suite checks row for row against PostgreSQL.
+  ([ADR 16](docs/design/0016-batched-commands.md))
+- **Seven-second stalls on an idle-looking database, root-caused.** After batching, the order p99 sat
+  at the store's five-second deadline while the database reported nothing running. A watchdog on the
+  batch worker caught it mid-stall: reading a reply off the socket for up to 7.6 s, while Database
+  Insights sampled no active session and keepalives on other connections were answered. The 1 GB
+  server was swapping. On Aurora the order p99 fell from 4.8 s to 295 ms and the load balancer saw no
+  5xx at all. ([The write-up](docs/load-test.md#6-and-7-october-commands-decided-together-and-a-server-that-swaps))
+- **Tested like a distributed system.** A deterministic simulator plays a day of contention between
+  eight callers — crashes, lost answers, clock jumps — as a function of one integer seed, so a bug
+  found at seed 1 is still there at seed 1 tomorrow. The soak runs 10,000 seeds and 30 million
+  invariant checks with zero violations; four plausible mistakes are planted on purpose and the suite
+  is asserted to catch each; the simulator found a real bug on its first run. 753 tests, 89% line
+  coverage on the Java, and [38 bugs written up](#bugs-found-and-what-found-them) with what caught
+  each one.
+- **A retry is safe from the button to the database.** One idempotency key per checkout attempt and
+  cart, one per payment, namespaced per customer before it reaches the ledger and replayed by it —
+  each asserted on the wire. Every stock change commits in the same transaction as its event, a
+  transactional outbox, which goes to a three-broker Kafka cluster keyed by entity and lands in an
+  inbox, so a redelivery moves nothing.
+- **The browser never holds a token.** Sign-in is OpenID Connect with PKCE, run on the server; the
+  tokens stay in a Redis session and the browser holds a cookie no script can read. PKCE, nonces,
+  forged tokens, login CSRF, session fixation and open redirects are each tested against an
+  in-process identity provider, and the whole round trip again in a browser against Keycloak.
+- **One command to run it, one script to deploy it.** `docker compose up` starts the whole platform
+  with health checks. `scripts/aws.sh up` builds the images, applies the Terraform — ECS Fargate,
+  Aurora or RDS, ElastiCache, Cognito, CloudFront — checks what it deployed, and schedules every
+  service to stop three hours later in case nobody runs `down`. The [operations guide](docs/operations.md) is
+  written for three in the morning.
+
+## From 20.8 seconds to 134 milliseconds
+
+The targets were written down before the first run, in [the protocol](docs/load-test.md): 8,000
+concurrent shoppers, each its own customer with its own session — browsing, searching, signing in and
+checking out through the edge — at 3,000 requests a second or more, with a p99 under a second and
+fewer than 0.1% unexpected responses.
+
+| Run | What changed | Requests/s | p99 | Errors |
+| --- | --- | ---: | ---: | ---: |
+| 30 Sep | the first run: two tasks a service, one `db.t4g.micro` | 2,855 | 20.8 s | 41.5% |
+| 30 Sep | the edge with an nginx configuration of its own, and twice the CPU | 2,497 | 21.1 s | 4.6% |
+| 1 Oct | deadlines on the store's calls to the ledger, stock rows written first, twelve Kafka partitions | 3,177 | 5.0 s | 4.5% |
+| 2 Oct | the store on a database server of its own | 3,312 | 5.0 s | 1.6% |
+| 6 Oct | concurrent commands decided together and written in one call | 3,460 | 844 ms | 0.17% |
+| 7 Oct | four ledger connections instead of sixteen | 3,473 | 404 ms | 0.08% |
+| 7 Oct | each service on Aurora PostgreSQL, 4 ACU | **3,498** | **134 ms** | **0.04%** |
+
+Seven of eighteen runs; [all eighteen](docs/load-test.md#results) link to their raw results, and each
+has a section saying what it found and what changed because of it. The last run met every target,
+with the order class's own p99 at 295 ms. It is also the most this deployment holds as it stands:
+both Aurora clusters ran at their 4 ACU ceiling, which is all the free plan allows.
+
+## Built with
+
+| | |
+| --- | --- |
+| **Storefront** | React 19, TypeScript, Redux Toolkit, React Router, Tailwind CSS 4, Vite — with its API types generated from the store's OpenAPI contract |
+| **Services** | Java 21, Spring Boot 4, Spring Security (OpenID Connect with PKCE), Spring Session, Flyway, Micrometer and Prometheus |
+| **Data** | PostgreSQL 17 — full-text search, monthly partitions, PL/pgSQL; Aurora PostgreSQL with IAM authentication; Redis, and Valkey on AWS |
+| **Events** | Apache Kafka, three brokers and twelve partitions, fed by a transactional outbox and read through an idempotent inbox |
+| **Edge and identity** | nginx with a Content-Security-Policy, rate limits and a microcache; Keycloak locally, Amazon Cognito on AWS |
+| **Infrastructure** | Docker Compose; Terraform on AWS — ECS Fargate, CloudFront in front of an internal load balancer, ElastiCache, ECR, EventBridge Scheduler |
+| **Testing** | JUnit, Testcontainers, a deterministic simulator, Vitest, Testing Library, MSW, Playwright, k6, JaCoCo, GitHub Actions |
+
 ## Why a ledger
 
 Almost every e-commerce backend writes the checkout path like this:
@@ -68,27 +175,9 @@ twice.
 
 till is that path done properly — a hold with a deadline, an idempotency key that means a retry is a
 retry, an audit log that cannot disagree with the balance — with a store built on top of it the way
-it would be in production. Five things make it worth a read:
-
-- **The rules are a pure function.** No Spring, no I/O, no threads, no clock — time arrives as an
-  argument. A whole day of contention between eight callers, with crashes, lost answers and clock
-  jumps, is a function of one integer seed, so a bug found at seed 1 is still there at seed 1
-  tomorrow.
-- **The suite is proven to notice.** Four mistakes a hand-written implementation plausibly makes are
-  put back on purpose, and the tests assert which check catches each. The simulator found a real bug
-  on the first run it ever did.
-- **The browser never holds a token.** Signing in is the authorization-code flow with PKCE, run on the
-  server; the tokens stay in a Redis session, and the browser holds a cookie no script can read. The
-  whole round trip — PKCE, nonce, forged tokens, login CSRF, session fixation — is tested against an
-  in-process identity provider, and again in a browser against Keycloak.
-- **A retry is safe from the button to the database.** One idempotency key per checkout attempt and
-  cart, one per payment; namespaced per customer before it reaches the ledger's global key space;
-  replayed by the ledger; and absorbed by an inbox where the events land. Every one of those is
-  asserted on the wire.
-- **It runs, and it is meant to be run by somebody else.** One `docker compose up` for the whole
-  platform, with health checks; an edge proxy with a Content-Security-Policy, rate limits and a
-  microcache; OpenAPI contracts checked against real failures; Prometheus; CI that builds every image
-  and drives the store in a browser; and an operations guide written for three in the morning.
+it would be in production. The rules are one function that never reads a clock — time arrives as an
+argument — and returns every row a command changes, the events that describe them and the caller's
+answer, which the database then writes together or not at all.
 
 ## Try it
 
@@ -216,6 +305,7 @@ switch (outcome) {
 | `till-testkit` | the simulator and the invariants, usable against a `Ledger` of your own |
 | `till-client` | an HTTP client and `tillctl`, with no serialisation dependency |
 | `till-kafka` | publishes the outbox to Kafka; no Spring, plain `kafka-clients` |
+| `till-rds-iam` | signs in to Aurora PostgreSQL with a short-lived IAM token instead of a password |
 | `till-server` | the ledger as a service — the only thing that may decide a sale |
 | `till-store` | the game store: catalogue, search, orders, sign-in — the backend the browser talks to |
 | `till-web` | the storefront and operator console, served by the edge proxy |
@@ -444,6 +534,7 @@ because the alternative is a client that retried a timeout being told "out of st
 | Reclaim on demand | a command that would be short of stock writes off the expired holds standing in its way, scoped to its SKUs, and decides again; one with stock to spare leaves them to the sweeper |
 | Idempotency | keyed by the caller, with a fingerprint that ignores the server-minted id and the line order |
 | Optimistic concurrency | a version per row, no locks, no backoff, bounded attempts |
+| Commands decided together | one worker takes whatever has queued, up to 64 commands, decides them in order against one snapshot and writes the net change in one call, every row checked against the version it read; each caller gets the answer its command alone would have had, and a full queue is answered 503 at once |
 | Hot-SKU shards | a busy SKU's stock split across up to 64 rows, so two holds on it contend only in the same row; answers stay the SKU's, and a hold is refused only when the whole SKU is short. Sixteen rows: 7% of decisions conflicting where one row had 54% |
 | Transactional outbox | events in the same transaction as the change, delivered at least once, with stable deduplication keys; drained until caught up, by one ledger instance at a time under an advisory lock, so they leave in order and are not sent twice by design |
 | Kafka, and an idempotent reader | `acks=all` with producer idempotence, records keyed by entity so one reservation's lifecycle stays ordered, a topic the ledger declares with twelve partitions so every store's consumer has some to read, and an inbox on the consumer so a redelivery moves nothing |
@@ -462,24 +553,26 @@ reserving a specific unit, scheduled availability, read replicas, and any databa
 
 **Not done yet, and said so.** The platform runs locally, in CI and on AWS:
 [`infra/`](infra/README.md) is the deployment — Terraform, and a script that checks what it
-deployed — and it was deployed and checked on 30 September 2026. A sign-in through Cognito has not
-yet been completed end to end, only up to Cognito accepting the store's redirect. The load test has
-been run on AWS and meets its throughput target — 8,000 shoppers, 3,312 requests a second, a p95 of
-208 ms — but not yet its latency or error targets: a checkout's p99 is still the store's five-second
-deadline on the ledger. [`docs/load-test.md`](docs/load-test.md) records every run, what it found and
-what changed because of it — the edge's connections, the catalogue's Redis read cache, writing off
-expired holds when they are needed, the checkout's waste, hot-SKU shards, the ledger refusing work
-nobody is waiting for, and the store on a database of its own.
+deployed. A sign-in through Cognito has not yet been completed end to end, only up to Cognito
+accepting the store's redirect; the load test signs its shoppers in through a stand-in provider of
+its own. The load test met every target on 7 October 2026, with both databases on Aurora at their
+4 ACU ceiling — all the free plan allows — so that is the most this deployment holds, not a load it
+carries with room to spare. Deployment is a script run by hand rather than a pipeline, and the
+libraries are not on Maven Central yet ([why](#use-it-as-a-library)).
 
 ## Numbers
 
-Measured on an Apple M-series laptop, PostgreSQL 17, JDK 21 and 25. Every figure has the command that
-produced it.
+Measured on an Apple M-series laptop, PostgreSQL 17, JDK 21 and 25, except the rows that say AWS.
+Every figure has the command or the run that produced it.
 
 | | |
 | --- | --- |
-| Tests | **584** — 505 Java (one of them the soak, off by default), 74 storefront, 5 end-to-end against the whole stack |
-| Coverage | **87.7% / 78.2%** lines / branches on the Java, **87.4% / 77.8%** on the storefront |
+| On AWS, 8,000 shoppers | **3,498 requests/s**, a p99 of **134 ms**, **0.04%** unexpected — [the run](till-loadtest/results/20261007T213235Z.json), and [the seventeen before it](docs/load-test.md#results) |
+| The catalogue's Redis cache, on AWS | the average catalogue read **397.67 ms → 34.42 ms**, 91% less, under the same load |
+| Checkouts decided together | **4,022–4,260 checkouts/s** against 1,009–1,307 one at a time, p99 **83–106 ms** against 1.17–1.32 s, in `ContentionBenchmark` |
+| The event stream, end to end | about **390 → 3,000 events/s** once the outbox drains and the topic has twelve partitions ([ADR 6](docs/design/0006-outbox.md)) |
+| Tests | **753** — 674 Java (one of them the soak, off by default), 74 storefront, 5 end-to-end against the whole stack |
+| Coverage | **89.2% / 80.5%** lines / branches on the Java, **87.4% / 77.8%** on the storefront |
 | `mvn verify`, whole reactor | **about a minute**, including the store's PostgreSQL, Redis and Kafka containers |
 | Simulation throughput | **59,927 steps/s**, every shard of every SKU checked after every step |
 | Soak | 10,000 seeds, **30,216,501 invariant checks**, 4,447,884 conflicts, 4,390,387 answers, **504s**, zero violations |
@@ -489,9 +582,9 @@ produced it.
 | Ledger to storefront | a restock shows in the catalogue within **about 6 s** — Kafka, the projection, and the five-second edge cache |
 | Ledger start to ready | **2.0s** |
 | Storefront bundle | 446 kB, **139 kB gzipped**, plus 4 kB for the operator console, loaded only by operators |
-| Hand-written Java | 15,202 lines main, 10,513 lines test |
+| Hand-written Java | 18,493 lines main, 17,495 lines test, the load test's own aside |
 | Hand-written TypeScript | 6,003 lines source (918 of them painting cover art), 1,505 lines test, 272 lines CSS |
-| SQL | 574 lines across nine migrations, most of it the catalogue itself |
+| SQL | 1,118 lines across thirteen migrations: the catalogue, and the functions that write a decision in one call |
 | Runtime dependencies | `till-core`: **one**, `slf4j-api`. `till-web`: **five** — React, its DOM renderer, a router, Redux Toolkit and its React bindings |
 
 ```bash
@@ -511,11 +604,11 @@ conflicts would have tested the happy path four million times, and would go on p
 concurrency control was deleted. Every chaos test here asserts the run was hostile — conflicts,
 replays, injected crashes, lost answers, expiries and refusals all have to have happened.
 
-There is no throughput figure for the services here, on purpose. Measuring them on one laptop against
-one PostgreSQL would say more about the laptop than about till; that number comes from a written
-load-test protocol run against a deployed stack, or not at all. [`docs/load-test.md`](docs/load-test.md)
-is the protocol — 8,000 concurrent shoppers, 3,000 requests a second, a p99 under a second — and its
-results, and [`till-loadtest`](till-loadtest) the scenario and the stand-in sign-in it runs with.
+The services' throughput is not measured on the laptop, on purpose: one laptop against one
+PostgreSQL would say more about the laptop than about till. It comes from a written load-test
+protocol run against a deployed stack. [`docs/load-test.md`](docs/load-test.md) is the protocol —
+8,000 concurrent shoppers, 3,000 requests a second, a p99 under a second — and every result, and
+[`till-loadtest`](till-loadtest) the k6 scenario and the stand-in sign-in it runs with.
 
 What a laptop can measure is a *ratio*, and the contention benchmark does: the same checkouts on the
 same PostgreSQL, with one change between runs. Its numbers are in
@@ -963,8 +1056,8 @@ common outcome of a failing test, and a bug list that omits it is a bug list tha
 </table>
 
 [`docs/testing.md`](docs/testing.md) also lists what the suite does **not** cover — no torn writes, no
-real process kill, no clock skew between instances, no fuzzing at the HTTP layer, no load test —
-because a testing document that only lists strengths is marketing.
+real process kill, no clock skew between instances, no fuzzing at the HTTP layer, no load test in
+CI — because a testing document that only lists strengths is marketing.
 
 ## Reading the code
 
@@ -978,6 +1071,7 @@ Fifteen minutes, in this order:
 | [`testkit/Invariants.java`](till-testkit/src/main/java/io/till/testkit/Invariants.java) | the properties, and what each one catches |
 | [`testkit/Sim.java`](till-testkit/src/main/java/io/till/testkit/Sim.java) | why a command is three phases rather than one |
 | [`jdbc/JdbcLedger.java`](till-jdbc/src/main/java/io/till/jdbc/JdbcLedger.java) | a lean load and an apply in one statement each, a reclaiming load in one transaction, and why |
+| [`server/CommandBatcher.java`](till-server/src/main/java/io/till/server/CommandBatcher.java) | one writer behind a bounded queue, and the watchdog that found a database swapping |
 | [`store/ledger/LedgerKeys.java`](till-store/src/main/java/io/till/store/ledger/LedgerKeys.java) | why a customer's idempotency key never reaches the ledger as it was sent |
 | [`store/orders/OrderService.java`](till-store/src/main/java/io/till/store/orders/OrderService.java) | no transaction across a call to another service, and why that is safe |
 | [`store/events/Projector.java`](till-store/src/main/java/io/till/store/events/Projector.java) | three read models, one transaction, and the inbox that makes at-least-once affordable |
@@ -990,6 +1084,8 @@ Fifteen minutes, in this order:
 | [`docs/architecture.md`](docs/architecture.md) | the layering, the seam, the store and the edge |
 | [`docs/testing.md`](docs/testing.md) | what each layer proves, and the known gaps |
 | [`docs/operations.md`](docs/operations.md) | running it: settings, sign-in, the edge, alerting, retention, backup |
+| [`docs/load-test.md`](docs/load-test.md) | the load-test protocol, and every run on AWS: what it found and what changed because of it |
+| [`infra/README.md`](infra/README.md) | the AWS deployment: Terraform, the script that starts, checks and stops it, and what it costs |
 | [`docs/design/`](docs/design/) | one note per decision, each with its costs and rejected alternatives |
 
 ## Layout
@@ -1000,11 +1096,15 @@ till-jdbc       PostgreSQL: optimistic concurrency, a transactional outbox, the 
 till-testkit    a deterministic simulator, the invariants, and the flaws it is proven to catch
 till-client     an HTTP client and tillctl, with no serialisation dependency
 till-kafka      the outbox to Kafka: plain kafka-clients, no Spring, keyed by entity
-till-server     the ledger service: REST, OpenAPI, metrics, the sweeper, the outbox publisher
+till-rds-iam    IAM-token sign-in to Aurora: a pgjdbc authentication plugin
+till-server     the ledger service: REST, OpenAPI, metrics, the batcher, the sweeper, the outbox publisher
 till-store      the store: catalogue, search, orders, sign-in, the operator API
 till-web        the storefront and operator console: React, Redux Toolkit, Vite
+till-loadtest   the load test: a k6 scenario, a stand-in OpenID provider, and every run's results
 openapi/        the two services' published contracts, kept current by their own tests
 docker/         the edge's nginx configuration, the Keycloak realm, database initialisation
+infra/          the AWS deployment: Terraform for ECS Fargate, the databases, the cache, Cognito, CloudFront
+scripts/        aws.sh, which builds, starts, checks, load-tests and stops it; the demo; the build on every JDK
 ```
 
 ## License
