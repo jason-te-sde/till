@@ -134,13 +134,13 @@ fewer than 0.1% unexpected responses.
 
 | Run | What changed | Requests/s | p99 | Errors |
 | --- | --- | ---: | ---: | ---: |
-| 30 Sep | the first run: two tasks a service, one `db.t4g.micro` | 2,855 | 20.8 s | 41.5% |
-| 30 Sep | the edge with an nginx configuration of its own, and twice the CPU | 2,497 | 21.1 s | 4.6% |
-| 1 Oct | deadlines on the store's calls to the ledger, stock rows written first, twelve Kafka partitions | 3,177 | 5.0 s | 4.5% |
-| 2 Oct | the store on a database server of its own | 3,312 | 5.0 s | 1.6% |
-| 6 Oct | concurrent commands decided together and written in one call | 3,460 | 844 ms | 0.17% |
-| 7 Oct | four ledger connections instead of sixteen | 3,473 | 404 ms | 0.08% |
-| 7 Oct | each service on Aurora PostgreSQL, 4 ACU | **3,498** | **134 ms** | **0.04%** |
+| 30&nbsp;Sep | the first run: two tasks a service, one `db.t4g.micro` | 2,855 | 20.8&nbsp;s | 41.5% |
+| 30&nbsp;Sep | the edge with an nginx configuration of its own, and twice the CPU | 2,497 | 21.1&nbsp;s | 4.6% |
+| 1&nbsp;Oct | deadlines on the store's calls to the ledger, stock rows written first, twelve Kafka partitions | 3,177 | 5.0&nbsp;s | 4.5% |
+| 2&nbsp;Oct | the store on a database server of its own | 3,312 | 5.0&nbsp;s | 1.6% |
+| 6&nbsp;Oct | concurrent commands decided together and written in one call | 3,460 | 844&nbsp;ms | 0.17% |
+| 7&nbsp;Oct | four ledger connections instead of sixteen | 3,473 | 404&nbsp;ms | 0.08% |
+| 7&nbsp;Oct | each service on Aurora PostgreSQL, 4 ACU | **3,498** | **134&nbsp;ms** | **0.04%** |
 
 Seven of eighteen runs; [all eighteen](docs/load-test.md#results) link to their raw results, and each
 has a section saying what it found and what changed because of it. The last run met every target,
@@ -149,7 +149,7 @@ both Aurora clusters ran at their 4 ACU ceiling, which is all the free plan allo
 
 ## Built with
 
-| | |
+| Layer | Technology |
 | --- | --- |
 | **Storefront** | React 19, TypeScript, Redux Toolkit, React Router, Tailwind CSS 4, Vite — with its API types generated from the store's OpenAPI contract |
 | **Services** | Java 21, Spring Boot 4, Spring Security (OpenID Connect with PKCE), Spring Session, Flyway, Micrometer and Prometheus |
