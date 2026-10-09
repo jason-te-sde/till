@@ -286,9 +286,10 @@ mvn test -pl till-testkit -Dtill.sim.seeds=10000 -Dtest=SoakTest \
   notice. See the ADR on deadlines for why that is survivable and what it costs.
 - **No adversarial input fuzzing at the HTTP layer.** Identifiers are validated at the boundary and
   the JSON reader is strict and tested, but nobody has pointed a fuzzer at either.
-- **No load test yet.** There are no published throughput numbers for the services, only for the
-  simulator and the suite. A figure measured on one laptop would say more about the laptop; the plan
-  is a written load-test protocol run against a deployed stack.
+- **No load test in CI.** The services' throughput comes from a written protocol run by hand against
+  a stack deployed on AWS ([the load test](load-test.md)), because a figure measured on one laptop
+  would say more about the laptop. A change that slows the services is found by the next run, not by
+  the pull request that made it.
 - **The container job checks that the stack works, not that the image is small or safe.** Nothing
   scans it, nothing measures it, and nothing checks that the base image is current beyond Dependabot
   raising a pull request when it is not.
