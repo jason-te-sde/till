@@ -64,35 +64,35 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-    <slf4j.version>2.0.19</slf4j.version>
+    <slf4j.version>2.0.20</slf4j.version>
     <junit.version>6.1.3</junit.version>
 
     <!-- Only till-server depends on Spring. Everything below it is plain Java, which is what
          makes the kernel testable without a container and embeddable without one. -->
-    <spring-boot.version>4.1.1</spring-boot.version>
-    <springdoc.version>3.1.1</springdoc.version>
-    <postgresql.version>42.7.13</postgresql.version>
-    <awssdk.version>2.46.7</awssdk.version>
+    <spring-boot.version>4.1.2</spring-boot.version>
+    <springdoc.version>3.2.0</springdoc.version>
+    <postgresql.version>42.7.14</postgresql.version>
+    <awssdk.version>2.57.7</awssdk.version>
 
     <!-- Spring Boot 4 serialises with Jackson 3 (tools.jackson) and manages Jackson 2 only for the
          things that still need it. springdoc's Swagger dependencies and Flyway want a newer Jackson 2
          than Boot's BOM pins, which requireUpperBoundDeps reports as four separate conflicts. One BOM
          import declared ahead of Boot's settles all of them, and it is the version the graph already
          wanted rather than a version chosen here. -->
-    <jackson2.version>2.22.2</jackson2.version>
+    <jackson2.version>2.22.4</jackson2.version>
     <testcontainers.version>2.0.5</testcontainers.version>
 
     <compiler.plugin.version>3.16.0</compiler.plugin.version>
-    <surefire.plugin.version>3.6.0</surefire.plugin.version>
-    <failsafe.plugin.version>3.6.0</failsafe.plugin.version>
-    <jacoco.plugin.version>0.8.15</jacoco.plugin.version>
-    <enforcer.plugin.version>3.6.3</enforcer.plugin.version>
+    <surefire.plugin.version>3.6.1</surefire.plugin.version>
+    <failsafe.plugin.version>3.6.1</failsafe.plugin.version>
+    <jacoco.plugin.version>0.8.16</jacoco.plugin.version>
+    <enforcer.plugin.version>3.7.0</enforcer.plugin.version>
     <shade.plugin.version>3.6.2</shade.plugin.version>
     <jar.plugin.version>3.5.1</jar.plugin.version>
     <source.plugin.version>3.4.0</source.plugin.version>
     <javadoc.plugin.version>3.12.0</javadoc.plugin.version>
     <gpg.plugin.version>3.2.8</gpg.plugin.version>
-    <central.plugin.version>0.11.0</central.plugin.version>
+    <central.plugin.version>0.12.0</central.plugin.version>
   </properties>
 
   <dependencyManagement>
