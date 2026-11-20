@@ -41,7 +41,7 @@ around a real bug forever.
 ## Consequences
 
 **Under contention, callers retry instead of queueing.** The measured shape of that: a 10,000-seed
-simulation of eight contending callers produced 4.8 million conflicts across 30 million invariant
+simulation of eight contending callers produced 4,447,884 conflicts across 30,216,501 invariant
 checks, and every one of them was resolved by loading again. 200 real threads against PostgreSQL
 competing for 20 units produce exactly 20 sales.
 

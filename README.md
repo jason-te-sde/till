@@ -574,7 +574,7 @@ Every figure has the command or the run that produced it.
 | Tests | **753** — 674 Java (one of them the soak, off by default), 74 storefront, 5 end-to-end against the whole stack |
 | Coverage | **89.2% / 80.5%** lines / branches on the Java, **87.4% / 77.8%** on the storefront |
 | `mvn verify`, whole reactor | **about a minute**, including the store's PostgreSQL, Redis and Kafka containers |
-| Simulation throughput | **59,927 steps/s**, every shard of every SKU checked after every step |
+| Simulation throughput | **59,927 steps/s** (the soak below: 30,216,501 steps in 504 s), every shard of every SKU checked after every step |
 | Soak | 10,000 seeds, **30,216,501 invariant checks**, 4,447,884 conflicts, 4,390,387 answers, **504s**, zero violations |
 | Real threads, real PostgreSQL | 200 callers, 20 units, **exactly 20 sales** — and again with the SKU split eight ways |
 | The whole stack, from `up` to healthy | **about 25 s** once the images are built |
