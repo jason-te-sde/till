@@ -147,6 +147,9 @@ requests.
 
 ## Results
 
+Eighteen runs, one row each. The run numbers used elsewhere — "Run 4", "Run 6", and the titles of the
+commits that added them — count from zero, so the first row is run 0 and the Aurora run is run 17.
+
 | Run | Commit | Set up as | Shoppers | Requests/s | p99 | Errors | Orders/s | Targets |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | [30 Sep 2026](../till-loadtest/results/20260930T102728Z.json) | `e378bd9` | edge 2 × 0.5 vCPU, store and ledger 2 × 1 vCPU, db.t4g.micro | 8,000 | 2,855 | 20.8 s | 41.5% | 3.8 | **missed**: throughput, latency, errors |

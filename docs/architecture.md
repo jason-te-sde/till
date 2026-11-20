@@ -64,7 +64,7 @@ rows do. Two calls with equal arguments return equal results, on any machine, in
 
 That is not purity for its own sake. It is what makes the simulator in `till-testkit` possible: a
 whole day of contention between eight callers, with crashes and clock jumps, becomes a function of
-one integer seed, running at about eighty-five thousand steps a second, checking every invariant
+one integer seed, running at about sixty thousand steps a second (59,927 in the soak recorded in the README), checking every invariant
 after every step. Rules that live inside a transaction can only be tested at the speed of a database,
 which is about four orders of magnitude slower and not reproducible.
 

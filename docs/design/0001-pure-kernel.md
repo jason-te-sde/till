@@ -30,9 +30,9 @@ random source, and a run would stop being reproducible.
 ## Consequences
 
 **What this buys.** The simulator in `till-testkit` runs eight contending callers with injected
-crashes, lost answers and clock jumps at about eighty thousand steps a second, checks every invariant
-after every step, and reproduces any failure exactly from one integer. Ten thousand seeds is six
-minutes and thirty million invariant checks. None of that is reachable through a database.
+crashes, lost answers and clock jumps at about sixty thousand steps a second, checks every invariant
+after every step, and reproduces any failure exactly from one integer. Ten thousand seeds is about
+eight and a half minutes and thirty million invariant checks (30,216,501 in 504 s, as the README records). None of that is reachable through a database.
 
 It also made the rules smaller. A function that cannot fetch anything cannot decide to fetch
 something, so every input a decision depends on is visible in its signature.
