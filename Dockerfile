@@ -70,7 +70,7 @@ HEALTHCHECK --interval=5s --timeout=3s --retries=12 \
 # The load test: k6, the scenario its shoppers follow, and the stand-in OpenID provider they sign in
 # with. `k6 run /loadtest/k6/shopper.js` is the load generator and `java -jar
 # /loadtest/till-loadtest.jar` the provider. Deployed only for a load test, never as part of the store.
-FROM grafana/k6:2.3.0 AS k6
+FROM grafana/k6:2.4.0 AS k6
 
 FROM eclipse-temurin:21-jre AS loadtest
 COPY --from=k6 /usr/bin/k6 /usr/bin/k6
