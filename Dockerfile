@@ -46,7 +46,7 @@ RUN npm run build
 
 # The edge: the storefront's files, and the proxy in front of the store. nginx as an unprivileged
 # user, so a compromised worker is not root in the container either.
-FROM nginxinc/nginx-unprivileged:1.30-alpine AS edge
+FROM nginxinc/nginx-unprivileged:1.31-alpine AS edge
 # The configuration is a template the image renders at start-up; only these variables are
 # substituted, so nginx's own $variables pass through untouched. The defaults are the compose
 # stack's: the store's service name, Docker's DNS resolver, no proxy trusted to name the client, and
