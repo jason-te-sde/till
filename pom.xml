@@ -70,9 +70,9 @@
     <!-- Only till-server depends on Spring. Everything below it is plain Java, which is what
          makes the kernel testable without a container and embeddable without one. -->
     <spring-boot.version>4.2.0</spring-boot.version>
-    <springdoc.version>3.2.0</springdoc.version>
+    <springdoc.version>3.2.1</springdoc.version>
     <postgresql.version>42.7.14</postgresql.version>
-    <awssdk.version>2.59.5</awssdk.version>
+    <awssdk.version>2.59.7</awssdk.version>
 
     <!-- Spring Boot 4 serialises with Jackson 3 (tools.jackson) and manages Jackson 2 only for the
          things that still need it. springdoc's Swagger dependencies and Flyway want a newer Jackson 2
