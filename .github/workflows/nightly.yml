@@ -30,9 +30,11 @@ jobs:
 
       # A pull request cannot afford this and it is where the interesting bugs are: the first three
       # bugs in the README's list came from widening a sweep, not from writing another unit test.
+      # -am keeps the parent in the reactor: without it the enforcer's reactorModuleConvergence rule
+      # fails before a single seed runs. Only till-testkit has a SoakTest, so the other modules run none.
       - name: sweep
         run: |
-          mvn -B -ntp test -pl till-testkit \
+          mvn -B -ntp test -pl till-testkit -am \
             -Dtill.sim.seeds=${{ github.event.inputs.seeds || '10000' }} \
             -Dtest=SoakTest -Dsurefire.failIfNoSpecifiedTests=false
 

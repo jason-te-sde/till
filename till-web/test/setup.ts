@@ -36,17 +36,17 @@ afterAll(() => {
 window.scrollTo = vi.fn()
 Element.prototype.scrollBy = vi.fn()
 
-// The hero checks for reduced motion before it starts advancing.
-window.matchMedia = ((query: string) => ({
-  matches: false,
-  media: query,
-  onchange: null,
-  addEventListener: () => undefined,
-  removeEventListener: () => undefined,
-  addListener: () => undefined,
-  removeListener: () => undefined,
-  dispatchEvent: () => false,
-}))
+// The hero checks for reduced motion before it starts advancing. Only the event-listener API is
+// stubbed: the app never calls the deprecated addListener and removeListener.
+window.matchMedia = (query: string) =>
+  ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    dispatchEvent: () => false,
+  }) as unknown as MediaQueryList
 
 // Modals and the cart drawer are native <dialog> elements.
 if (typeof HTMLDialogElement !== 'undefined' && typeof HTMLDialogElement.prototype.showModal !== 'function') {

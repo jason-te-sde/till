@@ -3,8 +3,7 @@ updates:
   - package-ecosystem: maven
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     open-pull-requests-limit: 10
     groups:
       # Everything that is not a major, in one pull request. These are read together and merged
@@ -29,8 +28,7 @@ updates:
   - package-ecosystem: npm
     directory: /till-web
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     open-pull-requests-limit: 10
     groups:
       routine:

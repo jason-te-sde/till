@@ -202,11 +202,14 @@ function checkout(catalogue) {
 }
 
 // The whole OpenID Connect round trip, as a browser does it: the store's redirect to the provider,
-// the provider's approval, and the store redeeming the code on the way back.
+// the provider's approval, and the store redeeming the code on the way back. The store's two
+// redirects are 302 up to Spring Boot 4.1 and 303 from 4.2; a browser follows both the same way.
+const STORE_REDIRECT = [302, 303]
+
 function signIn() {
   const s = me()
   const start = send('GET', `${BASE}/oauth2/authorization/idp`, 'signin', '/oauth2/authorization/idp', {
-    expect: [302],
+    expect: STORE_REDIRECT,
     redirects: 0,
   })
   const toProvider = header(start, 'Location')
@@ -221,9 +224,9 @@ function signIn() {
     unexpected.add(true, { window: phase(), class: 'signin' })
     return false
   }
-  const back = send('GET', callback, 'signin', '/login/oauth2/code/idp', { expect: [302], redirects: 0 })
+  const back = send('GET', callback, 'signin', '/login/oauth2/code/idp', { expect: STORE_REDIRECT, redirects: 0 })
   const landed = header(back, 'Location') || ''
-  if (back.status !== 302 || landed.includes('signin=failed')) {
+  if (!STORE_REDIRECT.includes(back.status) || landed.includes('signin=failed')) {
     unexpected.add(true, { window: phase(), class: 'signin' })
     return false
   }
